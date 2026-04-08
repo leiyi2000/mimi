@@ -1,0 +1,19 @@
+[project]
+name = "mimi"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "httpx>=0.28.1",
+    "napcat-sdk>=0.6.8",
+]
+
+[tool.setuptools]
+packages = ["mimi"]
+
+[tool.uv.workspace]
+members = [
+    "plugins/*",
+    ".",
+]
