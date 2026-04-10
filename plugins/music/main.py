@@ -50,5 +50,5 @@ async def main():
 if __name__ == "__main__":
     import asyncio
 
-    log.info("demo plugin running")
+    log.info("music plugin running")
     asyncio.run(main())

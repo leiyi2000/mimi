@@ -5,6 +5,7 @@ requires-python = ">=3.14"
 [manifest]
 members = [
     "demo",
+    "dontstarve",
     "mimi",
 ]
 
@@ -124,6 +125,17 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "mimi", editable = "." },
 ]
+
+[[package]]
+name = "dontstarve"
+version = "0.1.0"
+source = { virtual = "plugins/dontstarve" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "httpx", specifier = ">=0.28.1" }]
 
 [[package]]
 name = "frozenlist"
