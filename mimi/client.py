@@ -43,5 +43,5 @@ class Client(NapCatClient):
         )
 
         if client_type == "ws":
-            ws_url = f"ws://{host}:{port}"
+            ws_url = f"ws://{host}:{port}/"
             return cls(ws_url, token)

@@ -1,8 +1,8 @@
+import os
 import logging
 
 import httpx
-from mimi.client import Client
-from napcat import Text, MessageEvent, IdMusic
+from napcat import Text, IdMusic, MessageEvent, NapCatClient
 
 from settings import *  # noqa: F403
 
@@ -11,7 +11,12 @@ log = logging.getLogger(__name__)
 
 
 async def main():
-    client = Client.load_from_env()
+    host = os.getenv("NAPCAT_HOST", "127.0.0.1")
+    port = int(os.getenv("NAPCAT_PORT", 3001))
+    token = os.getenv("NAPCAT_TOKEN", None)
+    ws_url = f"ws://{host}:{port}/"
+    client = NapCatClient(ws_url, token)
+
     async for event in client:
         match event:
             case MessageEvent(message=[Text(text=text)]) if text.startswith("点歌"):

@@ -1,13 +1,10 @@
 [project]
-name = "demo"
+name = "music"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.28.1",
-    "mimi",
+    "napcat-sdk>=0.6.8",
 ]
-
-[tool.uv.sources]
-mimi = { workspace = true }
