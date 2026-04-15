@@ -3,7 +3,6 @@ services:
         environment:
             - NAPCAT_UID=${NAPCAT_UID}
             - NAPCAT_GID=${NAPCAT_GID}
-            - ACCOUNT=1811992125
         ports:
             - 3000:3000
             - 3001:3001

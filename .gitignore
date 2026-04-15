@@ -12,3 +12,4 @@ logs/
 data/
 # tests
 plugins/dontstarve/
+.env
