@@ -1,8 +1,7 @@
 services:
     napcat:
-        environment:
-            - NAPCAT_UID=${NAPCAT_UID}
-            - NAPCAT_GID=${NAPCAT_GID}
+        env_file:
+            - .env
         ports:
             - 3000:3000
             - 3001:3001
@@ -14,11 +13,22 @@ services:
             - ./data/napcat/QQ:/app/.config/QQ
             - ./data/napcat/config:/app/napcat/config
             - ./data/napcat/plugins:/app/napcat/plugins
+    mimi-init:
+        build: .
+        container_name: mimi-init
+        volumes:
+            - ./data/mini/plugins:/app/plugins
+        entrypoint: [ "sh", "-c", "cp -r /app/plugins-from-image/. /app/plugins/ || true" ]
     mimi:
         build: .
         container_name: mimi
         env_file:
             - .env
         restart: unless-stopped
+        volumes:
+            - ./data/mini/plugins:/app/plugins
         depends_on:
-            - napcat
+            napcat:
+                condition: service_started
+            mimi-init:
+                condition: service_completed_successfully

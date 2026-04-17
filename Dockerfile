@@ -9,7 +9,7 @@ WORKDIR /app
 # Copy project files
 COPY pyproject.toml ./
 COPY mimi/ ./mimi/
-COPY plugins/ ./plugins/
+COPY plugins/ ./plugins-from-image/
 COPY .env ./.env
 
 # Install dependencies using uv
