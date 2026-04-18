@@ -3,9 +3,11 @@ name = "yasuo"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
+    "fastapi>=0.136.0",
     "httpx>=0.28.1",
     "napcat-sdk>=0.6.8",
     "tortoise-orm>=1.1.7",
+    "uvicorn>=0.44.0",
 ]
