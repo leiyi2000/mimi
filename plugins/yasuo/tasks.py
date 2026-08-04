@@ -2,9 +2,10 @@ import os
 import asyncio
 import logging
 import traceback
-from typing import List
 
 import httpx
+import aiofiles
+import aiofiles.os
 from models import GroupMessage
 from napcat import NapCatClient, GroupMessageEvent
 
@@ -15,12 +16,12 @@ log = logging.getLogger(__name__)
 class NapCatSync:
     def __init__(self):
         self.token = os.getenv("NAPCAT_TOKEN", None)
-        self.port = int(os.getenv("NAPCAT_PORT", 3001))
+        self.port = int(os.getenv("NAPCAT_PORT", "3001"))
         self.host = os.getenv("NAPCAT_HOST", "127.0.0.1")
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
         self.client = NapCatClient(f"ws://{self.host}:{self.port}/", self.token)
 
-    def extract_image_urls(self, event: GroupMessageEvent) -> List[str]:
+    def extract_image_urls(self, event: GroupMessageEvent) -> list[str]:
         image_urls = []
         for seg in event.message:
             if (
@@ -49,21 +50,21 @@ class NapCatSync:
                 filename = f"{hash(url)}{ext}"
                 filepath = os.path.join(save_dir, filename)
 
-                os.makedirs(save_dir, exist_ok=True)
-                with open(filepath, "wb") as f:
-                    f.write(response.content)
+                await aiofiles.os.makedirs(save_dir, exist_ok=True)
+                async with aiofiles.open(filepath, "wb") as f:
+                    await f.write(response.content)
 
                 return filepath
-        except Exception:
+        except Exception:  # noqa: BLE001
             log.warning(f"Failed to download image: {url}")
             return None
 
     async def download_images(
         self,
-        image_urls: List[str],
+        image_urls: list[str],
         group_id: int,
         message_id: int,
-    ) -> List[str]:
+    ) -> list[str]:
         if not image_urls:
             return []
 
@@ -112,6 +113,6 @@ class NapCatSync:
         while True:
             try:
                 await self.start()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 log.error(traceback.format_exc())
                 await asyncio.sleep(5)

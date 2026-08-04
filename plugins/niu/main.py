@@ -5,7 +5,7 @@ import asyncio
 from anthropic import AsyncAnthropic
 from napcat import Text, At, GroupMessageEvent, NapCatClient
 
-from settings import *  # noqa: F403
+from settings import *
 
 
 log = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ with open(PROMPT_PATH, "r", encoding="utf-8") as f:
 
 async def main():
     host = os.getenv("NAPCAT_HOST", "127.0.0.1")
-    port = int(os.getenv("NAPCAT_PORT", 3001))
+    port = int(os.getenv("NAPCAT_PORT", "3001"))
     token = os.getenv("NAPCAT_TOKEN", None)
 
     anthropic_client = AsyncAnthropic(
@@ -48,7 +48,7 @@ async def main():
                             if hasattr(block, "text")
                         )
                         await event.send_msg(Text(text=reply))
-        except Exception:
+        except Exception:  # noqa: BLE001
             import traceback
 
             log.error(traceback.format_exc())

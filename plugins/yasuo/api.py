@@ -1,8 +1,8 @@
 import os
 import base64
-from typing import Optional
 from datetime import datetime
 
+import aiofiles
 from pydantic import BaseModel
 from fastapi import APIRouter, Query
 
@@ -12,16 +12,27 @@ from models import GroupMessage
 router = APIRouter()
 
 
+async def _read_image_b64(path: str) -> str | None:
+    if not os.path.exists(path):
+        return None
+    try:
+        async with aiofiles.open(path, "rb") as f:
+            content = await f.read()
+        return base64.b64encode(content).decode("utf-8")
+    except OSError:
+        return None
+
+
 class MessageResponse(BaseModel):
     id: int
     message_id: int
     group_id: int
     user_id: int
     nickname: str
-    card: Optional[str] = None
-    role: Optional[str] = None
-    raw_message: Optional[str] = None
-    images_base64: Optional[list[str]] = None
+    card: str | None = None
+    role: str | None = None
+    raw_message: str | None = None
+    images_base64: list[str] | None = None
     time: int
     self_id: int
     created_at: datetime
@@ -52,12 +63,11 @@ async def reads(
         if row.local_image_paths:
             images = []
             for path in row.local_image_paths:
-                if path and os.path.exists(path):
-                    try:
-                        with open(path, "rb") as f:
-                            images.append(base64.b64encode(f.read()).decode("utf-8"))
-                    except Exception:
-                        pass
+                if not path:
+                    continue
+                image_b64 = await _read_image_b64(path)
+                if image_b64 is not None:
+                    images.append(image_b64)
             if images:
                 message.images_base64 = images
         data.append(message)

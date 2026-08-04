@@ -11,3 +11,6 @@ dependencies = [
 
 [tool.setuptools]
 packages = ["mimi"]
+
+[tool.ruff.lint]
+ignore = ["I001"]

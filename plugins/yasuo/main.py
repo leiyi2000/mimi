@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from tortoise import Tortoise
 from fastapi.middleware.cors import CORSMiddleware
 
-from settings import *  # noqa: F403
+from settings import *
 from api import router
 from tasks import NapCatSync
 

@@ -8,3 +8,6 @@ dependencies = [
     "httpx>=0.28.1",
     "napcat-sdk>=0.6.8",
 ]
+
+[tool.ruff.lint]
+ignore = ["I001"]

@@ -1,6 +1,6 @@
 import logging
 
-from mimi.settings import *  # noqa: F403
+from mimi.settings import *
 from mimi.client import Client
 from mimi.plugin import PluginManager
 

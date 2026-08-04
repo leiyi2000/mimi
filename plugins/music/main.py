@@ -4,7 +4,7 @@ import logging
 import httpx
 from napcat import Text, IdMusic, MessageEvent, NapCatClient
 
-from settings import *  # noqa: F403
+from settings import *
 
 
 log = logging.getLogger(__name__)
@@ -12,7 +12,7 @@ log = logging.getLogger(__name__)
 
 async def main():
     host = os.getenv("NAPCAT_HOST", "127.0.0.1")
-    port = int(os.getenv("NAPCAT_PORT", 3001))
+    port = int(os.getenv("NAPCAT_PORT", "3001"))
     token = os.getenv("NAPCAT_TOKEN", None)
 
     while True:
@@ -71,7 +71,7 @@ async def main():
                                 id=music_id,
                             )
                         )
-        except Exception:
+        except Exception:  # noqa: BLE001
             import traceback
 
             log.error(traceback.format_exc())
