@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from napcat import Text, MessageEvent, NapCatClient
@@ -11,11 +12,11 @@ from settings import *
 log = logging.getLogger(__name__)
 
 
-MODE_NAMES = {
-    "ranked": "排位",
-    "battle_royale": "大逃杀",
-    "ltm": "限时模式",
-}
+CST = timezone(timedelta(hours=8))
+MODES = [
+    ("battle_royale", "匹配"),
+    ("ranked", "排位"),
+]
 
 MAP_NAMES = {
     "Kings Canyon": "诸王峡谷",
@@ -61,7 +62,33 @@ def _t_event(name: str | None) -> str | None:
     return EVENT_NAMES.get(name, name)
 
 
-def _format_mode(name: str, mode: dict) -> str | None:
+def _fmt_time(ts: int | None) -> str | None:
+    if not ts:
+        return None
+    return datetime.fromtimestamp(ts, tz=CST).strftime("%m-%d %H:%M")
+
+
+def _fmt_span(info: dict) -> str | None:
+    start = _fmt_time(info.get("start"))
+    end = _fmt_time(info.get("end"))
+    if start and end:
+        return f"{start} ~ {end}"
+    return start or end
+
+
+def _slot_title(info: dict) -> str | None:
+    map_name = _t_map(info.get("map"))
+    if not map_name:
+        return None
+    event_name = _t_event(info.get("eventName"))
+    return f"{event_name} - {map_name}" if event_name else map_name
+
+
+def _build_mode_lines(data: dict, key: str, name: str) -> list[str] | None:
+    mode = data.get(key)
+    if not isinstance(mode, dict):
+        return None
+
     current = mode.get("current") or {}
     next_ = mode.get("next") or {}
     if not current and not next_:
@@ -69,39 +96,38 @@ def _format_mode(name: str, mode: dict) -> str | None:
 
     lines = [f"【{name}】"]
 
-    cur_map = _t_map(current.get("map"))
-    if cur_map:
-        event_name = _t_event(current.get("eventName"))
-        title = f"{event_name} - {cur_map}" if event_name else cur_map
+    cur_title = _slot_title(current)
+    if cur_title:
+        line = f"当前: {cur_title}"
         remaining = current.get("remainingTimer")
         if remaining:
-            lines.append(f"当前: {title} (剩余 {remaining})")
-        else:
-            lines.append(f"当前: {title}")
+            line += f" (剩余 {remaining})"
+        lines.append(line)
+        cur_span = _fmt_span(current)
+        if cur_span:
+            lines.append(f"时间: {cur_span}")
 
-    next_map = _t_map(next_.get("map"))
-    if next_map:
-        event_name = _t_event(next_.get("eventName"))
-        title = f"{event_name} - {next_map}" if event_name else next_map
-        lines.append(f"NEXT: {title}")
+    next_title = _slot_title(next_)
+    if next_title:
+        lines.append(f"NEXT: {next_title}")
+        next_span = _fmt_span(next_)
+        if next_span:
+            lines.append(f"时间: {next_span}")
 
-    return "\n".join(lines)
+    return lines
 
 
-def _format_rotation(data: dict) -> str:
-    sections = []
-    for key, name in MODE_NAMES.items():
-        mode = data.get(key)
-        if not isinstance(mode, dict):
-            continue
-        section = _format_mode(name, mode)
-        if section:
-            sections.append(section)
+def _build_rotation_message(data: dict) -> list | None:
+    blocks: list[str] = []
+    for key, name in MODES:
+        lines = _build_mode_lines(data, key, name)
+        if lines:
+            blocks.append("\n".join(lines))
 
-    if not sections:
-        return "未获取到地图轮换信息。"
+    if not blocks:
+        return None
 
-    return "\n\n".join(sections)
+    return [Text(text="\n\n".join(blocks))]
 
 
 async def main():
@@ -130,7 +156,11 @@ async def main():
 
                         response.raise_for_status()
                         data = response.json()
-                        await event.send_msg(Text(text=_format_rotation(data)))
+                        message = _build_rotation_message(data)
+                        if message is None:
+                            await event.send_msg(Text(text="未获取到轮换信息。"))
+                        else:
+                            await event.send_msg(message)
         except Exception:  # noqa: BLE001
             import traceback
 
