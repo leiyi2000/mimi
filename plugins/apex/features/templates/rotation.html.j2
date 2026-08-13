@@ -1,0 +1,118 @@
+<style>
+  .page {
+    width: {{ page_width }}px;
+    box-sizing: border-box;
+    background: linear-gradient(160deg, #0b0d12 0%, #14181f 55%, #191013 100%);
+    padding: 32px;
+    font-family: "{{ font_name }}", -apple-system, sans-serif;
+    color: #f5f7fa;
+  }
+  .header {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-end;
+    justify-content: space-between;
+    margin-bottom: 24px;
+  }
+  .logo { font-size: 34px; font-weight: 800; letter-spacing: 2px; color: #ff4655; }
+  .title { font-size: 22px; font-weight: 700; margin-left: 10px; color: #f5f7fa; }
+  .subtitle { font-size: 14px; color: rgba(245, 247, 250, 0.45); }
+  .mode {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 18px;
+    padding: 22px;
+    margin-bottom: 18px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  }
+  .mode-head { display: flex; flex-direction: row; align-items: center; margin-bottom: 16px; }
+  .mode-bar { width: 6px; height: 22px; border-radius: 3px; margin-right: 12px; }
+  .mode-cn { font-size: 24px; font-weight: 800; }
+  .mode-en {
+    font-size: 13px; font-weight: 700; letter-spacing: 1.5px;
+    color: rgba(245, 247, 250, 0.4); margin-left: 12px;
+  }
+  .current { display: flex; flex-direction: row; align-items: center; }
+  .thumb {
+    width: 200px; height: 118px; border-radius: 12px; overflow: hidden;
+    margin-right: 20px; background: #1c2129;
+  }
+  .thumb img { width: 200px; height: 118px; object-fit: cover; }
+  .thumb-empty { background: linear-gradient(135deg, #232a34, #171b22); }
+  .cur-info { display: flex; flex-direction: column; flex: 1 1 0; }
+  .cur-label { font-size: 14px; color: rgba(245, 247, 250, 0.5); margin-bottom: 2px; }
+  .event {
+    background: rgba(255, 70, 85, 0.18); color: #ff8a94; font-size: 12px;
+    font-weight: 700; padding: 1px 8px; border-radius: 999px; margin-left: 6px;
+  }
+  .map-cn { font-size: 30px; font-weight: 800; line-height: 1.15; }
+  .map-en { font-size: 15px; color: rgba(245, 247, 250, 0.5); margin-bottom: 10px; }
+  .time { font-size: 15px; color: rgba(245, 247, 250, 0.72); white-space: nowrap; }
+  .bar {
+    height: 8px; background: rgba(255, 255, 255, 0.12); border-radius: 4px;
+    overflow: hidden; margin-top: 12px;
+  }
+  .fill { height: 8px; border-radius: 4px; }
+  .remain { font-size: 14px; font-weight: 700; color: #ffd23f; margin-top: 8px; }
+  .next {
+    display: flex; flex-direction: row; align-items: center; margin-top: 18px;
+    padding-top: 16px; border-top: 1px solid rgba(255, 255, 255, 0.07);
+  }
+  .next .thumb { width: 96px; height: 56px; border-radius: 8px; margin-right: 14px; }
+  .next .thumb img { width: 96px; height: 56px; }
+  .next-info { display: flex; flex-direction: column; flex: 1 1 0; }
+  .next-label { font-size: 12px; color: rgba(245, 247, 250, 0.4); }
+  .next-cn { font-size: 19px; font-weight: 700; }
+  .next-en { font-size: 13px; font-weight: 400; color: rgba(245, 247, 250, 0.45); }
+  .next-time { font-size: 14px; color: rgba(245, 247, 250, 0.6); margin-top: 2px; }
+  .footer { text-align: center; font-size: 12px; color: rgba(245, 247, 250, 0.3); margin-top: 8px; }
+</style>
+<div class="page">
+  <div class="header">
+    <div><span class="logo">APEX</span><span class="title">地图轮换</span></div>
+    <span class="subtitle">更新于 {{ updated }}</span>
+  </div>
+  {% for mode in modes %}
+  <div class="mode">
+    <div class="mode-head">
+      <span class="mode-bar" style="background:{{ mode.accent }}"></span>
+      <span class="mode-cn">{{ mode.cn }}</span>
+      <span class="mode-en">{{ mode.en }}</span>
+    </div>
+    {% if mode.current %}
+    <div class="current">
+      {% if mode.current.asset %}
+      <div class="thumb"><img src="{{ mode.current.asset }}"></div>
+      {% else %}
+      <div class="thumb thumb-empty"></div>
+      {% endif %}
+      <div class="cur-info">
+        <div class="cur-label">当前地图{% if mode.current.event %} <span class="event">{{ mode.current.event }}</span>{% endif %}</div>
+        <div class="map-cn">{{ mode.current.map_cn }}</div>
+        <div class="map-en">{{ mode.current.map_en }}</div>
+        <div class="time">{{ mode.current.span }}</div>
+        {% if mode.current.remaining %}
+        <div class="bar"><div class="fill" style="width:{{ mode.current.percent }}%;background:{{ mode.accent }}"></div></div>
+        <div class="remain">剩余 {{ mode.current.remaining }}</div>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+    {% if mode.next %}
+    <div class="next">
+      {% if mode.next.asset %}
+      <div class="thumb"><img src="{{ mode.next.asset }}"></div>
+      {% else %}
+      <div class="thumb thumb-empty"></div>
+      {% endif %}
+      <div class="next-info">
+        <div class="next-label">下一张</div>
+        <div class="next-cn">{{ mode.next.map_cn }} <span class="next-en">{{ mode.next.map_en }}</span></div>
+        <div class="next-time">{{ mode.next.span }}</div>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+  <div class="footer">Data from apexlegendsstatus.com</div>
+</div>

@@ -13,3 +13,4 @@ data/
 # tests
 plugins/dontstarve/
 .env
+.env.*

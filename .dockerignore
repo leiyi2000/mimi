@@ -1,2 +1,9 @@
 plugins/**/data
 plugins/**/data/*
+
+plugins/**/.git
+plugins/**/.venv
+plugins/**/__pycache__
+plugins/**/*.py[oc]
+plugins/**/.pytest_cache
+plugins/**/.ruff_cache
