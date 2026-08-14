@@ -1,0 +1,219 @@
+<style>
+  .page {
+    width: {{ page_width }}px;
+    box-sizing: border-box;
+    background: linear-gradient(160deg, #0b0d12 0%, #14181f 55%, #191013 100%);
+    padding: 32px;
+    font-family: "{{ font_name }}", -apple-system, sans-serif;
+    color: #f5f7fa;
+  }
+  .header {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    margin-bottom: 20px;
+  }
+  .avatar {
+    width: 64px; height: 64px; border-radius: 14px; overflow: hidden;
+    margin-right: 16px; background: #1c2129; border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  .avatar img { width: 64px; height: 64px; object-fit: cover; }
+  .head-text { display: flex; flex-direction: column; }
+  .logo { font-size: 15px; font-weight: 800; letter-spacing: 2px; color: #ff4655; }
+  .name { font-size: 28px; font-weight: 800; line-height: 1.2; }
+  .row { display: grid; column-gap: 18px; align-items: stretch; }
+  .row-top { grid-template-columns: 1.15fr 0.85fr; }
+  .row-bottom { grid-template-columns: 0.92fr 1.08fr; }
+  .col { box-sizing: border-box; min-width: 0; display: flex; flex-direction: column; }
+  .card {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 18px;
+    padding: 20px 22px;
+    margin-bottom: 18px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+    display: flex; flex-direction: column; flex: 1 1 auto;
+  }
+  .card-body {
+    display: flex; flex-direction: column; flex: 1 1 auto;
+    justify-content: space-between;
+  }
+  .card-head { display: flex; flex-direction: row; align-items: center; margin-bottom: 16px; }
+  .card-bar { width: 6px; height: 20px; border-radius: 3px; margin-right: 12px; }
+  .card-title { font-size: 20px; font-weight: 800; }
+  .grid {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    column-gap: 12px; row-gap: 16px;
+    flex: 1 1 auto; align-content: space-between;
+  }
+  .cell { min-width: 0; display: flex; flex-direction: column; }
+  .cell-label { font-size: 13px; color: rgba(245, 247, 250, 0.5); white-space: nowrap; margin-bottom: 3px; }
+  .cell-value { font-size: 16px; font-weight: 700; white-space: nowrap; }
+  .legend {
+    display: flex; flex-direction: row; align-items: flex-start;
+    padding: 14px 0; border-top: 1px solid rgba(255, 255, 255, 0.07);
+  }
+  .legend:first-child { border-top: none; padding-top: 4px; }
+  .legend-thumb {
+    width: 56px; height: 56px; border-radius: 10px; overflow: hidden;
+    margin-right: 14px; background: #1c2129; flex: 0 0 auto;
+  }
+  .legend-thumb img { width: 56px; height: 56px; object-fit: cover; }
+  .legend-body { display: flex; flex-direction: column; flex: 1 1 0; min-width: 0; }
+  .legend-name { font-size: 18px; font-weight: 700; margin-bottom: 10px; }
+  .legend-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    column-gap: 12px; row-gap: 12px;
+  }
+  .mode-grid { grid-template-columns: repeat(4, 1fr); }
+  .legend-stat { min-width: 0; display: flex; flex-direction: column; }
+  .legend-stat .cell-label { font-size: 12px; white-space: nowrap; }
+  .legend-stat .cell-value { font-size: 16px; white-space: nowrap; }
+  .rank-stat {
+    display: flex; flex-direction: row; align-items: center;
+  }
+  .rank-icon { width: 32px; height: 32px; margin-right: 6px; flex: 0 0 auto; }
+  .rank-icon img { width: 32px; height: 32px; object-fit: contain; }
+  .weapon-row {
+    display: flex; flex-direction: column;
+    padding: 14px 0; border-top: 1px solid rgba(255, 255, 255, 0.07);
+  }
+  .weapon-row:first-child { border-top: none; padding-top: 4px; }
+  .weapon-name { font-size: 17px; font-weight: 700; margin-bottom: 10px; white-space: nowrap; }
+  .weapon-stats {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    column-gap: 12px;
+  }
+  .weapon-stat { min-width: 0; display: flex; flex-direction: column; }
+  .weapon-stat .cell-label { font-size: 12px; color: rgba(245, 247, 250, 0.5); white-space: nowrap; margin-bottom: 3px; }
+  .weapon-stat .cell-value { font-size: 16px; font-weight: 700; white-space: nowrap; }
+  .footer { text-align: center; font-size: 12px; color: rgba(245, 247, 250, 0.3); margin-top: 4px; }
+</style>
+<div class="page">
+  <div class="header">
+    {% if avatar %}
+    <div class="avatar"><img src="{{ avatar }}"></div>
+    {% endif %}
+    <div class="head-text">
+      <span class="logo">APEX 战绩</span>
+      <span class="name">{{ display_name }}</span>
+    </div>
+  </div>
+
+  <div class="row row-top">
+    <div class="col">
+      {% if overview %}
+      <div class="card">
+        <div class="card-head">
+          <span class="card-bar" style="background:#ff4655"></span>
+          <span class="card-title">生涯总览</span>
+        </div>
+        <div class="grid">
+          {% for row in overview %}
+          <div class="cell">
+            <span class="cell-label">{{ row.label }}</span>
+            <span class="cell-value">{{ row.value }}</span>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="col">
+      {% if weapons %}
+      <div class="card">
+        <div class="card-head">
+          <span class="card-bar" style="background:#3fa9ff"></span>
+          <span class="card-title">常用武器</span>
+        </div>
+        <div class="card-body">
+        {% for weapon in weapons %}
+        <div class="weapon-row">
+          <span class="weapon-name">{{ weapon.name }}</span>
+          <div class="weapon-stats">
+            {% for row in weapon.rows %}
+            <div class="weapon-stat">
+              <div class="cell-label">{{ row.label }}</div>
+              <div class="cell-value">{{ row.value }}</div>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+        {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="row row-bottom">
+    <div class="col">
+      {% if legends %}
+      <div class="card">
+        <div class="card-head">
+          <span class="card-bar" style="background:#ffb020"></span>
+          <span class="card-title">常用传奇</span>
+        </div>
+        <div class="card-body">
+        {% for legend in legends %}
+        <div class="legend">
+          {% if legend.image %}
+          <div class="legend-thumb"><img src="{{ legend.image }}"></div>
+          {% endif %}
+          <div class="legend-body">
+            <span class="legend-name">{{ legend.name }}</span>
+            <div class="legend-grid">
+              {% for row in legend.rows %}
+              <div class="legend-stat">
+                <span class="cell-label">{{ row.label }}</span>
+                <span class="cell-value">{{ row.value }}</span>
+              </div>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="col">
+      {% if modes %}
+      <div class="card">
+        <div class="card-head">
+          <span class="card-bar" style="background:#8b5cf6"></span>
+          <span class="card-title">模式统计</span>
+        </div>
+        <div class="card-body">
+        {% for mode in modes %}
+        <div class="legend">
+          <div class="legend-body">
+            <span class="legend-name">{{ mode.name }}</span>
+            <div class="legend-grid mode-grid">
+              {% for row in mode.rows %}
+              <div class="legend-stat">
+                <span class="cell-label">{{ row.label }}</span>
+                {% if row.icon %}
+                <div class="rank-stat">
+                  <div class="rank-icon"><img src="{{ row.icon }}"></div>
+                  <span class="cell-value">{{ row.value }}</span>
+                </div>
+                {% else %}
+                <span class="cell-value">{{ row.value }}</span>
+                {% endif %}
+              </div>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="footer">Data from ea.com</div>
+</div>

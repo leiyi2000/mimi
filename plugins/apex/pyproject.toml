@@ -10,6 +10,7 @@ dependencies = [
     "napcat-sdk>=0.6.8",
     "pytakumi>=0.1.4",
     "python-dotenv>=1.2.2",
+    "tortoise-orm>=1.1.7",
 ]
 
 [tool.ruff.lint]

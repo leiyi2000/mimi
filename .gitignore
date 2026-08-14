@@ -12,5 +12,6 @@ logs/
 data/
 # tests
 plugins/dontstarve/
+plugins/apex/tests/output/
 .env
 .env.*

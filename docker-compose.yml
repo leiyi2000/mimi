@@ -13,12 +13,6 @@ services:
             - ./data/napcat/QQ:/app/.config/QQ
             - ./data/napcat/config:/app/napcat/config
             - ./data/napcat/plugins:/app/napcat/plugins
-    mimi-init:
-        build: .
-        container_name: mimi-init
-        volumes:
-            - ./data/mini/plugins:/app/plugins
-        entrypoint: [ "sh", "-c", "cp -r /app/plugins-from-image/. /app/plugins/ || true" ]
     mimi:
         build: .
         container_name: mimi
@@ -26,9 +20,8 @@ services:
             - .env
         restart: unless-stopped
         volumes:
-            - ./data/mini/plugins:/app/plugins
+            - ./data/mini/plugins/apex/data:/app/plugins/apex/data
+            - ./data/mini/plugins/yasuo/data:/app/plugins/yasuo/data
         depends_on:
             napcat:
                 condition: service_started
-            mimi-init:
-                condition: service_completed_successfully

@@ -1,18 +1,16 @@
 import os
-import time
 import base64
-import hashlib
 import asyncio
 import logging
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from pytakumi import html_to_pic
 from napcat import Text, Image, MessageEvent
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from dispatcher import command
+from features.rendering import FONT_NAME, PAGE_WIDTH, fetch_assets, render_image
 
 
 log = logging.getLogger(__name__)
@@ -22,16 +20,7 @@ API_URL = "https://api.apexlegendsstatus.com/maprotation"
 
 CST = timezone(timedelta(hours=8))
 
-RENDER_WIDTH = 900
-DEVICE_PIXEL_RATIO = 2
-FONT_NAME = "ApexCJK"
-
-BASE_DIR = Path(__file__).resolve().parent
-TEMPLATE_DIR = BASE_DIR / "templates"
-FONT_DIR = BASE_DIR / "fonts"
-
-ASSET_CACHE_DIR = BASE_DIR.parent / "data" / "asset_cache"
-ASSET_CACHE_TTL = timedelta(days=7)
+TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 
 MODES = [
     ("ranked", "排位", "RANKED", "#ffb020"),
@@ -73,24 +62,6 @@ _env = Environment(
     loader=FileSystemLoader(TEMPLATE_DIR),
     autoescape=select_autoescape(["html", "j2"]),
 )
-
-
-def _load_fonts() -> list[dict]:
-    fonts: list[dict] = []
-    weights = [
-        ("NotoSansSC-Regular.subset.otf", 400),
-        ("NotoSansSC-Bold.subset.otf", 700),
-    ]
-    for filename, weight in weights:
-        path = FONT_DIR / filename
-        if path.exists():
-            fonts.append(
-                {"data": path.read_bytes(), "name": FONT_NAME, "weight": weight}
-            )
-    return fonts
-
-
-_fonts = _load_fonts()
 
 
 def _t_map(name: str | None) -> str:
@@ -176,7 +147,7 @@ def build_rotation_html(data: dict) -> tuple[str, list[str]] | None:
     html = _env.get_template("rotation.html.j2").render(
         modes=modes,
         updated=datetime.now(tz=CST).strftime("%m-%d %H:%M"),
-        page_width=RENDER_WIDTH // DEVICE_PIXEL_RATIO,
+        page_width=PAGE_WIDTH,
         font_name=FONT_NAME,
     )
     return html, assets
@@ -191,71 +162,6 @@ async def fetch_rotation(auth: str) -> dict:
 
     response.raise_for_status()
     return response.json()
-
-
-def _cache_path(url: str) -> Path:
-    digest = hashlib.sha256(url.encode()).hexdigest()
-    return ASSET_CACHE_DIR / digest
-
-
-def _read_cache(url: str) -> bytes | None:
-    path = _cache_path(url)
-    try:
-        age = time.time() - path.stat().st_mtime
-    except OSError:
-        return None
-    if age > ASSET_CACHE_TTL.total_seconds():
-        return None
-    try:
-        return path.read_bytes()
-    except OSError:
-        return None
-
-
-def _write_cache(url: str, content: bytes) -> None:
-    try:
-        ASSET_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        _cache_path(url).write_bytes(content)
-    except OSError:
-        log.warning("write asset cache failed: %s", url)
-
-
-async def fetch_assets(urls: list[str]) -> dict[str, bytes]:
-    images: dict[str, bytes] = {}
-    missing: list[str] = []
-    for url in urls:
-        cached = _read_cache(url)
-        if cached is not None:
-            images[url] = cached
-        else:
-            missing.append(url)
-
-    if not missing:
-        return images
-
-    async with httpx.AsyncClient(timeout=15) as http_client:
-        results = await asyncio.gather(
-            *(http_client.get(url) for url in missing),
-            return_exceptions=True,
-        )
-    for url, result in zip(missing, results):
-        if isinstance(result, Exception):
-            log.warning("fetch asset failed: %s", url)
-            continue
-        if result.status_code == 200:
-            images[url] = result.content
-            _write_cache(url, result.content)
-    return images
-
-
-def render_image(html: str, images: dict[str, bytes]) -> bytes:
-    return html_to_pic(
-        html,
-        width=RENDER_WIDTH,
-        device_pixel_ratio=DEVICE_PIXEL_RATIO,
-        images=images,
-        fonts=_fonts or None,
-    )
 
 
 @command("轮换")

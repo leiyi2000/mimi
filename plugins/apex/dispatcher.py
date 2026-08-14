@@ -26,12 +26,30 @@ def commands() -> dict[str, Handler]:
     return dict(_COMMANDS)
 
 
+def _resolve(text: str) -> tuple[Handler, str] | None:
+    text = text.strip()
+    for kw in sorted(_COMMANDS, key=len, reverse=True):
+        if text.startswith(kw):
+            return _COMMANDS[kw], text[len(kw):].strip()
+    return None
+
+
+def argument(event: MessageEvent) -> str:
+    match event:
+        case MessageEvent(message=[Text(text=text)]):
+            resolved = _resolve(text)
+            if resolved is not None:
+                return resolved[1]
+    return ""
+
+
 async def dispatch(event: MessageEvent) -> bool:
     match event:
         case MessageEvent(message=[Text(text=text)]):
-            handler = _COMMANDS.get(text.strip())
-            if handler is None:
+            resolved = _resolve(text)
+            if resolved is None:
                 return False
+            handler, _ = resolved
             await handler(event)
             return True
     return False
