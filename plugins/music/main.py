@@ -1,85 +1,68 @@
-import os
 import logging
+import asyncio
+import argparse
 
-import httpx
-from napcat import Text, IdMusic, MessageEvent, NapCatClient
+from dotenv import load_dotenv
+from napcat import Text, Json, MessageEvent, NapCatClient
 
 from settings import *
+from config import Config
+from service import MusicService, MusicError
 
 
 log = logging.getLogger(__name__)
 
 
-async def main():
-    host = os.getenv("NAPCAT_HOST", "127.0.0.1")
-    port = int(os.getenv("NAPCAT_PORT", "3001"))
-    token = os.getenv("NAPCAT_TOKEN", None)
+def parse_query(text: str) -> tuple[str, str]:
+    query = text.removeprefix("点歌")
+    if "-" in query:
+        song_name, artist_name = query.split("-", 1)
+    else:
+        song_name, artist_name = query, ""
+    return song_name.strip(), artist_name.strip()
+
+
+async def handle_request(event, service: MusicService, text: str) -> None:
+    song_name, artist_name = parse_query(text)
+    try:
+        ark = await service.request_card(song_name, artist_name)
+    except MusicError as exc:
+        await event.send_msg(Text(text=str(exc)))
+        return
+    await event.send_msg(Json(data=ark))
+
+
+async def main(config: Config) -> None:
+    service = MusicService(
+        netease_api=config.netease_api,
+        sign_api=config.sign_api,
+        sign_key=config.sign_key,
+    )
+    url = f"ws://{config.napcat_host}:{config.napcat_port}/"
 
     while True:
         try:
-            client = NapCatClient(f"ws://{host}:{port}/", token)
+            client = NapCatClient(url, config.napcat_token)
             async for event in client:
                 match event:
                     case MessageEvent(message=[Text(text=text)]) if text.startswith(
                         "点歌"
                     ):
-                        if "-" in text:
-                            song_name, artist_name = text.removeprefix("点歌").split(
-                                "-",
-                                1,
-                            )
-                        else:
-                            artist_name = ""
-                            song_name = text.removeprefix("点歌").strip()
-                        song_name = song_name.strip()
-                        artist_name = artist_name.strip()
-
-                        async with httpx.AsyncClient() as http_client:
-                            response = await http_client.get(
-                                "https://v3.alapi.cn/api/music/search",
-                                params={
-                                    "keyword": song_name,
-                                    "token": "nt2bq43yzll6s8s2trh1m6yvqcn7lm",
-                                },
-                            )
-
-                        response.raise_for_status()  # 检查HTTP状态
-                        data = response.json()
-                        if (
-                            "data" not in data
-                            or "songs" not in data["data"]
-                            or not data["data"]["songs"]
-                        ):
-                            await event.send_msg(
-                                Text(text="未找到相关歌曲，请检查歌曲名称。")
-                            )
-                            continue
-
-                        music_id = data["data"]["songs"][0]["id"]
-                        for song in data["data"]["songs"]:
-                            for artist in song["artists"]:
-                                if (
-                                    artist["name"] == artist_name
-                                    and song["name"] == song_name
-                                ):
-                                    music_id = song["id"]
-                                    break
-
-                        await event.send_msg(
-                            IdMusic(
-                                type="163",
-                                id=music_id,
-                            )
-                        )
+                        await handle_request(event, service, text)
         except Exception:  # noqa: BLE001
             import traceback
 
             log.error(traceback.format_exc())
-            await asyncio.sleep(5)  # 重连延迟
+            await asyncio.sleep(5)  # reconnect delay
 
 
 if __name__ == "__main__":
-    import asyncio
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--env-file", help="load environment variables from this file")
+    args = parser.parse_args()
+
+    if args.env_file:
+        load_dotenv(args.env_file)
 
     log.info("music plugin running")
-    asyncio.run(main())
+    asyncio.run(main(Config.from_env()))

@@ -13,6 +13,12 @@ services:
             - ./data/napcat/QQ:/app/.config/QQ
             - ./data/napcat/config:/app/napcat/config
             - ./data/napcat/plugins:/app/napcat/plugins
+    ncm-api:
+        container_name: ncm-api
+        restart: always
+        image: binaryify/netease_cloud_music_api:latest
+        ports:
+            - 3010:3000
     mimi:
         build: .
         container_name: mimi
@@ -24,4 +30,6 @@ services:
             - ./data/mini/plugins/yasuo/data:/app/plugins/yasuo/data
         depends_on:
             napcat:
+                condition: service_started
+            ncm-api:
                 condition: service_started
