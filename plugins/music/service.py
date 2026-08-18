@@ -6,6 +6,9 @@ import httpx
 
 log = logging.getLogger(__name__)
 
+SIGN_RETRIES = 3
+SIGN_RETRY_DELAY = 1.0
+
 
 class MusicError(Exception):
     """User-facing music lookup failure (message is safe to show)."""
@@ -20,11 +23,13 @@ class MusicService:
         netease_api: str,
         sign_api: str,
         sign_key: str,
+        auth=None,
         timeout: float = 20.0,
     ) -> None:
         self.netease_api = netease_api.rstrip("/")
         self.sign_api = sign_api
         self.sign_key = sign_key
+        self.auth = auth
         self.timeout = timeout
 
     async def request_card(self, song_name: str, artist_name: str) -> str:
@@ -76,9 +81,13 @@ class MusicService:
         return chosen
 
     async def _play_url(self, client, song_id):
+        params = {"id": song_id, "level": "exhigh"}
+        cookie = getattr(self.auth, "cookie", "")
+        if cookie:
+            params["cookie"] = cookie
         response = await client.get(
-            f"{self.netease_api}/song/url",
-            params={"id": song_id},
+            f"{self.netease_api}/song/url/v1",
+            params=params,
         )
         response.raise_for_status()
         data = response.json().get("data") or []
@@ -101,20 +110,27 @@ class MusicService:
         }
 
     async def _sign(self, client, *, title, singer, cover, play_url, jump_url):
-        response = await client.get(
-            self.sign_api,
-            params={
-                "key": self.sign_key,
-                "url": play_url,
-                "song": title,
-                "singer": singer,
-                "cover": cover,
-                "jump": jump_url,
-                "format": "netease",
-            },
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if payload.get("code") != 200 or not payload.get("data"):
-            raise MusicError("音乐卡片签名失败，请稍后再试。")
-        return payload["data"]
+        params = {
+            "key": self.sign_key,
+            "url": play_url,
+            "song": title,
+            "singer": singer,
+            "cover": cover,
+            "jump": jump_url,
+            "format": "netease",
+        }
+        last_exc: Exception | None = None
+        for attempt in range(SIGN_RETRIES):
+            try:
+                response = await client.get(self.sign_api, params=params)
+                response.raise_for_status()
+                payload = response.json()
+                if payload.get("code") != 200 or not payload.get("data"):
+                    raise MusicError("音乐卡片签名失败，请稍后再试。")
+                return payload["data"]
+            except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                last_exc = exc
+                log.warning("sign attempt %d failed: %r", attempt + 1, exc)
+                if attempt + 1 < SIGN_RETRIES:
+                    await asyncio.sleep(SIGN_RETRY_DELAY)
+        raise MusicError("签名服务暂时不可用，请稍后再试。") from last_exc
