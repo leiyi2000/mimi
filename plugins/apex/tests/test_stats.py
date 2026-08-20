@@ -85,7 +85,6 @@ async def test_handle_stats_uses_bound_ea_id(monkeypatch):
 
     async def fake_fetch_stats(player_name: str):
         captured.append(player_name)
-        return None
 
     monkeypatch.setattr("features.stats.fetch_stats", fake_fetch_stats)
 
