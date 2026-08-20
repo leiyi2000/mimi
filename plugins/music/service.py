@@ -32,8 +32,8 @@ class MusicService:
         self.auth = auth
         self.timeout = timeout
 
-    async def request_card(self, song_name: str, artist_name: str) -> str:
-        """Return a signed arkjson card string, or raise MusicError."""
+    async def request_card(self, song_name: str, artist_name: str) -> dict:
+        """Return a signed arkjson card object, or raise MusicError."""
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             song = await self._search(client, song_name, artist_name)
             if not song:
@@ -111,13 +111,13 @@ class MusicService:
 
     async def _sign(self, client, *, title, singer, cover, play_url, jump_url):
         params = {
-            "key": self.sign_key,
+            "ckey": self.sign_key,
             "url": play_url,
             "song": title,
             "singer": singer,
             "cover": cover,
             "jump": jump_url,
-            "format": "netease",
+            "format": "163",
         }
         last_exc: Exception | None = None
         for attempt in range(SIGN_RETRIES):
@@ -125,9 +125,12 @@ class MusicService:
                 response = await client.get(self.sign_api, params=params)
                 response.raise_for_status()
                 payload = response.json()
-                if payload.get("code") != 200 or not payload.get("data"):
+                # Success returns the ark object directly (has "app"/"view");
+                # failures come back as {"code": ...} / {"status": "error"}.
+                if not isinstance(payload, dict) or "app" not in payload:
+                    log.warning("sign rejected: %r", payload)
                     raise MusicError("音乐卡片签名失败，请稍后再试。")
-                return payload["data"]
+                return payload
             except (httpx.TransportError, httpx.HTTPStatusError) as exc:
                 last_exc = exc
                 log.warning("sign attempt %d failed: %r", attempt + 1, exc)
