@@ -35,7 +35,7 @@ class Config:
             napcat_token=os.getenv("NAPCAT_TOKEN") or None,
             netease_api=os.getenv("NETEASE_API", "http://ncm-api:3000"),
             sign_api=os.getenv(
-                "MUSIC_SIGN_API", "https://api.317ak.cn/api/QQ/qqkpqm"
+                "MUSIC_SIGN_API", "https://apii.xianyuw.cn/api/v1/qq-musicArk"
             ),
             sign_key=os.getenv("MUSIC_SIGN_KEY", ""),
             cookie_file=os.getenv("NETEASE_COOKIE_FILE", "data/netease_cookie.txt"),

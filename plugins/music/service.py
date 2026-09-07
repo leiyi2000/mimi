@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from json import JSONDecodeError
 
 import httpx
 
@@ -111,13 +112,13 @@ class MusicService:
 
     async def _sign(self, client, *, title, singer, cover, play_url, jump_url):
         params = {
-            "ckey": self.sign_key,
+            "token": self.sign_key,
             "url": play_url,
             "song": title,
             "singer": singer,
             "cover": cover,
             "jump": jump_url,
-            "format": "163",
+            "format": "netease",
         }
         last_exc: Exception | None = None
         for attempt in range(SIGN_RETRIES):
@@ -125,15 +126,26 @@ class MusicService:
                 response = await client.get(self.sign_api, params=params)
                 response.raise_for_status()
                 payload = response.json()
-                # Success returns the ark object directly (has "app"/"view");
-                # failures come back as {"code": ...} / {"status": "error"}.
-                if not isinstance(payload, dict) or "app" not in payload:
+                # Success is {"code": 200, "data": {...ark...}}; the ark object
+                # itself carries "app"/"view". Failures come back with a
+                # non-200 code and no usable data.
+                data = payload.get("data") if isinstance(payload, dict) else None
+                if not isinstance(data, dict) or "app" not in data:
                     log.warning("sign rejected: %r", payload)
                     raise MusicError("音乐卡片签名失败，请稍后再试。")
-                return payload
+                return data
             except (httpx.TransportError, httpx.HTTPStatusError) as exc:
                 last_exc = exc
                 log.warning("sign attempt %d failed: %r", attempt + 1, exc)
+                if attempt + 1 < SIGN_RETRIES:
+                    await asyncio.sleep(SIGN_RETRY_DELAY)
+            except JSONDecodeError as exc:
+                last_exc = exc
+                log.warning(
+                    "sign attempt %d returned non-JSON: %r",
+                    attempt + 1,
+                    exc,
+                )
                 if attempt + 1 < SIGN_RETRIES:
                     await asyncio.sleep(SIGN_RETRY_DELAY)
         raise MusicError("签名服务暂时不可用，请稍后再试。") from last_exc
