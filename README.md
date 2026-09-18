@@ -13,7 +13,7 @@
 自动读取各插件的 `commands.toml` 生成中文指令目录。
 
 <p align="center">
-  <img src="docs/images/help-lol.png" width="720" alt="Mimi 英雄联盟指令帮助">
+  <img src="docs/images/help.png" width="420" alt="Mimi 指令帮助">
 </p>
 
 ## 英雄联盟
