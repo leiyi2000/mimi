@@ -19,3 +19,4 @@ plugins/*/tests/output/
 .trae/
 .DS_Store
 DESIGN.md
+!docs/feature/**/design.md
