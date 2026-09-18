@@ -1,15 +1,19 @@
-import os
+import base64
 import json
+import os
 from pathlib import Path
 
 import pytest
 from napcat import Image, Text, MessageEvent
 
-from features.stats import build_stats_html, handle_stats, _t_value
+from features.rendering import render_image
+from features.stats import RENDER_WIDTH, build_stats_html, handle_stats, _t_value
 from fake_client import FakeClient
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "stats_sample.json"
+OUTPUT = Path(__file__).parent / "output" / "stats.png"
+LIVE_OUTPUT = Path(__file__).parent / "output" / "stats-live.png"
 PLAYER = "1aST_Phantom"
 
 
@@ -40,6 +44,12 @@ def test_build_stats_html_from_fixture():
     assert "生涯总览" in html
     assert "总击杀" in html
     assert any(url.startswith("https://") for url in assets)
+
+    png = render_image(html, {}, RENDER_WIDTH)
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    OUTPUT.write_bytes(png)
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert len(png) > 10_000
 
 
 def test_build_stats_html_empty():
@@ -112,3 +122,5 @@ async def test_handle_stats_smoke():
     message = client.sent[0]
     assert isinstance(message, Image)
     assert message.file.startswith("base64://")
+    LIVE_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    LIVE_OUTPUT.write_bytes(base64.b64decode(message.file.removeprefix("base64://")))

@@ -12,9 +12,10 @@ logs/
 data/
 # tests
 plugins/dontstarve/
-plugins/apex/tests/output/
+plugins/*/tests/output/
 .env
 .env.*
+!.env.example
 .trae/
 .DS_Store
 DESIGN.md

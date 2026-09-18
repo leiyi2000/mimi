@@ -1,10 +1,15 @@
+import base64
 import os
+from pathlib import Path
 
 import pytest
 from napcat import Image, MessageEvent
 
 from features.rotation import handle_rotation
 from fake_client import FakeClient
+
+
+OUTPUT = Path(__file__).parent / "output" / "rotation.png"
 
 
 def make_text_event(text: str) -> MessageEvent:
@@ -36,3 +41,5 @@ async def test_handle_rotation_smoke():
     message = client.sent[0]
     assert isinstance(message, Image)
     assert message.file.startswith("base64://")
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    OUTPUT.write_bytes(base64.b64decode(message.file.removeprefix("base64://")))

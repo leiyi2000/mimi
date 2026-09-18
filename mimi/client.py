@@ -34,7 +34,7 @@ class Client(NapCatClient):
     @classmethod
     def load_from_env(cls):
         host = os.getenv("NAPCAT_HOST", "127.0.0.1")
-        port = int(os.getenv("NAPCAT_PORT", 3001))
+        port = int(os.getenv("NAPCAT_PORT", "3001"))
         token = os.getenv("NAPCAT_TOKEN", None)
         client_type = os.getenv("NAPCAT_CLIENT_TYPE", "ws")
 

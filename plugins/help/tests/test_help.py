@@ -8,6 +8,7 @@ from poster import build_html, render_help
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[2]
+OUTPUT = Path(__file__).parent / "output" / "help-lol.png"
 
 
 def test_catalog_loads_all_visible_plugins():
@@ -73,6 +74,8 @@ def test_help_poster_renders_png():
 
     html = build_html(plugins)
     png = render_help(plugins)
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    OUTPUT.write_bytes(png)
 
     assert "LOL战绩" in html
     assert png.startswith(b"\x89PNG\r\n\x1a\n")
