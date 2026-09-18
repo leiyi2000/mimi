@@ -164,7 +164,7 @@ async def fetch_rotation(auth: str) -> dict:
     return response.json()
 
 
-@command("轮换")
+@command("APEX轮换")
 async def handle_rotation(event: MessageEvent) -> None:
     auth = os.getenv("APEX_AUTH")
     if not auth:

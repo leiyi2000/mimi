@@ -1,0 +1,27 @@
+[plugin]
+key = "music"
+name = "网易云音乐"
+description = "搜索并发送音乐卡片"
+order = 30
+
+[[commands]]
+name = "点歌"
+usage = "点歌 <歌曲名>[-歌手名]"
+description = "搜索歌曲并发送网易云音乐卡片"
+
+[[commands]]
+name = "网易云信息"
+usage = "网易云信息"
+description = "查看当前登录账号"
+
+[[commands]]
+name = "网易云登录"
+usage = "网易云登录 [MUSIC_U]"
+description = "扫码登录或设置 MUSIC_U"
+badge = "管理"
+
+[[commands]]
+name = "网易云登出"
+usage = "网易云登出"
+description = "退出当前网易云账号"
+badge = "管理"

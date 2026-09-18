@@ -26,7 +26,7 @@ def make_text_event(text: str) -> MessageEvent:
 
 @pytest.mark.skipif(not os.getenv("APEX_AUTH"), reason="APEX_AUTH not configured")
 async def test_handle_rotation_smoke():
-    event = make_text_event("轮换")
+    event = make_text_event("APEX轮换")
     client = FakeClient()
     event.bind(client)
 

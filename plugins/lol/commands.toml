@@ -1,0 +1,37 @@
+[plugin]
+key = "lol"
+name = "英雄联盟"
+description = "端游战绩与对局详情"
+order = 10
+
+[[commands]]
+name = "LOL绑定"
+usage = "LOL绑定 <昵称#编号>"
+description = "保存常用 Riot ID"
+
+[[commands]]
+name = "LOL解绑"
+usage = "LOL解绑"
+description = "清除已绑定的 Riot ID"
+
+[[commands]]
+name = "LOL战绩"
+usage = "LOL战绩 [昵称#编号]"
+description = "查询最近 8 局，省略参数时使用绑定值"
+
+[[commands]]
+name = "LOL对局"
+usage = "LOL对局 <1-8>"
+description = "查看最近一次查询中的单局详情"
+
+[[commands]]
+name = "LOL登录"
+usage = "LOL登录 [回调URL]"
+description = "管理共享掌盟登录态"
+badge = "管理"
+
+[[commands]]
+name = "LOL登出"
+usage = "LOL登出"
+description = "清除共享掌盟登录态"
+badge = "管理"

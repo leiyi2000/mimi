@@ -1,0 +1,101 @@
+<style>
+  * { box-sizing: border-box; }
+  .page { width: {{ page_width }}px; padding: 22px; background: #f4f6fa; color: #283341; font-family: "{{ font_name }}", sans-serif; }
+  .header { display: grid; grid-template-columns: 58px minmax(160px, 1fr) 82px 260px; gap: 10px; align-items: center; padding: 18px; background: #ffffff; border-bottom: 1px solid #dce2ea; }
+  .avatar { width: 58px; height: 58px; object-fit: cover; border-radius: 8px; background: #e8edf4; }
+  .title { overflow: hidden; font-size: 20px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+  .meta { margin-top: 7px; color: #7d899b; font-size: 12px; }
+  .rank { text-align: center; }
+  .rank-icon { width: 42px; height: 42px; object-fit: contain; }
+  .rank-title { margin-top: 3px; color: #5177aa; font-size: 11px; font-weight: 700; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .stat { padding-left: 12px; border-left: 1px solid #dce2ea; }
+  .stat-value { font-size: 19px; font-weight: 700; }
+  .stat-label { margin-top: 4px; color: #8a95a5; font-size: 11px; }
+  .recent { margin-top: 8px; color: #7d899b; font-size: 11px; }
+  .battle { display: grid; grid-template-columns: 112px 62px minmax(180px, 1fr) 118px 120px; gap: 10px; align-items: center; min-height: 106px; margin-top: 7px; padding: 9px 14px 9px 16px; border-left: 4px solid; }
+  .battle.win { background: #e8f2ff; border-color: #4d8df7; }
+  .battle.loss { background: #fff0f2; border-color: #f05c70; }
+  .mode { color: #446b9f; font-size: 14px; font-weight: 700; }
+  .loss .mode, .loss .battle-result { color: #e55367; }
+  .battle-time, .duration { margin-top: 7px; color: #7d899b; font-size: 11px; }
+  .battle-result { margin-top: 18px; color: #397ddd; font-size: 13px; font-weight: 700; }
+  .champion { width: 58px; height: 58px; object-fit: cover; border-radius: 50%; background: #dce2ea; }
+  .champion-name { overflow: hidden; font-size: 14px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+  .kda { margin-top: 8px; font-size: 18px; white-space: nowrap; }
+  .deaths { color: #ed5870; }
+  .ratio { margin-top: 2px; color: #7d899b; font-size: 11px; }
+  .items { display: flex; gap: 3px; margin-top: 10px; min-height: 24px; }
+  .item { width: 24px; height: 24px; object-fit: cover; background: #dce2ea; }
+  .metrics { color: #7d899b; font-size: 11px; line-height: 1.8; }
+  .metric-strong { color: #ed5870; font-size: 13px; }
+  .score { color: #56647a; }
+  .badge { display: inline-block; margin-top: 5px; padding: 2px 6px; border-radius: 8px; background: #6e7890; color: #fff; font-size: 10px; }
+  .badge.mvp { background: #7357da; }
+  .lineups { display: grid; grid-template-columns: 1fr 18px 1fr; gap: 4px; align-items: center; }
+  .team { display: grid; grid-template-columns: repeat(2, 22px); gap: 3px; justify-content: center; }
+  .team-icon { width: 22px; height: 22px; object-fit: cover; background: #dce2ea; }
+  .vs { color: #537bc2; font-size: 12px; font-style: italic; font-weight: 700; text-align: center; }
+  .empty { padding: 50px 0; text-align: center; color: #8a95a5; }
+</style>
+<div class="page">
+  <div class="header">
+    {% if player.avatar_url %}<img class="avatar" src="{{ player.avatar_url }}">{% else %}<div class="avatar"></div>{% endif %}
+    <div>
+      <div class="title">{{ player.nickname }}</div>
+      <div class="meta">{{ player.area_name }} · 最近 {{ overview.recent_games }} 局</div>
+      <div class="recent">{{ overview.recent_wins }} 胜 {{ overview.recent_games - overview.recent_wins }} 负 · 生涯 {{ overview.total_games }} 场</div>
+    </div>
+    <div class="rank">
+      {% if overview.rank_url %}<img class="rank-icon" src="{{ overview.rank_url }}">{% endif %}
+      <div class="rank-title">{{ overview.rank_title }}</div>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="stat-value">{{ overview.season_win_rate }}</div><div class="stat-label">赛季胜率</div></div>
+      <div class="stat"><div class="stat-value">{{ "%.2f"|format(overview.recent_kda) }}</div><div class="stat-label">近{{ overview.recent_games }}局 KDA</div></div>
+      <div class="stat"><div class="stat-value">{{ "%.1f"|format(overview.average_score) }}</div><div class="stat-label">近{{ overview.recent_games }}局评分</div></div>
+    </div>
+  </div>
+
+  {% for battle in battles %}
+  {% set detail = details.get(battle.game_id) %}
+  {% set target = detail.target if detail else none %}
+  <div class="battle {{ 'win' if battle.result == 1 else 'loss' }}">
+    <div>
+      <div class="mode">{{ battle.mode_name or battle.type_name or "未知模式" }}</div>
+      <div class="battle-time">{{ battle.battle_time }}</div>
+      <div class="battle-result">{{ battle.result_title or ('胜利' if battle.result == 1 else '失败') }} · {{ battle.map_name or "未知地图" }}</div>
+      {% if detail and detail.duration %}<div class="duration">{{ detail.duration }}</div>{% endif %}
+    </div>
+    {% if champion_images[battle.game_id] %}<img class="champion" src="{{ champion_images[battle.game_id] }}">{% else %}<div class="champion"></div>{% endif %}
+    <div>
+      <div class="champion-name">{{ battle.champion_name }}</div>
+      <div class="kda">{{ battle.kills }} / <span class="deaths">{{ battle.deaths }}</span> / {{ battle.assists }}</div>
+      <div class="ratio">{{ "%.2f"|format((battle.kills + battle.assists) / (battle.deaths if battle.deaths else 1)) }}:1 KDA</div>
+      <div class="items">
+        {% if target %}{% for item in target.items %}<img class="item" src="{{ item_images[item] }}">{% endfor %}{% endif %}
+      </div>
+    </div>
+    <div class="metrics">
+      {% if target %}
+      <div class="metric-strong">伤害 {{ target.damage }}</div>
+      <div>参团率 {{ "%.0f"|format(target.participation) }}%</div>
+      <div>补刀 {{ target.minions }}</div>
+      {% endif %}
+      <div class="score">评分 {{ "%.1f"|format(battle.score) }}</div>
+      {% if battle.is_mvp %}<span class="badge mvp">MVP</span>{% elif battle.is_svp %}<span class="badge mvp">SVP</span>{% endif %}
+    </div>
+    <div class="lineups">
+      <div class="team">
+        {% if detail %}{% for member in detail.my_team %}<img class="team-icon" src="{{ detail_champions[member.champion_id] }}">{% endfor %}{% endif %}
+      </div>
+      <div class="vs">VS</div>
+      <div class="team">
+        {% if detail %}{% for member in detail.opponent_team %}<img class="team-icon" src="{{ detail_champions[member.champion_id] }}">{% endfor %}{% endif %}
+      </div>
+    </div>
+  </div>
+  {% else %}
+  <div class="empty">暂无公开对局</div>
+  {% endfor %}
+</div>

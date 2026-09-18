@@ -19,6 +19,14 @@ services:
         image: binaryify/netease_cloud_music_api:latest
         ports:
             - 3010:3000
+    qimei:
+        build: ./qimei
+        container_name: qimei
+        env_file:
+            - .env
+        restart: unless-stopped
+        volumes:
+            - ./data/qimei:/data
     mimi:
         build: .
         container_name: mimi
@@ -28,8 +36,11 @@ services:
         volumes:
             - ./data/mini/plugins/apex/data:/app/plugins/apex/data
             - ./data/mini/plugins/yasuo/data:/app/plugins/yasuo/data
+            - ./data/mini/plugins/lol/data:/app/plugins/lol/data
         depends_on:
             napcat:
                 condition: service_started
             ncm-api:
+                condition: service_started
+            qimei:
                 condition: service_started

@@ -65,7 +65,7 @@ async def test_dispatch_splits_on_ideographic_space():
     assert received == ["player_id"]
 
 
-async def test_dispatch_allows_no_separator():
+async def test_dispatch_accepts_missing_separator():
     received: list[str] = []
 
     if "_t_nosep" not in commands():
@@ -78,6 +78,21 @@ async def test_dispatch_allows_no_separator():
 
     assert handled is True
     assert received == ["player_id"]
+
+
+async def test_dispatch_is_case_insensitive():
+    received: list[str] = []
+
+    if "_t_case" not in commands():
+
+        @command("_t_case")
+        async def _handler(event: MessageEvent) -> None:
+            received.append(argument(event))
+
+    handled = await dispatch(make_text_event("_T_CASE value"))
+
+    assert handled is True
+    assert received == ["value"]
 
 
 async def test_dispatch_unknown_command():

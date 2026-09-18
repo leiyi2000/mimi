@@ -31,8 +31,15 @@ class LoginSession:
         self.active = False
 
 
-def parse_query(text: str) -> tuple[str, str]:
-    query = text.removeprefix("点歌")
+def command_argument(text: str, command: str) -> str | None:
+    text = text.strip()
+    prefix = text[: len(command)]
+    if prefix.casefold() != command.casefold():
+        return None
+    return text[len(command) :].strip()
+
+
+def parse_query(query: str) -> tuple[str, str]:
     if "-" in query:
         song_name, artist_name = query.split("-", 1)
     else:
@@ -182,31 +189,30 @@ async def main(config: Config) -> None:
             async for event in client:
                 match event:
                     case MessageEvent(message=[Text(text=text)]) if (
-                        text.strip().startswith("网易云登录")
-                    ):
-                        if config.admins and str(event.user_id) not in config.admins:
+                        arg := command_argument(text, "网易云登录")
+                    ) is not None:
+                        if str(event.user_id) not in config.admins:
                             continue
-                        arg = text.strip().removeprefix("网易云登录").strip()
                         if arg:
                             asyncio.create_task(handle_set_cookie(event, auth, arg))
                         else:
                             asyncio.create_task(
                                 handle_login(event, auth, login_session)
                             )
-                    case MessageEvent(message=[Text(text=text)]) if text.strip() == (
-                        "网易云登出"
+                    case MessageEvent(message=[Text(text=text)]) if (
+                        command_argument(text, "网易云登出") == ""
                     ):
-                        if config.admins and str(event.user_id) not in config.admins:
+                        if str(event.user_id) not in config.admins:
                             continue
                         asyncio.create_task(handle_logout(event, auth))
-                    case MessageEvent(message=[Text(text=text)]) if text.strip() == (
-                        "网易云信息"
+                    case MessageEvent(message=[Text(text=text)]) if (
+                        command_argument(text, "网易云信息") == ""
                     ):
                         asyncio.create_task(handle_profile(event, auth))
-                    case MessageEvent(message=[Text(text=text)]) if text.startswith(
-                        "点歌"
-                    ):
-                        await handle_request(event, service, text)
+                    case MessageEvent(message=[Text(text=text)]) if (
+                        arg := command_argument(text, "点歌")
+                    ) is not None:
+                        await handle_request(event, service, arg)
         except Exception:  # noqa: BLE001
             import traceback
 

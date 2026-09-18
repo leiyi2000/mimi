@@ -26,9 +26,7 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
-        admins = {
-            a.strip() for a in os.getenv("MUSIC_ADMINS", "").split(",") if a.strip()
-        }
+        admins = {a.strip() for a in os.getenv("ADMINS", "").split(",") if a.strip()}
         return cls(
             napcat_host=os.getenv("NAPCAT_HOST", "127.0.0.1"),
             napcat_port=int(os.getenv("NAPCAT_PORT", "3001")),
@@ -42,4 +40,3 @@ class Config:
             cookie=_normalize_cookie(os.getenv("NETEASE_COOKIE", "")),
             admins=frozenset(admins),
         )
-

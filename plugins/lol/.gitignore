@@ -1,0 +1,10 @@
+# plugin data (sqlite, asset cache)
+data/
+tests/output/
+__pycache__/
+*.pyc
+.venv/
+DESIGN.md
+*/output
+.DS_Store
+

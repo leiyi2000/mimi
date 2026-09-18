@@ -66,7 +66,7 @@ def test_t_value_translates_tiered_ranks(value, expected):
 
 
 async def test_handle_stats_requires_argument():
-    event = make_text_event("战绩")
+    event = make_text_event("APEX战绩")
     client = FakeClient()
     event.bind(client)
 
@@ -88,7 +88,7 @@ async def test_handle_stats_uses_bound_ea_id(monkeypatch):
 
     monkeypatch.setattr("features.stats.fetch_stats", fake_fetch_stats)
 
-    event = make_text_event("战绩")
+    event = make_text_event("APEX战绩")
     client = FakeClient()
     event.bind(client)
 
@@ -102,7 +102,7 @@ async def test_handle_stats_uses_bound_ea_id(monkeypatch):
     reason="set APEX_STATS_NETWORK=1 to run the live EA API smoke test",
 )
 async def test_handle_stats_smoke():
-    event = make_text_event(f"战绩 {PLAYER}")
+    event = make_text_event(f"APEX战绩 {PLAYER}")
     client = FakeClient()
     event.bind(client)
 

@@ -1,0 +1,137 @@
+<style>
+  * { box-sizing: border-box; }
+  .page { width: {{ page_width }}px; padding: 24px; background: #f3f5f8; color: #252d38; font-family: "{{ font_name }}", sans-serif; }
+  .header { display: grid; grid-template-columns: 58px minmax(0, 1fr) 96px; gap: 14px; align-items: center; padding: 18px 20px; background: #fff; border-bottom: 1px solid #dce2ea; }
+  .avatar { width: 58px; height: 58px; object-fit: cover; border-radius: 6px; background: #e6eaf0; }
+  .title { overflow: hidden; font-size: 20px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+  .meta { margin-top: 7px; color: #7d8795; font-size: 12px; }
+  .result { text-align: right; font-size: 24px; font-weight: 700; }
+  .result.win { color: #347bd5; }
+  .result.loss { color: #de5366; }
+  .summary { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 18px; padding: 20px; background: #fff; border-bottom: 1px solid #dce2ea; }
+  .focus-icons { position: relative; width: 104px; height: 92px; }
+  .focus-champion { width: 92px; height: 92px; object-fit: cover; border-radius: 50%; background: #e6eaf0; }
+  .focus-spells { position: absolute; right: 0; bottom: 4px; display: grid; gap: 3px; }
+  .focus-spell { width: 25px; height: 25px; object-fit: cover; border: 1px solid #202632; border-radius: 3px; }
+  .focus-head { display: flex; align-items: center; gap: 9px; min-width: 0; }
+  .focus-name { overflow: hidden; font-size: 17px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+  .focus-hero { color: #6e7d91; font-size: 12px; white-space: nowrap; }
+  .badge { padding: 2px 6px; border-radius: 8px; background: #7659d7; color: #fff; font-size: 10px; font-weight: 700; }
+  .focus-body { display: grid; grid-template-columns: 132px 1fr; gap: 16px; margin-top: 9px; align-items: end; }
+  .kda { font-size: 26px; font-weight: 700; white-space: nowrap; }
+  .kda-label { margin-top: 3px; color: #8a94a3; font-size: 11px; }
+  .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .metric { padding-left: 10px; border-left: 1px solid #e1e5eb; }
+  .metric-value { font-size: 14px; font-weight: 700; }
+  .metric-label { margin-top: 3px; color: #8a94a3; font-size: 10px; }
+  .focus-augments { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 12px; }
+  .focus-augment { display: flex; align-items: center; gap: 5px; padding: 3px 7px 3px 3px; background: #f1edf9; color: #65548a; font-size: 11px; }
+  .focus-augment img { width: 22px; height: 22px; object-fit: cover; background: #333; border: 1px solid rgba(218, 176, 73, .7); border-radius: 4px; }
+  .section { margin-top: 12px; background: #fff; }
+  .section.win { border-left: 4px solid #4b8fe8; }
+  .section.loss { border-left: 4px solid #ed6375; }
+  .section-title { display: flex; justify-content: space-between; align-items: baseline; padding: 13px 14px 10px; border-bottom: 1px solid #e2e6ec; }
+  .team-name { color: #3d77c2; font-size: 15px; font-weight: 700; }
+  .loss .team-name { color: #d95869; }
+  .team-meta { color: #8a94a3; font-size: 11px; }
+  .columns, .member { display: grid; grid-template-columns: 64px 92px 74px 82px 172px 108px; gap: 6px; align-items: center; }
+  .columns { padding: 7px 10px; color: #99a2af; font-size: 10px; text-align: center; border-bottom: 1px solid #edf0f4; }
+  .columns .left { text-align: left; }
+  .member { min-height: 88px; padding: 8px 10px; border-bottom: 1px solid #edf0f4; }
+  .member:last-child { border-bottom: 0; }
+  .member.target { background: #fff8dc; }
+  .champion { width: 44px; height: 44px; object-fit: cover; border-radius: 50%; background: #e6eaf0; }
+  .hero-icons { display: grid; grid-template-columns: 44px 18px; gap: 2px; align-items: center; }
+  .spell-list { display: grid; gap: 3px; }
+  .spell { width: 18px; height: 18px; object-fit: cover; border: 1px solid #202632; border-radius: 3px; }
+  .member-name, .champion-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .member-name { font-size: 12px; font-weight: 700; }
+  .champion-name { margin-top: 4px; color: #7d8795; font-size: 10px; }
+  .member-kda { text-align: center; font-size: 12px; font-weight: 700; white-space: nowrap; }
+  .member-sub { margin-top: 4px; color: #8a94a3; font-size: 10px; font-weight: 400; }
+  .damage { text-align: right; }
+  .damage-value { font-size: 12px; font-weight: 700; }
+  .damage-track { height: 4px; margin-top: 5px; background: #edf0f4; }
+  .damage-fill { height: 4px; background: #ef6878; }
+  .augment-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; }
+  .augment { display: flex; align-items: center; gap: 4px; min-width: 0; color: #65548a; font-size: 9px; }
+  .augment img { width: 20px; height: 20px; object-fit: cover; flex: 0 0 auto; background: #333; border: 1px solid rgba(218, 176, 73, .7); border-radius: 4px; }
+  .augment span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .no-augment { color: #b0b7c1; font-size: 10px; text-align: center; }
+  .items { display: grid; grid-template-columns: repeat(4, 25px); gap: 3px; justify-content: end; min-height: 25px; }
+  .item { width: 25px; height: 25px; object-fit: cover; background: #e6eaf0; }
+  .empty { padding: 28px; text-align: center; color: #8a94a3; }
+</style>
+<div class="page">
+  <div class="header">
+    {% if player.avatar_url %}<img class="avatar" src="{{ player.avatar_url }}">{% else %}<div class="avatar"></div>{% endif %}
+    <div>
+      <div class="title">{{ player.nickname }}</div>
+      <div class="meta">{{ player.area_name }} · {{ detail.mode_name }} · {{ detail.start_time }}{% if detail.duration %} · 用时 {{ detail.duration }}{% endif %}</div>
+    </div>
+    <div class="result {{ 'win' if detail.win else 'loss' }}">{{ '胜利' if detail.win else '失败' }}</div>
+  </div>
+
+  {% if target %}
+  <div class="summary">
+    <div class="focus-icons">
+      <img class="focus-champion" src="{{ champion_images[target.uuid] }}">
+      <div class="focus-spells">{% for spell in target.summoner_spells %}<img class="focus-spell" src="{{ spell_images[spell.spell_id] }}" title="{{ spell.name }}">{% endfor %}</div>
+    </div>
+    <div>
+      <div class="focus-head">
+        <span class="focus-name">{{ target.name }}</span>
+        <span class="focus-hero">{{ target.champion_name }}</span>
+        {% if target.is_mvp %}<span class="badge">MVP</span>{% elif target.is_svp %}<span class="badge">SVP</span>{% endif %}
+        {% if target.score %}<span class="badge">{{ "%.1f"|format(target.score) }} 分</span>{% endif %}
+      </div>
+      <div class="focus-body">
+        <div><div class="kda">{{ target.kills }} / {{ target.deaths }} / {{ target.assists }}</div><div class="kda-label">{{ "%.2f"|format((target.kills + target.assists) / (target.deaths if target.deaths else 1)) }} KDA</div></div>
+        <div class="metrics">
+          <div class="metric"><div class="metric-value">{{ target.gold }}</div><div class="metric-label">经济</div></div>
+          <div class="metric"><div class="metric-value">{{ target.damage }}</div><div class="metric-label">英雄伤害</div></div>
+          <div class="metric"><div class="metric-value">{{ "%.0f"|format(target.participation) }}%</div><div class="metric-label">参团率</div></div>
+          <div class="metric"><div class="metric-value">{{ target.minions }}</div><div class="metric-label">补刀</div></div>
+        </div>
+      </div>
+      {% if target.augments %}
+      <div class="focus-augments">
+        {% for augment in target.augments %}<div class="focus-augment"><img src="{{ augment_images[augment.augment_id] }}"><span>{{ augment.name }}</span></div>{% endfor %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% macro team(title, members, won) %}
+  <div class="section {{ 'win' if won else 'loss' }}">
+    <div class="section-title"><span class="team-name">{{ title }} · {{ '胜利' if won else '失败' }}</span><span class="team-meta">{{ members|length }} 名玩家</span></div>
+    <div class="columns"><span></span><span class="left">玩家 / 英雄</span><span>KDA / 评分</span><span>英雄伤害</span><span>海克斯强化</span><span>装备</span></div>
+    {% for member in members %}
+    <div class="member {{ 'target' if member.uuid == detail.target_uuid else '' }}">
+      <div class="hero-icons">
+        <img class="champion" src="{{ champion_images[member.uuid] }}">
+        <div class="spell-list">{% for spell in member.summoner_spells %}<img class="spell" src="{{ spell_images[spell.spell_id] }}" title="{{ spell.name }}">{% endfor %}</div>
+      </div>
+      <div>
+        <div class="member-name">{{ member.name }}</div>
+        <div class="champion-name">{{ member.champion_name }} · {{ member.level }}级{% if member.is_mvp %} · MVP{% elif member.is_svp %} · SVP{% endif %}</div>
+      </div>
+      <div class="member-kda">{{ member.kills }} / {{ member.deaths }} / {{ member.assists }}<div class="member-sub">评分 {{ "%.1f"|format(member.score) }}</div><div class="member-sub">{{ member.gold }} 经济</div></div>
+      <div class="damage"><div class="damage-value">{{ member.damage }}</div><div class="damage-track"><div class="damage-fill" style="width: {{ (member.damage / max_damage * 100)|round }}%"></div></div><div class="member-sub">{{ "%.0f"|format(member.damage_percent) }}% 占比</div></div>
+      {% if member.augments %}
+      <div class="augment-list">
+        {% for augment in member.augments %}<div class="augment"><img src="{{ augment_images[augment.augment_id] }}"><span>{{ augment.name }}</span></div>{% endfor %}
+      </div>
+      {% else %}<div class="no-augment">无海克斯强化</div>{% endif %}
+      <div class="items">{% for item in member.items %}<img class="item" src="{{ item_images[item] }}">{% endfor %}</div>
+    </div>
+    {% else %}
+    <div class="empty">暂无队伍数据</div>
+    {% endfor %}
+  </div>
+  {% endmacro %}
+
+  {{ team("己方阵容", detail.my_team, detail.win) }}
+  {{ team("对方阵容", detail.opponent_team, not detail.win) }}
+</div>

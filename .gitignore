@@ -16,3 +16,5 @@ plugins/apex/tests/output/
 .env
 .env.*
 .trae/
+.DS_Store
+DESIGN.md

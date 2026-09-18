@@ -1,0 +1,10 @@
+[plugin]
+key = "chat"
+name = "温蒂"
+description = "群聊对话"
+order = 40
+
+[[commands]]
+name = "@机器人"
+usage = "@机器人 <内容>"
+description = "在群聊中与温蒂对话"

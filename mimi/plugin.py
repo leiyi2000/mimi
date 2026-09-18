@@ -3,6 +3,7 @@ import logging
 import threading
 import subprocess
 from pathlib import Path
+import tomllib
 
 
 log = logging.getLogger(__name__)
@@ -20,7 +21,27 @@ class PluginManager:
                 self.plugins.append(plugin)
                 log.info(f"load plugin {plugin.name} from {plugin}")
 
+        self._validate_command_manifests()
         self.processes: list[subprocess.Popen] = []
+
+    def _validate_command_manifests(self) -> None:
+        owners: dict[str, str] = {}
+        for plugin in self.plugins:
+            path = plugin / "commands.toml"
+            if not path.exists():
+                continue
+            with path.open("rb") as file:
+                manifest = tomllib.load(file)
+            for command in manifest.get("commands", []):
+                name = str(command["name"]).strip()
+                normalized = name.casefold()
+                owner = owners.get(normalized)
+                if owner is not None:
+                    raise ValueError(
+                        f"duplicate command {name!r} in plugins {owner!r} "
+                        f"and {plugin.name!r}"
+                    )
+                owners[normalized] = plugin.name
 
     def start(self):
         def stream_log(stream, prefix, is_error=False):

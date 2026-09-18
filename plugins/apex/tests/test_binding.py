@@ -23,7 +23,7 @@ def make_text_event(text: str, user_id: int = 10001) -> MessageEvent:
 
 
 async def test_handle_bind_requires_argument():
-    event = make_text_event("绑定")
+    event = make_text_event("APEX绑定")
     client = FakeClient()
     event.bind(client)
 
@@ -35,7 +35,7 @@ async def test_handle_bind_requires_argument():
 
 
 async def test_handle_bind_stores_ea_id():
-    event = make_text_event("绑定 1aST_Phantom", user_id=10001)
+    event = make_text_event("APEX绑定 1aST_Phantom", user_id=10001)
     client = FakeClient()
     event.bind(client)
 
@@ -47,7 +47,7 @@ async def test_handle_bind_stores_ea_id():
 async def test_handle_bind_updates_existing():
     await EABinding.create(user_id=10001, ea_id="old_id")
 
-    event = make_text_event("绑定 new_id", user_id=10001)
+    event = make_text_event("APEX绑定 new_id", user_id=10001)
     client = FakeClient()
     event.bind(client)
 

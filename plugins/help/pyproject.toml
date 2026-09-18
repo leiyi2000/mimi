@@ -1,0 +1,22 @@
+[project]
+name = "mimi-help"
+version = "0.1.0"
+description = "Extensible image command catalog for mimi"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "napcat-sdk>=0.6.8",
+    "pytakumi>=0.1.4",
+    "python-dotenv>=1.2.2",
+]
+
+[tool.ruff.lint]
+ignore = ["I001"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

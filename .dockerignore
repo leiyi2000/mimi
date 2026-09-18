@@ -1,5 +1,10 @@
+data/
+
 plugins/**/data
 plugins/**/data/*
+
+.git/
+.venv/
 
 plugins/**/.git
 plugins/**/.venv

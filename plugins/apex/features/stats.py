@@ -337,14 +337,14 @@ async def fetch_stats(player_name: str) -> dict | None:
     return response.json()
 
 
-@command("战绩")
+@command("APEX战绩")
 async def handle_stats(event: MessageEvent) -> None:
     player_name = argument(event)
     if not player_name:
         player_name = await get_bound_ea_id(event.user_id) or ""
     if not player_name:
         await event.send_msg(
-            Text(text="用法：战绩 <EA ID>，或先用「绑定 <EA ID>」绑定。")
+            Text(text="用法：APEX战绩 <EA ID>，或先用「APEX绑定 <EA ID>」绑定。")
         )
         return
 

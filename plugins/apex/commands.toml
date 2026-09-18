@@ -1,0 +1,20 @@
+[plugin]
+key = "apex"
+name = "APEX 英雄"
+description = "玩家数据与地图轮换"
+order = 20
+
+[[commands]]
+name = "APEX绑定"
+usage = "APEX绑定 <EA ID>"
+description = "保存常用 EA ID"
+
+[[commands]]
+name = "APEX战绩"
+usage = "APEX战绩 [EA ID]"
+description = "查询玩家战绩，省略参数时使用绑定值"
+
+[[commands]]
+name = "APEX轮换"
+usage = "APEX轮换"
+description = "查看当前及下一张轮换地图"

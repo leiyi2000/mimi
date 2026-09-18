@@ -1,0 +1,28 @@
+[project]
+name = "lol"
+version = "0.1.0"
+description = "LOL 战绩与对局详情查询插件（掌盟接口）"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.1",
+    "jinja2>=3.1.6",
+    "napcat-sdk>=0.6.8",
+    "pytakumi>=0.1.4",
+    "python-dotenv>=1.2.2",
+    "tortoise-orm>=1.1.7",
+]
+
+[tool.ruff.lint]
+ignore = ["I001"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "python-dotenv>=1.2.2",
+]

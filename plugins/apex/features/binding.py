@@ -14,11 +14,11 @@ async def get_bound_ea_id(user_id: int | str) -> str | None:
     return binding.ea_id if binding else None
 
 
-@command("绑定")
+@command("APEX绑定")
 async def handle_bind(event: MessageEvent) -> None:
     ea_id = argument(event)
     if not ea_id:
-        await event.send_msg(Text(text="用法：绑定 <EA ID>"))
+        await event.send_msg(Text(text="用法：APEX绑定 <EA ID>"))
         return
 
     await EABinding.update_or_create(

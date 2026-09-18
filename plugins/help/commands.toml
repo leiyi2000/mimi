@@ -1,0 +1,10 @@
+[plugin]
+key = "help"
+name = "帮助"
+description = "指令目录"
+order = 0
+
+[[commands]]
+name = "帮助"
+usage = "帮助 [插件名]"
+description = "查看全部指令或指定插件的指令"
