@@ -1,5 +1,6 @@
 from .client import MlolClient, MlolError, MlolCookies
 from .battle import RECENT_BATTLE_LIMIT, BattleService
+from .game_data import refresh as refresh_game_data
 from .models import (
     Battle,
     BattleDetail,
@@ -26,4 +27,5 @@ __all__ = [
     "PlayerOverview",
     "PlayerSearch",
     "RoleService",
+    "refresh_game_data",
 ]

@@ -10,7 +10,7 @@ from tortoise import Tortoise
 from settings import *
 from config import Config
 from auth import MlolAuth, QimeiClient
-from mlol import BattleService, MlolClient, PlayerSearch, RoleService
+from mlol import BattleService, MlolClient, PlayerSearch, RoleService, refresh_game_data
 import features  # noqa: F401
 from features import login, query
 from dispatcher import dispatch
@@ -27,6 +27,7 @@ async def init_db(config: Config) -> None:
 
 async def main(config: Config) -> None:
     await init_db(config)
+    await refresh_game_data()
 
     client = MlolClient(host=config.mlol_host)
     qimei = QimeiClient(base_url=config.qimei_url)

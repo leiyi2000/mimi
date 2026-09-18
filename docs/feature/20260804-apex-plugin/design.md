@@ -65,10 +65,13 @@ APEX战绩 [EA ID]
 
 ### 2.4 资产与渲染
 
-`features/rendering/assets.py` 以 URL 的 SHA-256 作为缓存键，默认保留七天。缓存缺失的
-资源使用同一个 `httpx.AsyncClient` 并发请求；单张失败只记录警告。`render.py` 在模块
-加载时读取字体，`render_image()` 调用 `pytakumi.html_to_pic()`。handler 通过
-`asyncio.to_thread()` 执行同步渲染，避免阻塞消息事件循环。
+`features/rendering/assets.py` 以 URL 的 SHA-256 作为缓存键，遵循 `Cache-Control`、
+`Expires`、`ETag` 和 `Last-Modified`。新鲜资源直接复用，过期资源条件请求，`304` 只更新
+元数据；源站未声明缓存策略时默认保留七天，请求失败时回退已有资源。缓存正文与元数据通过
+同目录临时文件原子替换，进程中断不会破坏旧缓存。缺失资源使用同一个 `httpx.AsyncClient`
+并发请求；单张失败只记录警告。`render.py` 在模块加载时读取字体，`render_image()` 调用
+`pytakumi.html_to_pic()`。handler 通过 `asyncio.to_thread()` 执行同步渲染，避免阻塞消息
+事件循环。
 
 ## 3. 设计取舍
 

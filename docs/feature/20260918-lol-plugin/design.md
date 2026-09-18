@@ -93,9 +93,11 @@ KDA、伤害、参团率、队伍和模式。模式只按 `game_queue_id` 判断
 ### 2.5 海报回复
 
 `battle_poster()` 和 `detail_poster()` 只把领域对象转换为 Jinja2 上下文及资产 URL。
-`fetch_assets()` 去重后读取缓存并并发下载缺失图片，单张失败可降级。`_send_poster()`
-把同步 `pytakumi` 渲染放到线程，再将 PNG 编码为 `base64://` 的 NapCat `Image`。
-渲染异常统一回复文本，不让异常退出消息循环。
+`fetch_assets()` 去重后读取缓存并并发下载缺失图片。缓存遵循 `Cache-Control`、`Expires`、
+`ETag` 和 `Last-Modified`：新鲜资源直接复用，过期资源条件请求，`304` 只更新元数据；请求失败时
+回退已经校验过的旧图片。缓存正文和元数据通过同目录临时文件原子替换，进程中断不会留下半文件。
+`_send_poster()` 把同步 `pytakumi` 渲染放到线程，再将 PNG 编码为 `base64://` 的 NapCat
+`Image`。渲染异常统一回复文本，不让异常退出消息循环。
 
 ### 2.6 Help 命令目录
 
@@ -140,6 +142,25 @@ KDA、伤害、参团率、队伍和模式。模式只按 `game_queue_id` 判断
 
 `champion_battle_url` 和 `achievements[].img_url` 由响应直接下发；前者仅在扩展名明确为
 图片时用作图片，否则回退英雄头像 CDN。
+
+### 3.1 静态资料来源与刷新
+
+`mlol/game_data.py` 提供英雄、大乱斗强化和召唤师技能的中文名与图标映射，供 `models.py`
+翻译对局字段、`posters.py` 拼图标。三张表全部可再生，仓库不再存数据文件：
+
+- **英雄**：公开 CDN `heroList/hero_list.js`（`heroId`/`alias`/`title` 与领域字段对齐）。
+- **强化**：CommunityDragon `cherry-augments.json`（zh_cn locale）提供 id 与中文名，掌盟对局响应
+  给的数字 id 即 Riot 官方 augment id。图标解析优先用 `augmentNameId` 去 `ARAM_` 前缀派生的
+  资源名命中掌盟图床 `act/img/rune/{resource}_large.png`，未命中回退 CommunityDragon 图标——这
+  修正了旧数据里通用底图误标的问题（如「面包」系列实际有专属图）。
+- **召唤师技能**：无公开清单且几乎不变，内联为 `game_data.py` 的 `SUMMONER_SPELLS` 常量。
+
+`refresh()` 在启动时（`main.py` DB 初始化后）并发拉取英雄与强化，逐条并发探测图标归属后写入
+运行缓存 `data/game_data.json`，按 `LOL_GAME_DATA_TTL_DAYS`（默认 30 天）判定新鲜度。未过期跳过
+网络；过期后携带缓存中的 `ETag` / `Last-Modified` 条件请求，`304` 直接复用领域数据并原子续期缓存。
+导入期从缓存加载（无缓存时英雄/强化为空、召唤师技能仍可用）。`refresh()` 捕获所有异常并保留
+已加载数据，网络失败不阻塞启动，英雄/强化名退化为响应原始值。`GameData.augment()` 未命中时
+返回 `None`（跳过展示，不伪造），并把原始标识去重写入 `data/unknown_augments.jsonl` 供排查。
 
 ## 4. 设计取舍
 

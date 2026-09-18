@@ -43,6 +43,28 @@ QQ OpenSDK 授权 → `access_token`+`openid` → `login_by_qq`（`mcode`=QIMEI3
 QIMEI36 由独立的 [qimei](../../qimei/README.md) 服务提供（`QIMEI_URL`，
 容器内 `http://qimei:8080`），插件仅通过 HTTP 取值。
 
+## 静态资料（英雄 / 强化 / 召唤师技能）
+
+海报把英雄 ID、大乱斗强化和召唤师技能翻译成中文名与图标。除召唤师技能外全部**实时请求 +
+缓存**，仓库不再存数据文件：
+
+- **英雄**：启动时从公开 CDN `heroList/hero_list.js` 拉取全量（id / 别名 / 中文名）。
+- **强化**：启动时从 CommunityDragon `cherry-augments.json`（zh_cn）拉取 id 与中文名，并解析
+  图标——优先命中掌盟官方图床 `act/img/rune/{resource}_large.png`，掌盟没有的通用强化回退到
+  CommunityDragon 的图标。
+- **召唤师技能**：无公开清单且几乎不变，内联为 `mlol/game_data.py` 的常量，图标用官方 gtimg。
+
+结果写入运行缓存 `data/game_data.json`，按 `LOL_GAME_DATA_TTL_DAYS`（默认 30 天）过期。未过期
+跳过网络；过期后使用源站的 `ETag` / `Last-Modified` 发起条件请求，资源未变化时只续期缓存，不重复
+下载和解析。拉取失败或断网时回退缓存；无缓存时英雄/强化名退化为掌盟响应里的原始值，跳过缺失
+图标，永不阻塞启动。未收录的强化按 `掌盟未提供的数据不伪造` 原则跳过展示，并把原始标识追加到
+`data/unknown_augments.jsonl` 供排查，不猜测名称。`data/` 为持久化卷，首次刷新后即缓存。
+
+海报图片缓存遵循浏览器式 HTTP 缓存语义：优先使用 `Cache-Control` / `Expires` 判断新鲜度，过期后
+携带 `ETag` / `Last-Modified` 验证，源站返回 `304` 时继续复用本地图片。源站没有缓存策略时使用
+`LOL_ASSET_CACHE_TTL_DAYS`（默认 7 天）作为兜底；网络异常时允许使用已校验的过期图片。缓存正文与
+元数据均先写入同目录临时文件，再原子替换正式文件，进程在写入途中退出不会破坏已有缓存。
+
 ## 设备档案
 
 QIMEI36 绑定在一份设备指纹上，由 `QIMEI_DEVICE_PROFILE` 指向的 JSON 保存，默认
