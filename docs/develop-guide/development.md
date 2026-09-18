@@ -51,7 +51,7 @@ chmod 600 .env.dev
 | Help、APEX、LOL、Music | `NAPCAT_HOST=127.0.0.1`、`NAPCAT_PORT=3001` |
 | Music | `NETEASE_API=http://127.0.0.1:3010` |
 | LOL | 本地启动 QIMEI 后使用 `QIMEI_URL=http://127.0.0.1:8080` |
-| LOL | `QIMEI_DEVICE_PROFILE` 用仓库内相对路径（默认 `data/device_profile.json`），不要指向个人主机绝对路径 |
+| LOL | 不设 `QIMEI_DEVICE_PROFILE`，用默认 `data/device_profile.json`；如需覆盖只用仓库内相对路径，不要指向个人主机绝对路径 |
 
 `.env.dev` 可以保留根 `.env` 中已有的 Token、管理员和业务密钥，但不得提交、粘贴到文档
 或打印到日志。`NETEASE_COOKIE` 留空时可运行后由管理员发送 `网易云登录` 扫码建立

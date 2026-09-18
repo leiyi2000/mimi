@@ -33,8 +33,10 @@ GETPROP_FIELDS = {
     "build_host": "ro.build.host",
 }
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_OUTPUT = _REPO_ROOT / "data" / "mini" / "plugins" / "lol" / "data" / "device_profile.json"
+# Matches auth.qimei.DEFAULT_PROFILE_PATH: the plugin's own data/ dir, which is
+# also the compose mount source, so a host-side capture lands where the plugin
+# (host or container) reads it by default.
+DEFAULT_OUTPUT = Path(__file__).resolve().parents[1] / "data" / "device_profile.json"
 
 
 def _serials(binary: str) -> list[str]:

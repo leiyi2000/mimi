@@ -44,14 +44,12 @@ chmod 600 .env
 | `ANTHROPIC_API_KEY` | 温蒂需要 | 留空 | Anthropic 兼容接口密钥 |
 | `MLOL_HOST` | 否 | `mlol.qt.qq.com` | 掌盟接口主机 |
 | `QIMEI_URL` | LOL 登录需要 | `http://qimei:8080` | QIMEI36 服务地址 |
-| `QIMEI_DEVICE_PROFILE` | 否 | `data/device_profile.json` | LOL 设备指纹档案路径，首次登录自动伪造并持久化 |
-| `QIMEI_CACHE_PATH` | 否 | `data/qimei36.json` | QIMEI36 缓存路径，以设备档案摘要为键 |
 
 资产缓存时间等常用可选项已列在 [`.env.example`](../../.env.example)，通常保持默认值
-即可。SQLite 路径由各插件使用内置默认值，不需要写入环境配置。`QIMEI_DEVICE_PROFILE`
-和 `QIMEI_CACHE_PATH` 必须落在持久且可写的目录：档案漂移会使 QIMEI36 缓存失效并重新
-注册，等价于更换设备，可能触发掌盟风控。生成方式见
-[LOL 插件说明](../../plugins/lol/README.md#设备档案)。
+即可。SQLite 路径与 LOL 设备档案（`QIMEI_DEVICE_PROFILE`、`QIMEI_CACHE_PATH`）由插件
+使用内置默认值，位于各自 `data/` 目录，通常不需要写入环境配置。该 `data/` 目录必须
+持久且可写：设备档案漂移会使 QIMEI36 缓存失效并重新注册，等价于更换设备，可能触发掌盟
+风控。设备档案的生成方式见 [LOL 插件说明](../../plugins/lol/README.md#设备档案)。
 
 ### 1.3 外部凭据
 
