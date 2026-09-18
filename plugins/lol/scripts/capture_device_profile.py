@@ -33,7 +33,8 @@ GETPROP_FIELDS = {
     "build_host": "ro.build.host",
 }
 
-DEFAULT_OUTPUT = Path(__file__).resolve().parent / "data" / "device_profile.json"
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_OUTPUT = _REPO_ROOT / "data" / "mini" / "plugins" / "lol" / "data" / "device_profile.json"
 
 
 def _serials(binary: str) -> list[str]:

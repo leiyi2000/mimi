@@ -7,7 +7,7 @@ from mlol.client import MlolClient, MlolCookies
 log = logging.getLogger(__name__)
 
 # LOL endgame game_id under the mlol account system. Confirm against the
-# getgamelist response during integration (see DESIGN.md §8).
+# getgamelist response during integration.
 LOL_GAME_ID = "1"
 
 

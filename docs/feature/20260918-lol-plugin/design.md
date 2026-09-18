@@ -107,21 +107,56 @@ KDA、伤害、参团率、队伍和模式。模式只按 `game_queue_id` 判断
 根 `PluginManager` 在进程启动前再次校验命令名全局唯一。Help 负责展示时的数据完整性，
 根进程负责启动前拒绝歧义，两层校验使用同一批清单但职责不同。
 
-## 3. 设计取舍
+## 3. 接口与资源契约
+
+掌盟接口以 `https://mlol.qt.qq.com` 为主机，请求体 JSON，响应统一
+`{result, msg, data}`：仅 `result == 0` 视为成功，`result == 100` 的隐私或未授权提示
+原样回传给用户。业务鉴权走 Cookie 头，由 `mlol/client.py` 统一注入，凭据不入日志。
+
+| 接口 | 方法 | 用途 |
+| --- | --- | --- |
+| `/go/customize_search/search_type_keyword` | GET | 昵称搜索，`lolIntent` 提供 `scene`/`uuid`/`regionId` |
+| `/go/account/getgamelist` | POST | 列出共享账号下的游戏 |
+| `/go/account/get_roles_by_game_v2` | POST | 解析共享账号端游角色的 `scene`/`uuid`/`areaId` |
+| `/go/battle_info/get_battle_list` | POST | 战绩列表，`next_start_idx` 分页，`is_hide_battle` 标记隐藏 |
+| `/go/battle_info/get_battle_detail_h5` | POST | 单局详情，`start_time` 取自摘要 `champion_battle_url` |
+| `/go/auth/login_by_qq` | POST | QQ 授权换共享票据 |
+| `refresh_client_ticket` · `get_web_ticket` · `get_client_tmp_ticket` · `refresh_third_token` | POST | 按需续期各类票据 |
+
+续期按上游返回的刷新窗口惰性触发：长期票是唯一需要保活的，web ticket 由长期票现换，
+闲置或已登出的账号不产生请求。战绩摘要字段（`champion_id`、KDA、`game_result`、
+`game_queue_id`、`battle_time`、`game_score`、`champion_battle_url`、`achievements[]`）
+由 `mlol/models.py` 的 dataclass 解析为领域对象。
+
+海报资产层按稳定规则拼接公开 CDN，并做 sha256 磁盘缓存：
+
+```text
+英雄头像   https://down.qq.com/lolapp/lol/hero/head/{championId}.png
+英雄立绘   https://game.gtimg.cn/images/lol/act/img/zmheropage/{championId}.jpg
+装备图标   https://game.gtimg.cn/images/lol/act/img/item/{itemId}.png
+召唤师头像 https://down.qq.com/lolapp/lol/summoner/profileicon/{iconId}.jpg
+英雄列表   https://game.gtimg.cn/images/lgamem/act/lrlib/js/heroList/hero_list.js
+```
+
+`champion_battle_url` 和 `achievements[].img_url` 由响应直接下发；前者仅在扩展名明确为
+图片时用作图片，否则回退英雄头像 CDN。
+
+## 4. 设计取舍
 
 掌盟依赖原生 QIMEI 注册，但设备身份和登录会话属于 LOL 业务。QIMEI 服务因此只接受
 原生配置并返回 QIMEI36，不持有玩家绑定、票据或设备缓存。命令说明使用 TOML 清单作为
 机器可读契约，让帮助页不再解析各插件实现。
 
-## 4. 状态与边界
+## 5. 状态与边界
 
 - 掌盟请求固定使用 `lolapp/12.8.1 (Android)` User-Agent。
 - 模式按 `game_queue_id` 判断：`450` 为极地大乱斗，`3270` 为海克斯大乱斗。
 - 掌盟未返回的数据不估算或伪装成隐藏分/MMR。
 - 新增或修改命令时同步处理器、`commands.toml`、插件 README 和测试。
 - OAuth 回调、Cookie、Token、设备标识和数据库不进入日志、文档或 Git。
+- 本期只做端游 LOL 与 QQ 授权；手游、云顶、王者和微信登录不在范围内。
 
-## 5. 失败行为
+## 6. 失败行为
 
 - QIMEI 服务不可用、返回值格式错误或原生注册失败：登录停在设备初始化阶段。
 - OAuth 回调缺字段或掌盟响应缺票据：不创建共享会话。
@@ -131,7 +166,7 @@ KDA、伤害、参团率、队伍和模式。模式只按 `game_queue_id` 判断
 - 图片下载或渲染失败：缺失资产继续渲染；整体渲染失败则回复文本。
 - 命令清单无效：Help 返回加载失败；全局命令冲突则根进程拒绝启动。
 
-## 6. 验证
+## 7. 验证
 
 修改时覆盖命令去重、帮助目录聚合、登录权限、搜索到战绩链路、绑定、固定响应解析、
 海报 PNG 和 QIMEI 健康检查。战绩、详情和帮助图片测试必须将最终 PNG 写入各自

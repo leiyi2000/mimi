@@ -43,6 +43,29 @@ QQ OpenSDK 授权 → `access_token`+`openid` → `login_by_qq`（`mcode`=QIMEI3
 QIMEI36 由独立的 [qimei](../../qimei/README.md) 服务提供（`QIMEI_URL`，
 容器内 `http://qimei:8080`），插件仅通过 HTTP 取值。
 
+## 设备档案
+
+QIMEI36 绑定在一份设备指纹上，由 `QIMEI_DEVICE_PROFILE` 指向的 JSON 保存，默认
+`data/device_profile.json`。它既用于向 qimei 服务注册 QIMEI36，也填充 QQ 授权链接展示的
+设备信息。QIMEI36 缓存以该档案的摘要为键：档案不变则复用缓存、跳过注册；档案变动则重新注册。
+
+生成方式，任选其一：
+
+- **自动伪造（默认）**：不配置任何东西。首次 `LOL登录` 时若档案不存在，插件从内置真实机型
+  模板随机选一台、只随机化每份安装独有的标识，写盘后跨重启稳定。适合大多数场景。
+- **抓取真机（可选）**：连上开启 USB 调试的安卓机，运行脚本把真机指纹写入档案。
+
+  ```bash
+  uv run python scripts/capture_device_profile.py --output data/device_profile.json
+  # 连接多台设备时追加 --serial <序列号>
+  ```
+
+- **手写 JSON（可选）**：把符合字段的 JSON 放到该路径，缺失字段用默认值补齐。
+
+自动伪造只在首次随机一次，之后不变；**风险来自档案丢失或漂移**：档案一变，QIMEI36 缓存
+失效并重新注册，等价于「换了一台新设备」，可能触发掌盟风控。因此务必让档案所在的 `data/`
+目录持久化（容器挂载卷、路径可写），不要指向会被清理的临时或外部路径。
+
 ## 本地运行
 
 ```bash
