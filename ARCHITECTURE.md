@@ -106,7 +106,7 @@ main / config
 | --- | --- | --- |
 | QQ 登录与 NapCat 配置 | NapCat | `data/napcat/` |
 | APEX 用户绑定与资产 | APEX 插件 | `data/mini/plugins/apex/data/` |
-| LOL 用户绑定、唯一共享会话、设备 profile、QIMEI36 | LOL 插件 | `data/mini/plugins/lol/data/` |
+| LOL 端游/手游独立用户绑定、唯一共享会话、设备 profile、QIMEI36 | LOL 插件 | `data/mini/plugins/lol/data/` |
 | 群消息与下载图片 | Yasuo 插件 | `data/mini/plugins/yasuo/data/` |
 | QIMEI 所需固定 APK | QIMEI 服务 | `data/qimei/` |
 | 网易云 Cookie | Music 插件 | 配置的数据文件 |
@@ -116,8 +116,8 @@ LOL 插件以 profile digest 校验 QIMEI36 缓存，缓存未命中时才调用
 
 ## LOL 核心链路
 
-管理员通过 QQ OAuth 建立唯一共享掌盟会话。普通用户绑定 Riot ID 或直接输入昵称，
-插件先搜索玩家，再查询战绩：
+管理员通过 QQ OAuth 建立唯一共享掌盟会话。普通用户绑定 Riot ID、手游角色名或直接
+输入昵称，插件先按游戏类型搜索玩家，再查询战绩：
 
 ```text
 昵称
@@ -127,6 +127,10 @@ LOL 插件以 profile digest 校验 QIMEI36 缓存，缓存未命中时才调用
   -> 能力信息 + 各局详情
   -> 中文战绩海报
 ```
+
+手游链路使用 `gameId=lgame` 和搜索结果的 `lgameIntent`，再调用
+`/go/lgame_battle_info/battle_list`、`overview` 和 `detail_v2`。端游与手游共享登录态，
+但绑定表和进程内最近查询状态彼此独立。
 
 掌盟请求固定使用 `lolapp/12.8.1 (Android)` User-Agent。模式以 `game_queue_id`
 判断：`450` 为极地大乱斗，`3270` 为海克斯大乱斗。掌盟未提供的隐藏分/MMR 不估算。

@@ -1,0 +1,46 @@
+{
+  "result": 0,
+  "msg": "",
+  "next": "cursor-page-2",
+  "private_status": false,
+  "wins": [
+    {"type": "排位赛", "num": 36},
+    {"type": "符文大乱斗", "num": 14}
+  ],
+  "data": [
+    {
+      "avatar": "https://game.gtimg.cn/images/lol/act/img/champion/Ahri.png",
+      "gameResultTitle": "胜利",
+      "game_type": "符文大乱斗",
+      "kill": 12,
+      "death": 3,
+      "assist": 18,
+      "time": 1789821000,
+      "win_flag": 1,
+      "intent": "https://lolm.qq.com/detail?guid=fixture-guid-1&izoneareaid=1001&scene=fixture-scene&userId=fixture-target",
+      "heroid": "10103",
+      "is_mvp": 1,
+      "is_svp": 0,
+      "main_honor_url": [
+        {
+          "icon_url": "https://game.gtimg.cn/images/lol/act/img/lolm/battlehonor/2D_2.gif",
+          "desc": "本局最佳"
+        }
+      ]
+    },
+    {
+      "avatar": "https://game.gtimg.cn/images/lol/act/img/champion/Ashe.png",
+      "gameResultTitle": "失败",
+      "game_type": "排位赛",
+      "kill": 7,
+      "death": 8,
+      "assist": 9,
+      "time": 1789817400,
+      "win_flag": 0,
+      "intent": "https://lolm.qq.com/detail?guid=fixture-guid-2&izoneareaid=1001&scene=fixture-scene&userId=fixture-target",
+      "heroid": "10022",
+      "is_mvp": 0,
+      "is_svp": 1
+    }
+  ]
+}

@@ -3,9 +3,14 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from mlol import (
+    MOBILE_RECENT_BATTLE_LIMIT,
     RECENT_BATTLE_LIMIT,
     BattleDetail,
     BattlePage,
+    MobileBattleDetail,
+    MobileBattlePage,
+    MobilePlayer,
+    MobilePlayerOverview,
     Player,
     PlayerOverview,
 )
@@ -19,6 +24,10 @@ BATTLE_RENDER_WIDTH = 1400
 BATTLE_PAGE_WIDTH = BATTLE_RENDER_WIDTH // 2
 DETAIL_RENDER_WIDTH = 1400
 DETAIL_PAGE_WIDTH = DETAIL_RENDER_WIDTH // 2
+MOBILE_BATTLE_RENDER_WIDTH = 1200
+MOBILE_BATTLE_PAGE_WIDTH = MOBILE_BATTLE_RENDER_WIDTH // 2
+MOBILE_DETAIL_RENDER_WIDTH = 1400
+MOBILE_DETAIL_PAGE_WIDTH = MOBILE_DETAIL_RENDER_WIDTH // 2
 _env = Environment(
     loader=FileSystemLoader(TEMPLATE_DIR),
     autoescape=select_autoescape(["html", "j2"]),
@@ -120,6 +129,76 @@ def detail_poster(player: Player, detail: BattleDetail) -> tuple[str, list[str]]
             spell_images=spell_images,
             max_damage=max((member.damage for member in members), default=1),
             page_width=DETAIL_PAGE_WIDTH,
+            font_name=FONT_NAME,
+        ),
+        assets,
+    )
+
+
+def mobile_battle_poster(
+    player: MobilePlayer,
+    page: MobileBattlePage,
+    overview: MobilePlayerOverview,
+    details: dict[str, MobileBattleDetail] | None = None,
+) -> tuple[str, list[str]]:
+    battles = page.battles[:MOBILE_RECENT_BATTLE_LIMIT]
+    details = details or {}
+    assets = [
+        url
+        for url in (
+            overview.avatar_url,
+            *(battle.champion_url for battle in battles),
+            *(url for battle in battles for url in battle.honor_urls),
+            *(
+                member.champion_url
+                for detail in details.values()
+                for member in detail.my_team.players + detail.opponent_team.players
+            ),
+            *(
+                url
+                for detail in details.values()
+                for member in detail.my_team.players + detail.opponent_team.players
+                for url in member.item_icons
+            ),
+        )
+        if url
+    ]
+    return (
+        _env.get_template("mobile_battle.html.j2").render(
+            player=player,
+            battles=battles,
+            overview=overview,
+            details=details,
+            page_width=MOBILE_BATTLE_PAGE_WIDTH,
+            font_name=FONT_NAME,
+        ),
+        assets,
+    )
+
+
+def mobile_detail_poster(
+    player: MobilePlayer,
+    detail: MobileBattleDetail,
+) -> tuple[str, list[str]]:
+    members = detail.my_team.players + detail.opponent_team.players
+    assets = [
+        url
+        for url in (
+            player.avatar_url,
+            *(member.champion_url for member in members),
+            *(url for member in members for url in member.item_icons),
+            *(url for member in members for url in member.skill_icons),
+            *(url for member in members for url in member.rune_icons),
+            *(url for member in members for url in member.honor_icons),
+        )
+        if url
+    ]
+    return (
+        _env.get_template("mobile_detail.html.j2").render(
+            player=player,
+            detail=detail,
+            target=detail.target,
+            page_width=MOBILE_DETAIL_PAGE_WIDTH,
             font_name=FONT_NAME,
         ),
         assets,

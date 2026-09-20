@@ -72,6 +72,22 @@ class MlolClient:
         cookies: MlolCookies | None = None,
         allow_guest: bool = False,
     ) -> dict | list:
+        parsed = await self.get_envelope(
+            path,
+            params,
+            cookies=cookies,
+            allow_guest=allow_guest,
+        )
+        return parsed.get("data") or {}
+
+    async def get_envelope(
+        self,
+        path: str,
+        params: dict,
+        *,
+        cookies: MlolCookies | None = None,
+        allow_guest: bool = False,
+    ) -> dict:
         headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
         if cookies is not None:
             headers["Cookie"] = cookies.header()
@@ -82,7 +98,7 @@ class MlolClient:
                 headers=headers,
             )
         response.raise_for_status()
-        return self._data(response.json(), allow_guest)
+        return self._envelope(response.json(), allow_guest)
 
     async def post(
         self,
@@ -92,6 +108,22 @@ class MlolClient:
         cookies: MlolCookies | None = None,
         allow_guest: bool = False,
     ) -> dict | list:
+        parsed = await self.post_envelope(
+            path,
+            body,
+            cookies=cookies,
+            allow_guest=allow_guest,
+        )
+        return parsed.get("data") or {}
+
+    async def post_envelope(
+        self,
+        path: str,
+        body: dict,
+        *,
+        cookies: MlolCookies | None = None,
+        allow_guest: bool = False,
+    ) -> dict:
         url = f"https://{self.host}{path}"
         headers = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
         if cookies is not None:
@@ -100,7 +132,7 @@ class MlolClient:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(url, content=payload, headers=headers)
         response.raise_for_status()
-        return self._data(response.json(), allow_guest)
+        return self._envelope(response.json(), allow_guest)
 
     async def post_form(
         self,
@@ -128,6 +160,10 @@ class MlolClient:
 
     @staticmethod
     def _data(parsed: object, allow_guest: bool) -> dict | list:
+        return MlolClient._envelope(parsed, allow_guest).get("data") or {}
+
+    @staticmethod
+    def _envelope(parsed: object, allow_guest: bool) -> dict:
         if not isinstance(parsed, dict):
             raise MlolError("掌盟返回格式异常。")
         result = parsed.get("result", -1)
@@ -135,4 +171,4 @@ class MlolClient:
         if not ok:
             msg = parsed.get("msg") or f"result={result}"
             raise MlolError(f"掌盟接口失败：{msg}")
-        return parsed.get("data") or {}
+        return parsed

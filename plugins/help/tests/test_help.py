@@ -1,4 +1,5 @@
 from pathlib import Path
+import struct
 
 import pytest
 
@@ -21,7 +22,7 @@ def test_catalog_loads_all_visible_plugins():
         "music",
         "chat",
     ]
-    assert sum(len(plugin.commands) for plugin in plugins) == 15
+    assert sum(len(plugin.commands) for plugin in plugins) == 19
 
 
 def test_catalog_filters_by_key_or_display_name():
@@ -80,4 +81,6 @@ def test_help_poster_renders_png():
     assert "LOL战绩" in html
     assert "APEX战绩" in html
     assert "点歌" in html
+    assert "grid-template-columns: repeat(2" in html
     assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert struct.unpack(">II", png[16:24])[0] == 1800

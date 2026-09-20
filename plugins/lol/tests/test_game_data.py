@@ -13,6 +13,14 @@ SAMPLE = {
     "champions": [
         {"id": 86, "name": "德玛西亚之力", "alias": "Garen", "title": "盖伦"},
     ],
+    "mobile_champions": [
+        {
+            "id": 10103,
+            "name": "卡萨丁",
+            "title": "虚空行者",
+            "image": "https://example/H_S_10103.png",
+        },
+    ],
     "augments": [
         {
             "id": 1001,
@@ -37,6 +45,17 @@ def test_augment_resolves_by_id_and_resource():
     assert data.augment("iamthejuggernaut").name == "泰坦的坚决"
     assert data.augment("iamthejuggernaut_large.png").name == "泰坦的坚决"
     assert data.augment({"resource_key": "iamthejuggernaut"}).name == "泰坦的坚决"
+
+
+def test_mobile_champion_uses_native_mobile_id():
+    data = GameData(SAMPLE)
+
+    champion = data.mobile_champion(10103)
+
+    assert champion is not None
+    assert champion.name == "卡萨丁"
+    assert champion.image_url == "https://example/H_S_10103.png"
+    assert data.mobile_champion(103) is None
 
 
 def test_unknown_augment_returns_none_and_is_recorded_once(tmp_path, monkeypatch):
@@ -140,6 +159,7 @@ async def test_refresh_revalidates_stale_sources_with_cached_validators(
                 "etag": '"heroes-v1"',
                 "last_modified": "Wed, 17 Sep 2026 10:00:00 GMT",
             },
+            game_data.MOBILE_HERO_LIST_URL: {"etag": '"mobile-heroes-v1"'},
             game_data.CHERRY_AUGMENTS_URL: {"etag": '"augments-v1"'},
         },
     }
@@ -157,7 +177,7 @@ async def test_refresh_revalidates_stale_sources_with_cached_validators(
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
         await game_data.refresh(client)
 
-    assert len(requests) == 2
+    assert len(requests) == 3
     hero_request = next(
         request for request in requests if str(request.url) == game_data.HERO_LIST_URL
     )
@@ -166,10 +186,63 @@ async def test_refresh_revalidates_stale_sources_with_cached_validators(
         for request in requests
         if str(request.url) == game_data.CHERRY_AUGMENTS_URL
     )
+    mobile_request = next(
+        request
+        for request in requests
+        if str(request.url) == game_data.MOBILE_HERO_LIST_URL
+    )
     assert hero_request.headers["if-none-match"] == '"heroes-v1"'
     assert (
         hero_request.headers["if-modified-since"]
         == "Wed, 17 Sep 2026 10:00:00 GMT"
     )
     assert augment_request.headers["if-none-match"] == '"augments-v1"'
+    assert mobile_request.headers["if-none-match"] == '"mobile-heroes-v1"'
     assert json.loads(cache.read_text(encoding="utf-8")) == payload
+
+
+async def test_refresh_keeps_successful_mobile_update_when_augment_source_fails(
+    tmp_path,
+    monkeypatch,
+):
+    cache = tmp_path / "game_data.json"
+    payload = {
+        "champions": SAMPLE["champions"],
+        "augments": SAMPLE["augments"],
+        "sources": {},
+    }
+    cache.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(game_data, "CACHE_PATH", cache)
+    monkeypatch.setattr(game_data, "CACHE_TTL", timedelta(seconds=0))
+    monkeypatch.setattr(game_data, "GAME_DATA", GameData(payload))
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url == game_data.HERO_LIST_URL:
+            return httpx.Response(304, request=request)
+        if url == game_data.MOBILE_HERO_LIST_URL:
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "heroList": {
+                        "10103": {
+                            "heroId": "10103",
+                            "name": "卡萨丁",
+                            "title": "虚空行者",
+                            "avatar": "https://example/H_S_10103.png",
+                        }
+                    }
+                },
+            )
+        return httpx.Response(503, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        await game_data.refresh(client)
+
+    refreshed = json.loads(cache.read_text(encoding="utf-8"))
+    assert refreshed["mobile_champions"] == SAMPLE["mobile_champions"]
+    assert refreshed["augments"] == SAMPLE["augments"]
+    assert refreshed["refresh_incomplete"] is True
+    assert game_data.GAME_DATA.mobile_champion(10103).name == "卡萨丁"
+    assert game_data._cache_is_fresh() is False

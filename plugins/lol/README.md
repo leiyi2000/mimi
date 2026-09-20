@@ -1,9 +1,10 @@
 # lol
 
-LOL 端游战绩查询插件（掌上英雄联盟接口）。
+LOL 端游与手游战绩查询插件（掌上英雄联盟接口）。
 
 插件使用一个共享掌盟账号登录，所有用户查询均复用该登录态。目标玩家通过联盟
 昵称 ID 搜索（例如 `折断的骨头#29510`），不需要目标玩家登录。
+端游与手游的最近战绩和单局详情均使用深色海报输出。
 
 ## 命令
 
@@ -16,11 +17,21 @@ LOL 端游战绩查询插件（掌上英雄联盟接口）。
 | `LOL解绑` | 清除已绑定的昵称 |
 | `LOL战绩 <昵称#编号>` | 搜索玩家并展示最近 8 局；省略昵称时使用绑定值 |
 | `LOL对局 <1-8>` | 查询发送者最近一次战绩结果中的指定对局 |
+| `MLOL绑定 <手游昵称>` | 保存发送者常用的手游角色名 |
+| `MLOL解绑` | 清除已绑定的手游角色名 |
+| `MLOL战绩 <手游昵称>` | 搜索手游玩家并展示最近 8 局；省略昵称时使用绑定值 |
+| `MLOL对局 <1-8>` | 查询发送者最近一次手游战绩中的指定对局 |
 
 `LOL绑定` 只保存 QQ 用户自己的查询偏好，不创建登录态。所有请求都使用共享账号的
 Cookie 和 WT。目标玩家隐藏或未授权游戏数据时，插件直接返回掌盟原始限制提示。
 战绩头部的段位、赛季胜率来自能力信息接口；近 8 局 KDA 和平均评分由最近 8 局真实
 战绩计算。掌盟不提供隐藏分/MMR 字段，因此不会伪造该数据。
+
+`MLOL` 命令使用独立绑定和最近查询状态，不会覆盖或读取 `LOL` 命令的数据。手游搜索
+会自动去掉输入中的 `#编号` 后按角色名查询；同名结果无法唯一确定时要求用户换用可区分
+的角色名。手游列表展示接口直接返回的胜负、模式、英雄、KDA、时间和荣誉，详情展示双方
+阵容、评分、经济及每分钟经济、输出、承伤、参团率、补刀、推塔、技能、装备、符文及强化，
+不推导接口未提供的数据。
 
 管理员 QQ 通过 `ADMINS` 配置，多个 QQ 号使用逗号分隔。未配置时登录和登出
 命令默认不可用。
@@ -40,6 +51,17 @@ QQ OpenSDK 授权 → `access_token`+`openid` → `login_by_qq`（`mcode`=QIMEI3
   -> POST /go/battle_info/get_battle_detail_h5
 ```
 
+手游查询链路：
+
+```text
+手游角色名
+  -> GET /go/customize_search/search_type_keyword?gameId=lgame
+  -> scene + uuid
+  -> POST /go/lgame_battle_info/battle_list
+  -> POST /go/lgame_battle_info/overview
+  -> POST /go/lgame_battle_info/detail_v2
+```
+
 QIMEI36 由独立的 [qimei](../../qimei/README.md) 服务提供（`QIMEI_URL`，
 容器内 `http://qimei:8080`），插件仅通过 HTTP 取值。
 
@@ -48,7 +70,10 @@ QIMEI36 由独立的 [qimei](../../qimei/README.md) 服务提供（`QIMEI_URL`�
 海报把英雄 ID、大乱斗强化和召唤师技能翻译成中文名与图标。除召唤师技能外全部**实时请求 +
 缓存**，仓库不再存数据文件：
 
-- **英雄**：启动时从公开 CDN `heroList/hero_list.js` 拉取全量（id / 别名 / 中文名）。
+- **端游英雄**：启动时从端游公开 CDN `heroList/hero_list.js` 拉取全量
+  （id / 别名 / 中文名）。
+- **手游英雄**：从手游公开 CDN `lrlib/js/heroList/hero_list.js` 拉取完整手游 ID、
+  中文名和头像。手游与端游英雄 ID 空间不同，禁止转换后复用端游英雄表。
 - **强化**：启动时从 CommunityDragon `cherry-augments.json`（zh_cn）拉取 id 与中文名，并解析
   图标——优先命中掌盟官方图床 `act/img/rune/{resource}_large.png`，掌盟没有的通用强化回退到
   CommunityDragon 的图标。

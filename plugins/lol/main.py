@@ -10,9 +10,17 @@ from tortoise import Tortoise
 from settings import *
 from config import Config
 from auth import MlolAuth, QimeiClient
-from mlol import BattleService, MlolClient, PlayerSearch, RoleService, refresh_game_data
+from mlol import (
+    BattleService,
+    MlolClient,
+    MobileBattleService,
+    MobilePlayerSearch,
+    PlayerSearch,
+    RoleService,
+    refresh_game_data,
+)
 import features  # noqa: F401
-from features import login, query
+from features import login, mobile_query, query
 from dispatcher import dispatch
 
 
@@ -44,6 +52,11 @@ async def main(config: Config) -> None:
         auth=auth,
         search=PlayerSearch(client),
         battles=BattleService(client),
+    )
+    mobile_query.setup(
+        auth=auth,
+        search=MobilePlayerSearch(client),
+        battles=MobileBattleService(client),
     )
 
     url = f"ws://{config.napcat_host}:{config.napcat_port}/"

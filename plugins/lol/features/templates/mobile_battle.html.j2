@@ -1,0 +1,103 @@
+<style>
+  * { box-sizing: border-box; }
+  .page { width: {{ page_width }}px; padding: 22px; background: #101214; color: #eef1f4; font-family: "{{ font_name }}", sans-serif; }
+  .header { padding: 20px; background: #1b1e22; border-top: 4px solid #c89b3c; border-bottom: 1px solid #353a40; }
+  .identity { display: grid; grid-template-columns: 60px minmax(0, 1fr) auto; gap: 14px; align-items: center; }
+  .avatar { width: 60px; height: 60px; object-fit: cover; border-radius: 8px; background: #2a2f35; }
+  .title { overflow: hidden; font-size: 21px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+  .meta { margin-top: 6px; color: #9da6b1; font-size: 12px; }
+  .rank { color: #d3aa54; font-size: 14px; font-weight: 700; text-align: right; }
+  .label { margin-top: 3px; color: #929ca8; font-size: 10px; font-weight: 400; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 16px; }
+  .stat { min-height: 52px; padding: 8px 10px; border-left: 2px solid #414850; background: #22262b; }
+  .stat-title { color: #949eaa; font-size: 10px; }
+  .stat-value { margin-top: 5px; overflow: hidden; font-size: 14px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+  .stat-sub { margin-top: 2px; color: #7f8995; font-size: 9px; }
+  .battle { display: grid; grid-template-columns: 102px 52px minmax(0, 1fr) 72px 124px; gap: 10px; align-items: center; min-height: 112px; margin-top: 7px; padding: 12px 14px; background: #1b1e22; border-left: 4px solid #f06478; }
+  .battle.win { border-color: #4b9df2; }
+  .mode { overflow: hidden; color: #ff7788; font-size: 13px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+  .win .mode, .win .result { color: #67adf2; }
+  .time { margin-top: 7px; color: #949eaa; font-size: 10px; }
+  .result { margin-top: 7px; color: #ff7185; font-size: 12px; font-weight: 700; }
+  .champion { width: 50px; height: 50px; object-fit: cover; border-radius: 50%; background: #2a2f35; }
+  .kda-line { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+  .kda-line > span:first-child { flex: 0 0 auto; }
+  .kda { font-size: 18px; font-weight: 700; }
+  .death { color: #ff7185; }
+  .ratio { margin-top: 5px; color: #949eaa; font-size: 10px; }
+  .hero-name { margin-bottom: 4px; color: #c6ccd3; font-size: 11px; font-weight: 700; }
+  .performance-badge { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; min-width: 30px; height: 16px; padding: 0 5px; border-radius: 3px; color: #151719; font-size: 8px; font-weight: 800; line-height: 1; }
+  .performance-badge.mvp { background: #d3aa54; }
+  .performance-badge.svp { background: #a998e8; }
+  .honors { display: flex; justify-content: flex-end; gap: 4px; min-height: 30px; }
+  .honor { width: 24px; height: 24px; object-fit: contain; }
+  .honor-text { margin-top: 4px; overflow: hidden; color: #bca9dd; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+  .items { display: flex; gap: 2px; min-height: 20px; margin-top: 6px; }
+  .item { width: 20px; height: 20px; object-fit: cover; background: #2a2f35; }
+  .metrics { padding-left: 10px; border-left: 1px solid #353a40; color: #a7b0bb; font-size: 9px; line-height: 1.8; white-space: nowrap; }
+  .metric-strong { color: #ff7b8d; font-size: 11px; font-weight: 700; }
+  .lineups { display: grid; gap: 5px; }
+  .team { display: grid; grid-template-columns: repeat(5, 20px); gap: 2px; justify-content: end; }
+  .team-icon { width: 20px; height: 20px; object-fit: cover; border-radius: 3px; background: #2a2f35; }
+  .vs { color: #929ca8; font-size: 8px; text-align: right; }
+  .index { margin-top: 7px; color: #7f8995; font-size: 10px; text-align: right; }
+  .empty { padding: 54px 0; background: #1b1e22; color: #929ca8; text-align: center; }
+</style>
+<div class="page">
+  <div class="header">
+    <div class="identity">
+      {% if overview.avatar_url %}<img class="avatar" src="{{ overview.avatar_url }}">{% else %}<div class="avatar"></div>{% endif %}
+      <div>
+        <div class="title">{{ overview.nickname or player.nickname }}</div>
+        <div class="meta">{{ overview.area_name or player.area_name }}{% if overview.level %} · {{ overview.level }}级{% endif %} · 最近 {{ battles|length }} 局</div>
+      </div>
+      <div class="rank">{{ overview.rank_title or "暂无段位" }}<div class="label">英雄联盟手游</div></div>
+    </div>
+    {% if overview.stats %}
+    <div class="stats">
+      {% for stat in overview.stats[:6] %}
+      <div class="stat"><div class="stat-title">{{ stat.title }}</div><div class="stat-value">{{ stat.primary or "--" }}</div>{% if stat.secondary %}<div class="stat-sub">{{ stat.secondary }}</div>{% endif %}</div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% for battle in battles %}
+  {% set detail = details.get(battle.guid) %}
+  {% set target = detail.target if detail else none %}
+  <div class="battle {{ 'win' if battle.win else 'loss' }}">
+    <div>
+      <div class="mode">{{ battle.mode_name }}</div>
+      <div class="time">{{ battle.battle_time }}</div>
+      <div class="result">{{ battle.result_title or ('胜利' if battle.win else '失败') }}</div>
+      <div class="honors">{% for url in battle.honor_urls[:3] %}<img class="honor" src="{{ url }}">{% endfor %}</div>
+      {% if battle.honor_descriptions %}<div class="honor-text">{{ battle.honor_descriptions[:2]|join(" · ") }}</div>{% endif %}
+    </div>
+    {% if battle.champion_url %}<img class="champion" src="{{ battle.champion_url }}">{% else %}<div class="champion"></div>{% endif %}
+    <div>
+      <div class="hero-name">{{ battle.champion_name }}</div>
+      <div class="kda-line">
+        <span class="kda">{{ battle.kills }} / <span class="death">{{ battle.deaths }}</span> / {{ battle.assists }}</span>
+        {% if battle.is_mvp %}<span class="performance-badge mvp">MVP</span>{% elif battle.is_svp %}<span class="performance-badge svp">SVP</span>{% endif %}
+      </div>
+      <div class="ratio">{{ "%.2f"|format((battle.kills + battle.assists) / (battle.deaths if battle.deaths else 1)) }} KDA</div>
+      <div class="items">{% if target %}{% for url in target.item_icons %}<img class="item" src="{{ url }}">{% endfor %}{% endif %}</div>
+    </div>
+    <div class="metrics">
+      {% if target %}
+      <div class="metric-strong">伤害 {{ target.damage }}</div>
+      <div>经济 {{ target.gold }}</div>
+      <div>参团 {{ "%.0f"|format(target.participation) }}%</div>
+      {% else %}<div>详情不可用</div>{% endif %}
+    </div>
+    <div>
+      <div class="lineups">
+        <div class="team">{% if detail %}{% for member in detail.my_team.players %}{% if member.champion_url %}<img class="team-icon" src="{{ member.champion_url }}">{% endif %}{% endfor %}{% endif %}</div>
+        <div class="team">{% if detail %}{% for member in detail.opponent_team.players %}{% if member.champion_url %}<img class="team-icon" src="{{ member.champion_url }}">{% endif %}{% endfor %}{% endif %}</div>
+      </div>
+      <div class="index">MLOL对局 {{ loop.index }}</div>
+    </div>
+  </div>
+  {% else %}
+  <div class="empty">暂无公开手游对局</div>
+  {% endfor %}
+</div>

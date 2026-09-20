@@ -12,5 +12,6 @@
 | [APEX 数据与海报](20260804-apex-plugin/design.md) | `5f31918` | `5f31918`、`6a48909`、`0b061b2`、`2cb7cd3` | shipped |
 | [网易云共享会话](20260818-music-session/design.md) | `31f3563` | `31f3563`、`95f9b5c`、`00850ea`、`9b9b27b` | shipped |
 | [LOL 与命令目录](20260918-lol-plugin/design.md) | `c69bac9` | `c69bac9` | shipped |
+| [英雄联盟手游战绩适配](20260920-lol-mobile-game/design.md) | - | - | shipped |
 
 早期 Music 与 Niu 的接入属于插件运行时演进，在第一篇档案中说明，不额外拆文档。

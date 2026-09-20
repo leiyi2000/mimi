@@ -1,0 +1,104 @@
+<style>
+  * { box-sizing: border-box; }
+  .page { width: {{ page_width }}px; padding: 22px; background: #101214; color: #eef1f4; font-family: "{{ font_name }}", sans-serif; }
+  .header { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: center; padding: 19px 20px; background: #1b1e22; border-top: 4px solid #c89b3c; border-bottom: 1px solid #353a40; }
+  .title { overflow: hidden; font-size: 20px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+  .meta { margin-top: 6px; color: #9da6b1; font-size: 11px; }
+  .result { color: #5aa9f4; font-size: 23px; font-weight: 700; text-align: right; }
+  .result.loss { color: #ff7185; }
+  .summary { display: grid; grid-template-columns: 72px minmax(0, 1fr) 108px 62px 78px 82px 62px; gap: 9px; align-items: center; padding: 16px 20px; background: #1b1e22; }
+  .focus-icon { width: 66px; height: 66px; object-fit: cover; border-radius: 50%; background: #2a2f35; }
+  .focus-name { overflow: hidden; font-size: 15px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+  .focus-hero { margin-top: 5px; color: #9da6b1; font-size: 11px; }
+  .metric { padding-left: 11px; border-left: 1px solid #3a4047; }
+  .metric-value { font-size: 14px; font-weight: 700; white-space: nowrap; }
+  .metric-label { margin-top: 4px; color: #929ca8; font-size: 9px; }
+  .performance-badge { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; min-width: 30px; height: 16px; padding: 0 5px; border-radius: 3px; color: #151719; font-size: 8px; font-weight: 800; line-height: 1; }
+  .performance-badge.mvp { background: #d3aa54; }
+  .performance-badge.svp { background: #a998e8; }
+  .kda-line { display: flex; align-items: center; justify-content: center; gap: 5px; white-space: nowrap; }
+  .kda-line > span:first-child { flex: 0 0 auto; }
+  .summary .kda-line { justify-content: flex-start; }
+  .section { margin-top: 11px; background: #1b1e22; border-left: 4px solid #f06478; }
+  .section.win { border-color: #4b9df2; }
+  .section-head { display: flex; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid #353a40; }
+  .team-name { color: #ff7788; font-size: 14px; font-weight: 700; }
+  .win .team-name { color: #67adf2; }
+  .team-meta { color: #949eaa; font-size: 10px; }
+  .columns, .member { display: grid; grid-template-columns: 58px minmax(76px, 1fr) 94px 72px 78px 150px; gap: 7px; align-items: center; }
+  .columns { padding: 7px 10px; color: #808a96; font-size: 9px; text-align: center; border-bottom: 1px solid #2d3238; }
+  .columns .left { text-align: left; }
+  .member { min-height: 70px; padding: 8px 10px; border-bottom: 1px solid #2d3238; }
+  .member:last-child { border-bottom: 0; }
+  .member.target { background: #302a1c; }
+  .champion { width: 42px; height: 42px; object-fit: cover; border-radius: 50%; background: #2a2f35; }
+  .hero-icons { display: grid; grid-template-columns: 42px 14px; gap: 2px; align-items: center; }
+  .skills { display: grid; gap: 2px; }
+  .skill { width: 14px; height: 14px; object-fit: cover; border-radius: 2px; }
+  .name, .hero { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .name { font-size: 11px; font-weight: 700; }
+  .hero { margin-top: 4px; color: #9da6b1; font-size: 9px; }
+  .kda { font-size: 11px; font-weight: 700; text-align: center; white-space: nowrap; }
+  .sub { margin-top: 4px; color: #949eaa; font-size: 9px; font-weight: 400; }
+  .numbers { color: #c2c8d0; font-size: 10px; line-height: 1.55; text-align: center; }
+  .buffs { display: flex; flex-wrap: wrap; gap: 3px; }
+  .buff { max-width: 66px; padding: 2px 4px; overflow: hidden; background: #29233a; color: #c5b4f4; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+  .loadout { display: flex; flex-wrap: wrap; gap: 2px; margin-bottom: 3px; }
+  .loadout.runes { padding-top: 3px; border-top: 1px solid #30353b; }
+  .loadout-icon { width: 18px; height: 18px; object-fit: cover; background: #2a2f35; }
+  .empty { padding: 28px; color: #929ca8; text-align: center; }
+</style>
+<div class="page">
+  <div class="header">
+    <div><div class="title">{{ player.nickname }}</div><div class="meta">{{ player.area_name }} · {{ detail.mode_name }} · {{ detail.start_time }}{% if detail.duration %} · {{ detail.duration }}{% endif %}</div></div>
+    <div class="result {{ 'loss' if not detail.my_team.won else '' }}">{{ detail.result_title or ('胜利' if detail.my_team.won else '失败') }}</div>
+  </div>
+  {% if target %}
+  <div class="summary">
+    {% if target.champion_url %}<img class="focus-icon" src="{{ target.champion_url }}">{% else %}<div class="focus-icon"></div>{% endif %}
+    <div><div class="focus-name">{{ target.name }}</div><div class="focus-hero">{{ target.champion_name }} · {{ target.level }}级</div></div>
+    <div class="metric">
+      <div class="metric-value kda-line">
+        <span>{{ target.kills }} / {{ target.deaths }} / {{ target.assists }}</span>
+        {% if target.is_mvp %}<span class="performance-badge mvp">MVP</span>{% elif target.is_svp %}<span class="performance-badge svp">SVP</span>{% endif %}
+      </div>
+      <div class="metric-label">KDA</div>
+    </div>
+    <div class="metric"><div class="metric-value">{{ "%.1f"|format(target.score) }}</div><div class="metric-label">评分</div></div>
+    <div class="metric"><div class="metric-value">{{ target.gold }}</div><div class="metric-label">经济</div></div>
+    <div class="metric"><div class="metric-value">{{ target.damage }}</div><div class="metric-label">英雄伤害</div></div>
+    <div class="metric"><div class="metric-value">{{ "%.0f"|format(target.participation) }}%</div><div class="metric-label">参团率</div></div>
+  </div>
+  {% endif %}
+  {% macro team(label, team) %}
+  <div class="section {{ 'win' if team.won else 'loss' }}">
+    <div class="section-head"><span class="team-name">{{ label }} · {{ '胜利' if team.won else '失败' }}</span><span class="team-meta">团队经济 {{ team.gold }}</span></div>
+    <div class="columns"><span></span><span class="left">玩家 / 英雄</span><span>KDA / 评分</span><span>经济 / 输出 / 承伤</span><span>补刀 / 推塔 / 参团</span><span>装备 / 符文 / 强化</span></div>
+    {% for member in team.players %}
+    <div class="member {{ 'target' if (detail.target_id and member.identifier == detail.target_id) or member.name == detail.target_name else '' }}">
+      <div class="hero-icons">
+        {% if member.champion_url %}<img class="champion" src="{{ member.champion_url }}">{% else %}<div class="champion"></div>{% endif %}
+        <div class="skills">{% for url in member.skill_icons %}<img class="skill" src="{{ url }}">{% endfor %}</div>
+      </div>
+      <div><div class="name">{{ member.name }}</div><div class="hero">{{ member.champion_name }} · {{ member.level }}级</div></div>
+      <div class="kda">
+        <div class="kda-line">
+          <span>{{ member.kills }} / {{ member.deaths }} / {{ member.assists }}</span>
+          {% if member.is_mvp %}<span class="performance-badge mvp">MVP</span>{% elif member.is_svp %}<span class="performance-badge svp">SVP</span>{% endif %}
+        </div>
+        <div class="sub">{{ "%.1f"|format(member.score) }} 分</div>
+      </div>
+      <div class="numbers">{{ member.gold }}<br><span class="sub">{{ member.gold_per_minute }}/分</span><br><span class="sub">{{ member.damage }} / {{ member.damage_taken }}</span></div>
+      <div class="numbers">{{ member.minions }} / {{ member.towers }}<br><span class="sub">{{ "%.0f"|format(member.participation) }}% 参团</span><br><span class="sub">{{ member.rune_ids|length }} 符文</span></div>
+      <div>
+        <div class="loadout">{% for url in member.item_icons %}<img class="loadout-icon" src="{{ url }}">{% endfor %}</div>
+        {% if member.rune_icons %}<div class="loadout runes">{% for url in member.rune_icons %}<img class="loadout-icon" src="{{ url }}">{% endfor %}</div>{% endif %}
+        <div class="buffs">{% for buff in member.hex_buffs[:4] %}<span class="buff">{{ buff }}</span>{% else %}{% for rune in member.rune_effects[:3] %}<span class="buff">{{ rune }}</span>{% else %}<span class="sub">无强化</span>{% endfor %}{% endfor %}</div>
+      </div>
+    </div>
+    {% else %}<div class="empty">暂无阵容数据</div>{% endfor %}
+  </div>
+  {% endmacro %}
+  {{ team("己方阵容", detail.my_team) }}
+  {{ team("对方阵容", detail.opponent_team) }}
+</div>

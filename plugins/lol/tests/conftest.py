@@ -13,7 +13,7 @@ sys.path.insert(0, str(PLUGIN_ROOT))
 # Champions and augments are fetched from the network at runtime and cached
 # under data/. Tests must stay offline, so load pinned fixtures into the tables.
 def _load_reference_fixtures() -> None:
-    import mlol.game_data as game_data
+    from mlol import game_data
 
     def _read(name: str, key: str) -> list:
         return json.loads(
@@ -23,6 +23,10 @@ def _load_reference_fixtures() -> None:
     game_data.GAME_DATA.apply(
         {
             "champions": _read("champions_fixture.json", "champions"),
+            "mobile_champions": _read(
+                "mobile_champions_fixture.json",
+                "mobile_champions",
+            ),
             "augments": _read("augments_fixture.json", "augments"),
         }
     )

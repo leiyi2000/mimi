@@ -1,0 +1,14 @@
+{
+  "mobile_champions": [
+    {"id": 10103, "name": "卡萨丁", "title": "虚空行者", "image": "https://game.gtimg.cn/images/lgamem/act/lrlib/img/HeadIcon/H_S_10103.png"},
+    {"id": 10022, "name": "烬", "title": "戏命师", "image": "https://game.gtimg.cn/images/lgamem/act/lrlib/img/HeadIcon/H_S_10022.png"},
+    {"id": 10064, "name": "拉莫斯", "title": "披甲龙龟", "image": "https://game.gtimg.cn/images/lgamem/act/lrlib/img/HeadIcon/H_S_10064.png"},
+    {"id": 10033, "name": "布里茨", "title": "蒸汽机器人", "image": "https://game.gtimg.cn/images/lgamem/act/lrlib/img/HeadIcon/H_S_10033.png"},
+    {"id": 10035, "name": "莫德凯撒", "title": "铁铠冥魂", "image": "https://game.gtimg.cn/images/lgamem/act/lrlib/img/HeadIcon/H_S_10035.png"},
+    {"id": 10024, "name": "辛德拉", "title": "暗黑元首", "image": "https://game.gtimg.cn/images/lgamem/act/lrlib/img/HeadIcon/H_S_10024.png"},
+    {"id": 10017, "name": "卡兹克", "title": "虚空掠夺者", "image": "https://game.gtimg.cn/images/lgamem/act/lrlib/img/HeadIcon/H_S_10017.png"},
+    {"id": 10045, "name": "崔丝塔娜", "title": "麦林炮手", "image": "https://game.gtimg.cn/images/lgamem/act/lrlib/img/HeadIcon/H_S_10045.png"},
+    {"id": 10083, "name": "墨菲特", "title": "熔岩巨兽", "image": "https://game.gtimg.cn/images/lgamem/act/lrlib/img/HeadIcon/H_S_10083.png"},
+    {"id": 10037, "name": "亚索", "title": "疾风剑豪", "image": "https://game.gtimg.cn/images/lgamem/act/lrlib/img/HeadIcon/H_S_10037.png"}
+  ]
+}

@@ -6,8 +6,9 @@ from pytakumi import html_to_pic
 from catalog import Plugin
 
 
-RENDER_WIDTH = 1280
+RENDER_WIDTH = 1800
 DEVICE_PIXEL_RATIO = 2
+PAGE_WIDTH = RENDER_WIDTH // DEVICE_PIXEL_RATIO
 FONT_NAME = "HelpCJK"
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
@@ -31,9 +32,9 @@ def build_html(plugins: tuple[Plugin, ...]) -> str:
 <style>
   * {{ box-sizing: border-box; }}
   .page {{
-    width: 640px;
-    padding: 40px 42px 32px;
-    background: #151719;
+    width: {PAGE_WIDTH}px;
+    padding: 42px 46px 34px;
+    background: #101214;
     color: #f2f4f5;
     font-family: "{FONT_NAME}", sans-serif;
   }}
@@ -48,22 +49,30 @@ def build_html(plugins: tuple[Plugin, ...]) -> str:
   .plugin-head {{ display: flex; align-items: baseline; margin-bottom: 16px; }}
   .plugin-name {{ font-size: 23px; font-weight: 800; }}
   .plugin-description {{ margin-left: 12px; color: #8f989f; font-size: 14px; }}
-  .command {{
-    display: flex;
-    align-items: flex-start;
-    padding: 12px 0;
+  .command-grid {{
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 26px;
   }}
-  .command + .command {{ border-top: 1px solid #292d30; }}
+  .command {{
+    min-width: 0;
+    min-height: 76px;
+    padding: 13px 0 12px;
+    border-top: 1px solid #292d30;
+  }}
+  .command:nth-child(-n+2) {{ border-top-color: #40464b; }}
+  .command:nth-child(even) {{
+    padding-left: 26px;
+    border-left: 1px solid #292d30;
+  }}
   .usage {{
-    width: 290px;
-    flex: 0 0 290px;
     color: #45c2c9;
     font-size: 16px;
     font-weight: 700;
     overflow-wrap: anywhere;
   }}
-  .details {{ flex: 1 1 0; min-width: 0; }}
-  .description {{ color: #c9ced2; font-size: 15px; line-height: 1.45; }}
+  .details {{ min-width: 0; margin-top: 6px; }}
+  .description {{ color: #c9ced2; font-size: 14px; line-height: 1.45; }}
   .badge {{
     display: inline-block;
     margin-top: 5px;
@@ -110,7 +119,9 @@ def _plugin_html(plugin: Plugin) -> str:
       <span class="plugin-name">{escape(plugin.name)}</span>
       <span class="plugin-description">{escape(plugin.description)}</span>
     </div>
+    <div class="command-grid">
     {rows}
+    </div>
   </section>
 """
 

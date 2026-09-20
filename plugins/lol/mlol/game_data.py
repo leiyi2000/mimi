@@ -20,6 +20,9 @@ UNKNOWN_AUGMENTS_PATH = CACHE_PATH.with_name("unknown_augments.jsonl")
 CHAMPION_IMAGE_ROOT = "https://game.gtimg.cn/images/lol/act/img/champion"
 AUGMENT_IMAGE_ROOT = "https://game.gtimg.cn/images/lol/act/img/rune"
 HERO_LIST_URL = "https://game.gtimg.cn/images/lol/act/img/js/heroList/hero_list.js"
+MOBILE_HERO_LIST_URL = (
+    "https://game.gtimg.cn/images/lgamem/act/lrlib/js/heroList/hero_list.js"
+)
 CHERRY_AUGMENTS_URL = (
     "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data"
     "/global/zh_cn/v1/cherry-augments.json"
@@ -89,6 +92,14 @@ class ChampionData:
 
 
 @dataclass(frozen=True)
+class MobileChampionData:
+    champion_id: int
+    name: str
+    title: str
+    image_url: str
+
+
+@dataclass(frozen=True)
 class AugmentData:
     augment_id: int
     name: str
@@ -107,9 +118,9 @@ class SummonerSpellData:
 class GameData:
     """In-memory LOL reference tables built entirely from network + cache.
 
-    Everything is reproducible: champions from the mlol hero list, augments from
-    CommunityDragon (id, Chinese name, resolved icon). Unknown augments are logged
-    for inspection rather than guessed.
+    Desktop and mobile champions come from their separate official catalogs.
+    Augments come from CommunityDragon with resolved icons. Unknown augments are
+    logged for inspection rather than guessed.
     """
 
     def __init__(self, payload: dict | None = None) -> None:
@@ -119,6 +130,7 @@ class GameData:
             for spell_id, name, image in SUMMONER_SPELLS
         }
         self._champions: dict[int, ChampionData] = {}
+        self._mobile_champions: dict[int, MobileChampionData] = {}
         self._augments: dict[str, AugmentData] = {}
         if payload:
             self.apply(payload)
@@ -132,6 +144,15 @@ class GameData:
                 title=str(item["title"]),
             )
             for item in payload.get("champions") or []
+        }
+        self._mobile_champions = {
+            int(item["id"]): MobileChampionData(
+                champion_id=int(item["id"]),
+                name=str(item["name"]),
+                title=str(item.get("title") or ""),
+                image_url=str(item["image"]),
+            )
+            for item in payload.get("mobile_champions") or []
         }
         augments = [
             AugmentData(
@@ -158,6 +179,9 @@ class GameData:
 
     def champion(self, champion_id: int) -> ChampionData | None:
         return self._champions.get(champion_id)
+
+    def mobile_champion(self, champion_id: int) -> MobileChampionData | None:
+        return self._mobile_champions.get(champion_id)
 
     def augment(self, value: object) -> AugmentData | None:
         if not value:
@@ -212,7 +236,12 @@ def _read_cache() -> dict | None:
 
 
 def _cache_is_fresh() -> bool:
-    if _read_cache() is None:
+    cached = _read_cache()
+    if (
+        cached is None
+        or cached.get("refresh_incomplete") is True
+        or not isinstance(cached.get("mobile_champions"), list)
+    ):
         return False
     try:
         age = time() - CACHE_PATH.stat().st_mtime
@@ -273,6 +302,19 @@ def _parse_champions(response: httpx.Response) -> list[dict]:
             "title": str(hero["title"]),
         }
         for hero in heroes
+    ]
+
+
+def _parse_mobile_champions(response: httpx.Response) -> list[dict]:
+    heroes = json.loads(response.content.decode("utf-8-sig"))["heroList"]
+    return [
+        {
+            "id": int(hero["heroId"]),
+            "name": str(hero["name"]),
+            "title": str(hero.get("title") or ""),
+            "image": str(hero["avatar"]),
+        }
+        for hero in heroes.values()
     ]
 
 
@@ -341,8 +383,8 @@ async def _parse_augments(
 async def refresh(client: httpx.AsyncClient | None = None) -> None:
     """Fetch champions and augments into the data/ cache; never raises.
 
-    Skips the network while the cache is within TTL. On any failure the loaded
-    cache is kept so startup and queries keep working offline.
+    Skips the network while the cache is within TTL. Sources refresh
+    independently so one unavailable catalog cannot block updates from another.
     """
     if _cache_is_fresh():
         return
@@ -352,44 +394,79 @@ async def refresh(client: httpx.AsyncClient | None = None) -> None:
         timeout=15,
         headers={"User-Agent": USER_AGENT},
     )
+    responses = await asyncio.gather(
+        _fetch_source(http_client, HERO_LIST_URL, previous),
+        _fetch_source(http_client, MOBILE_HERO_LIST_URL, previous),
+        _fetch_source(http_client, CHERRY_AUGMENTS_URL, previous),
+        return_exceptions=True,
+    )
+    champions = previous.get("champions")
+    mobile_champions = previous.get("mobile_champions")
+    augments = previous.get("augments")
+    sources = dict(previous.get("sources") or {})
+    failures: list[str] = []
+
+    async def update_source(
+        url: str,
+        response: httpx.Response | BaseException,
+    ) -> None:
+        nonlocal champions, mobile_champions, augments
+        if isinstance(response, BaseException):
+            failures.append(url)
+            log.warning(
+                "game data source refresh failed: %s: %s",
+                url,
+                response,
+            )
+            return
+        try:
+            if response.status_code != httpx.codes.NOT_MODIFIED:
+                if url == HERO_LIST_URL:
+                    champions = _parse_champions(response)
+                elif url == MOBILE_HERO_LIST_URL:
+                    mobile_champions = _parse_mobile_champions(response)
+                else:
+                    augments = await _parse_augments(http_client, response)
+            sources[url] = _source_metadata(response, previous, url)
+        except Exception as exc:  # noqa: BLE001
+            failures.append(url)
+            log.warning(
+                "game data source parse failed: %s: %s",
+                url,
+                exc,
+            )
+
     try:
-        champion_response, augment_response = await asyncio.gather(
-            _fetch_source(http_client, HERO_LIST_URL, previous),
-            _fetch_source(http_client, CHERRY_AUGMENTS_URL, previous),
-        )
-        if champion_response.status_code == httpx.codes.NOT_MODIFIED:
-            champions = previous.get("champions")
-        else:
-            champions = _parse_champions(champion_response)
-        if augment_response.status_code == httpx.codes.NOT_MODIFIED:
-            augments = previous.get("augments")
-        else:
-            augments = await _parse_augments(http_client, augment_response)
-        if not isinstance(champions, list) or not isinstance(augments, list):
-            raise TypeError("304 response without usable cached game data")
-    except Exception:  # noqa: BLE001
-        log.warning("game data refresh failed; keeping cached data")
-        return
+        for url, response in zip(
+            (HERO_LIST_URL, MOBILE_HERO_LIST_URL, CHERRY_AUGMENTS_URL),
+            responses,
+            strict=True,
+        ):
+            await update_source(url, response)
+        if (
+            not isinstance(champions, list)
+            or not isinstance(mobile_champions, list)
+            or not isinstance(augments, list)
+        ):
+            log.warning("game data refresh incomplete; keeping cached data")
+            return
     finally:
         if owns_client:
             await http_client.aclose()
     payload = {
         "champions": champions,
+        "mobile_champions": mobile_champions,
         "augments": augments,
-        "sources": {
-            HERO_LIST_URL: _source_metadata(
-                champion_response, previous, HERO_LIST_URL
-            ),
-            CHERRY_AUGMENTS_URL: _source_metadata(
-                augment_response, previous, CHERRY_AUGMENTS_URL
-            ),
-        },
+        "sources": sources,
     }
+    if failures:
+        payload["refresh_incomplete"] = True
     GAME_DATA.apply(payload)
     _write_cache(payload)
     log.info(
-        "game data refreshed: %d champions, %d augments",
+        "game data refreshed: %d champions, %d mobile champions, %d augments",
         len(champions),
+        len(mobile_champions),
         len(augments),
     )
 

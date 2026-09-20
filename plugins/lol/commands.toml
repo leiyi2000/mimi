@@ -1,7 +1,7 @@
 [plugin]
 key = "lol"
 name = "英雄联盟"
-description = "端游战绩与对局详情"
+description = "端游与手游战绩、对局详情"
 order = 10
 
 [[commands]]
@@ -23,6 +23,26 @@ description = "查询最近 8 局，省略参数时使用绑定值"
 name = "LOL对局"
 usage = "LOL对局 <1-8>"
 description = "查看最近一次查询中的单局详情"
+
+[[commands]]
+name = "MLOL绑定"
+usage = "MLOL绑定 <手游昵称>"
+description = "保存常用手游角色"
+
+[[commands]]
+name = "MLOL解绑"
+usage = "MLOL解绑"
+description = "清除已绑定的手游角色"
+
+[[commands]]
+name = "MLOL战绩"
+usage = "MLOL战绩 [手游昵称]"
+description = "查询手游最近 8 局"
+
+[[commands]]
+name = "MLOL对局"
+usage = "MLOL对局 <1-8>"
+description = "查看最近一次手游查询中的单局详情"
 
 [[commands]]
 name = "LOL登录"

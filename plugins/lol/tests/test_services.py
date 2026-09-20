@@ -1,12 +1,29 @@
 from auth.mlol import MlolAuth, SHARED_SESSION_ID
-from mlol import Battle, BattleService, Player, PlayerSearch
+import json
+from pathlib import Path
+
+import pytest
+
+from mlol import (
+    Battle,
+    BattleService,
+    MlolClient,
+    MlolError,
+    MobileBattle,
+    MobileBattleService,
+    MobilePlayer,
+    MobilePlayerSearch,
+    Player,
+    PlayerSearch,
+)
 from models import MlolSession
 
 
 class FakeClient:
-    def __init__(self, *, get_data=None, post_data=None) -> None:
+    def __init__(self, *, get_data=None, post_data=None, envelope=None) -> None:
         self.get_data = get_data or {}
         self.post_data = post_data or {}
+        self.envelope = envelope or {}
         self.last_get = None
         self.last_post = None
         self.last_post_form = None
@@ -22,6 +39,14 @@ class FakeClient:
     async def post_form(self, path, fields, **kwargs):
         self.last_post_form = (path, fields, kwargs)
         return self.post_data
+
+    async def post_envelope(self, path, body, **kwargs):
+        self.last_post = (path, body, kwargs)
+        return self.envelope
+
+
+def fixture(name: str) -> dict:
+    return json.loads(Path(__file__).with_name(name).read_text(encoding="utf-8"))
 
 
 async def test_search_parses_verified_rn_response():
@@ -280,3 +305,131 @@ async def test_login_always_replaces_shared_session():
     assert session.mlol_user_id == "mlol-user"
     assert await MlolSession.all().count() == 1
     assert "tid=wt;" in auth.cookies(session).header()
+
+
+def test_client_envelope_preserves_mobile_pagination():
+    parsed = MlolClient._envelope(
+        {
+            "result": 100,
+            "msg": "guest",
+            "next": "cursor",
+            "private_status": False,
+            "data": [],
+        },
+        allow_guest=True,
+    )
+
+    assert parsed["next"] == "cursor"
+    assert MlolClient._data(parsed, allow_guest=True) == {}
+
+
+def test_client_envelope_rejects_business_error():
+    with pytest.raises(MlolError, match="permission denied"):
+        MlolClient._envelope(
+            {"result": 403, "msg": "permission denied"},
+            allow_guest=True,
+        )
+
+
+async def test_mobile_search_strips_tag_and_parses_lgame_intent():
+    client = FakeClient(
+        get_data={
+            "userList": [
+                {
+                    "userId": "mobile-player",
+                    "userName": "account",
+                    "userIcon": "https://example/avatar.png",
+                    "userDesc": "微信区 | 游戏昵称：手游测试玩家",
+                    "lgameIntent": (
+                        "qtpage://lgame/battle?uuid=mobile-player"
+                        "&scene=mobile-scene"
+                    ),
+                }
+            ]
+        }
+    )
+
+    player = await MobilePlayerSearch(client).find("手游测试玩家#1234", object())
+
+    assert player is not None
+    assert player.scene == "mobile-scene"
+    assert player.area_name == "微信区"
+    assert client.last_get[1]["keyWord"] == "手游测试玩家"
+    assert client.last_get[1]["gameId"] == "lgame"
+
+
+async def test_mobile_list_preserves_cursor_privacy_and_wins():
+    client = FakeClient(envelope=fixture("mobile_list_fixture.json"))
+    player = MobilePlayer(
+        uuid="mobile-player",
+        scene="fixture-scene",
+        nickname="手游测试玩家",
+        account_name="",
+        area_name="微信区",
+    )
+
+    page = await MobileBattleService(client).list(player, object())
+
+    assert client.last_post[0] == "/go/lgame_battle_info/battle_list"
+    assert client.last_post[1] == {
+        "scene": "fixture-scene",
+        "params": "",
+        "wins": "1",
+    }
+    assert client.last_post[2]["allow_guest"] is True
+    assert page.next_cursor == "cursor-page-2"
+    assert page.hidden is False
+    assert page.wins == (("排位赛", 36), ("符文大乱斗", 14))
+    assert page.battles[0].guid == "fixture-guid-1"
+    assert page.battles[0].target_id == "fixture-target"
+    assert page.battles[0].champion_name == "卡萨丁"
+    assert page.battles[0].champion_url.endswith("/H_S_10103.png")
+    assert page.battles[0].kills == 12
+    assert page.battles[0].honor_urls == ()
+    assert page.battles[0].honor_descriptions == ()
+    regular = MobileBattle.from_dict(
+        {
+            **fixture("mobile_list_fixture.json")["data"][0],
+            "is_mvp": 0,
+        },
+        "fixture-scene",
+    )
+    assert regular.honor_descriptions == ("本局最佳",)
+
+
+async def test_mobile_detail_uses_intent_identity_and_parses_teams():
+    client = FakeClient(post_data=fixture("mobile_detail_fixture.json"))
+    player = MobilePlayer(
+        uuid="fixture-target",
+        scene="fixture-scene",
+        nickname="手游测试玩家",
+        account_name="",
+        area_name="微信区",
+    )
+    battle = (
+        await MobileBattleService(
+            FakeClient(envelope=fixture("mobile_list_fixture.json"))
+        ).list(player, object())
+    ).battles[0]
+
+    detail = await MobileBattleService(client).detail(player, battle, object())
+
+    assert client.last_post[0] == "/go/lgame_battle_info/detail_v2"
+    assert client.last_post[1] == {
+        "guid": "fixture-guid-1",
+        "izoneareaid": "1001",
+        "scene": "fixture-scene",
+    }
+    assert len(detail.my_team.players) == 5
+    assert len(detail.opponent_team.players) == 5
+    assert detail.target is not None
+    assert detail.target.champion_id == 10103
+    assert detail.target.champion_name == "卡萨丁"
+    assert detail.target.champion_url.endswith("/H_S_10103.png")
+    assert detail.target.gold == 16840
+    assert detail.target.gold_per_minute == 1536
+    assert detail.target.damage == 42180
+    assert detail.target.damage_taken == 33820
+    assert detail.target.participation == 62
+    assert detail.target.rune_effects == ("先攻", "公理秘术")
+    assert detail.target.hex_buffs == ("法术觉醒", "连环爆破", "技能循环")

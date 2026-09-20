@@ -141,6 +141,8 @@ async def test_generate_battle_poster_image():
     assert '<div class="champion-name">AurelionSol</div>' not in html
     assert "戏命师" in html
     assert "深海泰坦" not in html
+    assert 'class="performance-badge mvp">MVP' in html
+    assert 'class="performance-badge svp">SVP' in html
     images = await fetch_assets(list(dict.fromkeys(urls)))
     png = render_image(html, images, BATTLE_RENDER_WIDTH)
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)

@@ -6,39 +6,39 @@ from napcat import MessageEvent, Text
 
 from auth import MlolAuth
 from dispatcher import argument, command
-from features.bind import get_binding
+from features.bind import get_mobile_binding
 from features.poster import send_poster
 from features.rendering.posters import (
-    BATTLE_RENDER_WIDTH,
-    DETAIL_RENDER_WIDTH,
-    battle_poster,
-    detail_poster,
+    MOBILE_BATTLE_RENDER_WIDTH,
+    MOBILE_DETAIL_RENDER_WIDTH,
+    mobile_battle_poster,
+    mobile_detail_poster,
 )
 from mlol import (
-    RECENT_BATTLE_LIMIT,
-    BattleDetail,
-    BattlePage,
-    BattleService,
+    MOBILE_RECENT_BATTLE_LIMIT,
     MlolError,
-    Player,
-    PlayerOverview,
-    PlayerSearch,
+    MobileBattleDetail,
+    MobileBattlePage,
+    MobileBattleService,
+    MobilePlayer,
+    MobilePlayerOverview,
+    MobilePlayerSearch,
 )
 
 
 log = logging.getLogger(__name__)
 
 _auth: MlolAuth | None = None
-_search: PlayerSearch | None = None
-_battles: BattleService | None = None
-_recent: dict[int | str, tuple[Player, BattlePage]] = {}
+_search: MobilePlayerSearch | None = None
+_battles: MobileBattleService | None = None
+_recent: dict[int | str, tuple[MobilePlayer, MobileBattlePage]] = {}
 
 
 def setup(
     *,
     auth: MlolAuth,
-    search: PlayerSearch,
-    battles: BattleService,
+    search: MobilePlayerSearch,
+    battles: MobileBattleService,
 ) -> None:
     global _auth, _search, _battles
     _auth = auth
@@ -50,19 +50,19 @@ async def _nickname(event: MessageEvent) -> str:
     nickname = argument(event)
     if nickname:
         return nickname
-    binding = await get_binding(event.user_id)
+    binding = await get_mobile_binding(event.user_id)
     return binding.nickname if binding else ""
 
 
-async def _player(event: MessageEvent) -> Player | None:
+async def _player(event: MessageEvent) -> MobilePlayer | None:
     assert _auth and _search
     nickname = await _nickname(event)
     if not nickname:
         await event.send_msg(
             Text(
                 text=(
-                    "请发送「LOL战绩 <昵称#编号>」，"
-                    "或先发送「LOL绑定 <昵称#编号>」。"
+                    "请发送「MLOL战绩 <手游昵称>」，"
+                    "或先发送「MLOL绑定 <手游昵称>」。"
                 )
             )
         )
@@ -75,16 +75,16 @@ async def _player(event: MessageEvent) -> Player | None:
         await _auth.ensure_fresh(session)
         player = await _search.find(nickname, _auth.cookies(session))
     except (MlolError, httpx.HTTPError) as exc:
-        log.warning("player search failed: %s", exc)
-        await event.send_msg(Text(text=f"玩家搜索失败：{exc}"))
+        log.warning("mobile player search failed: %s", exc)
+        await event.send_msg(Text(text=f"手游玩家搜索失败：{exc}"))
         return None
     if player is None:
-        await event.send_msg(Text(text=f"未找到唯一匹配的 LOL 玩家「{nickname}」。"))
+        await event.send_msg(Text(text=f"未找到唯一匹配的手游玩家「{nickname}」。"))
     return player
 
 
-@command("LOL战绩")
-async def handle_battle(event: MessageEvent) -> None:
+@command("MLOL战绩")
+async def handle_mobile_battle(event: MessageEvent) -> None:
     assert _auth and _battles
     _recent.pop(event.user_id, None)
     player = await _player(event)
@@ -94,65 +94,63 @@ async def handle_battle(event: MessageEvent) -> None:
     assert session
     cookies = _auth.cookies(session)
     try:
-        page = await _battles.list(
-            player,
-            cookies,
-            self_uuid=session.mlol_user_id or "",
-            self_scene=session.scene or "",
-        )
+        page = await _battles.list(player, cookies)
     except (MlolError, httpx.HTTPError) as exc:
-        await event.send_msg(Text(text=f"战绩查询失败：{exc}"))
+        await event.send_msg(Text(text=f"手游战绩查询失败：{exc}"))
         return
     if page.hidden:
-        await event.send_msg(Text(text=f"玩家「{player.nickname}」已隐藏战绩。"))
+        await event.send_msg(Text(text=f"玩家「{player.nickname}」已隐藏手游战绩。"))
         return
     overview_result, *detail_results = await asyncio.gather(
-        _battles.overview(player, page.battles, cookies),
+        _battles.overview(player, cookies),
         *(
             _battles.detail(player, battle, cookies)
             for battle in page.battles
+            if battle.guid
         ),
         return_exceptions=True,
     )
     overview = (
         overview_result
-        if isinstance(overview_result, PlayerOverview)
-        else PlayerOverview.from_dict({}, page.battles)
+        if isinstance(overview_result, MobilePlayerOverview)
+        else MobilePlayerOverview.empty(player)
     )
-    details: dict[str, BattleDetail] = {}
-    for battle, result in zip(page.battles, detail_results):
-        if isinstance(result, BattleDetail):
-            details[battle.game_id] = result
+    if isinstance(overview_result, Exception):
+        log.warning("mobile overview failed: %s", overview_result)
+    details: dict[str, MobileBattleDetail] = {}
+    detail_battles = [battle for battle in page.battles if battle.guid]
+    for battle, result in zip(detail_battles, detail_results):
+        if isinstance(result, MobileBattleDetail):
+            details[battle.guid] = result
         elif isinstance(result, Exception):
-            log.warning("battle detail %s failed: %s", battle.game_id, result)
+            log.warning("mobile battle detail failed: %s", result)
     _recent[event.user_id] = (player, page)
     await send_poster(
         event,
-        battle_poster(player, page, overview, details),
-        width=BATTLE_RENDER_WIDTH,
+        mobile_battle_poster(player, page, overview, details),
+        width=MOBILE_BATTLE_RENDER_WIDTH,
     )
 
 
-@command("LOL对局")
-async def handle_detail(event: MessageEvent) -> None:
+@command("MLOL对局")
+async def handle_mobile_detail(event: MessageEvent) -> None:
     assert _auth and _battles
-    value = argument(event)
     try:
-        index = int(value)
+        index = int(argument(event))
     except ValueError:
         index = 0
     recent = _recent.get(event.user_id)
-    if not 1 <= index <= RECENT_BATTLE_LIMIT:
+    if not 1 <= index <= MOBILE_RECENT_BATTLE_LIMIT:
         await event.send_msg(
-            Text(text=f"请发送「LOL对局 <1-{RECENT_BATTLE_LIMIT}>」。")
+            Text(text=f"请发送「MLOL对局 <1-{MOBILE_RECENT_BATTLE_LIMIT}>」。")
         )
         return
     if recent is None:
-        await event.send_msg(Text(text="请先查询一次「LOL战绩 <昵称#编号>」。"))
+        await event.send_msg(Text(text="请先查询一次「MLOL战绩 <手游昵称>」。"))
         return
     player, page = recent
     if index > len(page.battles):
-        await event.send_msg(Text(text=f"最近战绩只有 {len(page.battles)} 局。"))
+        await event.send_msg(Text(text=f"最近手游战绩只有 {len(page.battles)} 局。"))
         return
     session = await _auth.session()
     if session is None:
@@ -166,10 +164,10 @@ async def handle_detail(event: MessageEvent) -> None:
             _auth.cookies(session),
         )
     except (MlolError, httpx.HTTPError) as exc:
-        await event.send_msg(Text(text=f"对局详情查询失败：{exc}"))
+        await event.send_msg(Text(text=f"手游对局详情查询失败：{exc}"))
         return
     await send_poster(
         event,
-        detail_poster(player, detail),
-        width=DETAIL_RENDER_WIDTH,
+        mobile_detail_poster(player, detail),
+        width=MOBILE_DETAIL_RENDER_WIDTH,
     )

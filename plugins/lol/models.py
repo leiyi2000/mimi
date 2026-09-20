@@ -13,6 +13,18 @@ class LolBinding(Model):
         table = "lol_bindings"
 
 
+class MobileLolBinding(Model):
+    """A sender's preferred Wild Rift role name."""
+
+    user_id = fields.BigIntField(primary_key=True)
+    nickname = fields.CharField(max_length=128)
+    updated_at = fields.DatetimeField(auto_now=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+
+    class Meta:
+        table = "mobile_lol_bindings"
+
+
 class MlolSession(Model):
     """The plugin-wide mlol login state, stored at the fixed primary key 1."""
 

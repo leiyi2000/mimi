@@ -1,7 +1,7 @@
 [project]
 name = "lol"
 version = "0.1.0"
-description = "LOL 战绩与对局详情查询插件（掌盟接口）"
+description = "LOL 端游与手游战绩、对局详情查询插件（掌盟接口）"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

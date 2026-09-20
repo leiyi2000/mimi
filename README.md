@@ -13,32 +13,51 @@
 自动读取各插件的 `commands.toml` 生成中文指令目录。
 
 <p align="center">
-  <img src="docs/images/help.png" width="420" alt="Mimi 指令帮助">
+  <img src="docs/images/help.png" width="720" alt="Mimi 指令帮助">
 </p>
 
 ## 英雄联盟
 
-通过 Riot ID 查询掌盟公开数据。普通用户不需要登录掌盟，管理员维护一个共享登录态；
-用户可以绑定常用玩家，也可以直接查询其他玩家。
+通过 Riot ID 或手游角色名查询掌盟公开数据。普通用户不需要登录掌盟，管理员维护一个
+共享登录态；端游与手游使用独立绑定和最近查询状态。
 
 <table>
   <tr>
-    <td width="50%">
+    <td width="50%" valign="top">
       <img src="docs/images/lol-battle.png" alt="英雄联盟最近战绩海报">
     </td>
-    <td width="50%">
+    <td width="50%" valign="top">
       <img src="docs/images/lol-detail.png" alt="英雄联盟单局详情海报">
     </td>
   </tr>
   <tr>
-    <td align="center"><b>最近战绩</b><br>段位、胜率、KDA、评分、装备、伤害与双方阵容</td>
-    <td align="center"><b>单局详情</b><br>十人数据、召唤师技能、装备与海克斯强化</td>
+    <td align="center"><b>端游最近战绩</b><br>段位、胜率、KDA、评分、装备、伤害与双方阵容</td>
+    <td align="center"><b>端游单局详情</b><br>十人数据、召唤师技能、装备与海克斯强化</td>
+  </tr>
+</table>
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/mlol-battle.png" alt="英雄联盟手游最近战绩海报">
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/mlol-detail.png" alt="英雄联盟手游单局详情海报">
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><b>手游最近战绩</b><br>段位、荣誉、装备、经济、伤害、参团率与双方阵容</td>
+    <td align="center"><b>手游单局详情</b><br>十人经济、输出、承伤、参团、装备、符文与强化</td>
   </tr>
 </table>
 
 - `LOL绑定 <昵称#编号>`：保存常用 Riot ID
 - `LOL战绩 [昵称#编号]`：查看最近 8 局
 - `LOL对局 <1-8>`：展开最近一次查询中的单局详情
+- `MLOL绑定 <手游昵称>`：保存常用手游角色
+- `MLOL解绑`：清除已绑定的手游角色
+- `MLOL战绩 [手游昵称]`：查看手游最近 8 局
+- `MLOL对局 <1-8>`：展开最近一次手游查询中的单局详情
 
 ## APEX 英雄
 
@@ -47,10 +66,10 @@
 
 <table>
   <tr>
-    <td width="58%">
+    <td width="58%" valign="top">
       <img src="docs/images/apex-stats.png" alt="APEX 玩家战绩海报">
     </td>
-    <td width="42%">
+    <td width="42%" valign="top">
       <img src="docs/images/apex-rotation.png" alt="APEX 地图轮换海报">
     </td>
   </tr>

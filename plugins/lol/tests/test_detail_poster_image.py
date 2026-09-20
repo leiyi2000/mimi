@@ -24,6 +24,7 @@ def _member(
     items: tuple[int, ...],
     *,
     mvp: bool = False,
+    svp: bool = False,
 ) -> dict:
     score = 7 + (kda[0] * 3 + kda[2] - kda[1]) % 90 / 10
     offset = champion_id % len(AUGMENT_IDS)
@@ -50,6 +51,7 @@ def _member(
         "damage_percent": "31.2%",
         "game_score": int(score * 100),
         "is_mvp": mvp,
+        "is_svp": svp,
         "summon_spell1_id": 4,
         "summon_spell2_id": 32 if champion_id % 2 else 6,
     }
@@ -88,7 +90,7 @@ async def test_generate_detail_poster_image():
         _member("ally-4", "上路抗压王", 266, (5, 8, 9), 12_960, 29_440, (6630, 3047, 3065, 3053, 6333)),
     ]
     opponent_team = [
-        _member("enemy-1", "对面上单", 24, (6, 9, 7), 13_120, 33_800, (6632, 3111, 3078, 3053, 6333)),
+        _member("enemy-1", "对面上单", 24, (6, 9, 7), 13_120, 33_800, (6632, 3111, 3078, 3053, 6333), svp=True),
         _member("enemy-2", "对面打野", 121, (8, 7, 10), 14_030, 38_120, (6692, 3142, 3814, 3158, 6333)),
         _member("enemy-3", "对面中单", 103, (10, 6, 8), 15_580, 49_650, (6655, 3020, 3089, 3135, 4645)),
         _member("enemy-4", "对面射手", 202, (7, 8, 9), 14_870, 43_210, (6671, 3006, 3031, 3094, 6676)),
@@ -122,6 +124,9 @@ async def test_generate_detail_poster_image():
         "幽灵疾步",
     ]
     assert "铸星龙王" in html
+    assert 'class="performance-badge mvp">MVP' in html
+    assert 'class="performance-badge svp">SVP' in html
+    assert "18级 · MVP" not in html
     images = await fetch_assets(list(dict.fromkeys(urls)))
     png = render_image(html, images, DETAIL_RENDER_WIDTH)
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)

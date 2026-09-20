@@ -1,0 +1,200 @@
+{
+  "head": {
+    "gameResult": "1",
+    "gameModeName": "符文大乱斗",
+    "gameStart": "09-19 20:30",
+    "gameTimeString": "18:42",
+    "kill": 12,
+    "death": 3,
+    "assist": 18,
+    "grade": 14.6
+  },
+  "battleTab": {
+    "myCamp": "1",
+    "teamData": [
+      {
+        "camp": "1",
+        "teamName": "蓝色方",
+        "win": 1,
+        "money": "75420",
+        "teamPlayer": [
+          {
+            "roleUuid": "fixture-target",
+            "playerNick": "手游测试玩家",
+            "heroID": 10103,
+            "heroLVL": 15,
+            "heroURL": "https://game.gtimg.cn/images/lgamem/act/lrlib/img/HeadIcon/H_S_10103.png",
+            "kill": 12,
+            "death": 3,
+            "assist": 18,
+            "grade": 14.6,
+            "moneyMin": 1536,
+            "killSoldiers": 62,
+            "killTowers": 2,
+            "isMvp": 1,
+            "equipIds": [1001, 1002, 1003, 1004, 1005, 1006],
+            "skillIds": [4, 14],
+            "runeIds": [8005, 9111, 9104],
+            "equipIcons": [
+              "https://game.gtimg.cn/images/lgamem/act/lrlib/img/EquipIcons/lol_fbezd.png",
+              "https://game.gtimg.cn/images/lgamem/act/lrlib/img/EquipIcons/lol_mszdswzm.png"
+            ],
+            "skillIcons": [
+              "https://game.gtimg.cn/images/lgamem/act/lrlib/img/SummonerSkillIcons/zhs_09.png",
+              "https://game.gtimg.cn/images/lgamem/act/lrlib/img/SummonerSkillIcons/zhs_04.png"
+            ],
+            "runeIcons": [
+              "https://game.gtimg.cn/images/lgamem/act/lrlib/img/RuneIcons/Keystone_FirstStrike.png"
+            ],
+            "playData": [
+              {
+                "type": "1",
+                "PlayerPartRate": "62",
+                "money": "16840",
+                "playerDmgtoHero": "42180",
+                "playerRcvDmgFromall": "33820"
+              }
+            ],
+            "runeEffect": [
+              {"name": "先攻"},
+              {"name": "公理秘术"}
+            ],
+            "hexbuffs": [
+              {"name": "法术觉醒"},
+              {"name": "连环爆破"},
+              {"name": "技能循环"}
+            ]
+          },
+          {
+            "userId": "ally-1",
+            "playerNick": "测试队友一",
+            "heroID": 10022,
+            "heroLevel": 15,
+            "kill": 8,
+            "death": 5,
+            "assist": 16,
+            "grade": 11.2,
+            "gold": 15120,
+            "killSoldiers": 70,
+            "killTowers": 1,
+            "hexbuffs": [{"name": "攻击强化"}]
+          },
+          {
+            "userId": "ally-2",
+            "playerNick": "测试队友二",
+            "heroID": 10064,
+            "heroLevel": 15,
+            "kill": 6,
+            "death": 6,
+            "assist": 19,
+            "grade": 10.8,
+            "gold": 14630,
+            "killSoldiers": 48,
+            "killTowers": 0
+          },
+          {
+            "userId": "ally-3",
+            "playerNick": "测试队友三",
+            "heroID": 10033,
+            "heroLevel": 15,
+            "kill": 3,
+            "death": 7,
+            "assist": 24,
+            "grade": 10.1,
+            "gold": 13210,
+            "killSoldiers": 25,
+            "killTowers": 0
+          },
+          {
+            "userId": "ally-4",
+            "playerNick": "测试队友四",
+            "heroID": 10035,
+            "heroLevel": 15,
+            "kill": 5,
+            "death": 8,
+            "assist": 13,
+            "grade": 8.9,
+            "gold": 11620,
+            "killSoldiers": 54,
+            "killTowers": 1
+          }
+        ]
+      },
+      {
+        "camp": "2",
+        "teamName": "红色方",
+        "win": 0,
+        "money": "69870",
+        "teamPlayer": [
+          {
+            "userId": "enemy-1",
+            "playerNick": "测试对手一",
+            "heroID": 10024,
+            "heroLevel": 15,
+            "kill": 9,
+            "death": 7,
+            "assist": 10,
+            "grade": 11.8,
+            "gold": 15440,
+            "killSoldiers": 66,
+            "killTowers": 1,
+            "isSvp": 1,
+            "hexbuffs": [{"name": "坚韧不屈"}]
+          },
+          {
+            "userId": "enemy-2",
+            "playerNick": "测试对手二",
+            "heroID": 10017,
+            "heroLevel": 15,
+            "kill": 7,
+            "death": 8,
+            "assist": 12,
+            "grade": 9.7,
+            "gold": 14380,
+            "killSoldiers": 58,
+            "killTowers": 0
+          },
+          {
+            "userId": "enemy-3",
+            "playerNick": "测试对手三",
+            "heroID": 10045,
+            "heroLevel": 15,
+            "kill": 6,
+            "death": 9,
+            "assist": 11,
+            "grade": 8.8,
+            "gold": 13820,
+            "killSoldiers": 61,
+            "killTowers": 0
+          },
+          {
+            "userId": "enemy-4",
+            "playerNick": "测试对手四",
+            "heroID": 10083,
+            "heroLevel": 15,
+            "kill": 2,
+            "death": 10,
+            "assist": 19,
+            "grade": 7.6,
+            "gold": 12430,
+            "killSoldiers": 31,
+            "killTowers": 0
+          },
+          {
+            "userId": "enemy-5",
+            "playerNick": "测试对手五",
+            "heroID": 10037,
+            "heroLevel": 15,
+            "kill": 8,
+            "death": 9,
+            "assist": 8,
+            "grade": 8.4,
+            "gold": 13800,
+            "killSoldiers": 72,
+            "killTowers": 1
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,42 +1,45 @@
 <style>
   * { box-sizing: border-box; }
-  .page { width: {{ page_width }}px; padding: 22px; background: #f4f6fa; color: #283341; font-family: "{{ font_name }}", sans-serif; }
-  .header { display: grid; grid-template-columns: 58px minmax(160px, 1fr) 82px 260px; gap: 10px; align-items: center; padding: 18px; background: #ffffff; border-bottom: 1px solid #dce2ea; }
-  .avatar { width: 58px; height: 58px; object-fit: cover; border-radius: 8px; background: #e8edf4; }
+  .page { width: {{ page_width }}px; padding: 22px; background: #101214; color: #eef1f4; font-family: "{{ font_name }}", sans-serif; }
+  .header { display: grid; grid-template-columns: 58px minmax(160px, 1fr) 82px 260px; gap: 10px; align-items: center; padding: 18px; background: #1b1e22; border-top: 3px solid #c89b3c; border-bottom: 1px solid #353a40; }
+  .avatar { width: 58px; height: 58px; object-fit: cover; border-radius: 8px; background: #2a2f35; }
   .title { overflow: hidden; font-size: 20px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
-  .meta { margin-top: 7px; color: #7d899b; font-size: 12px; }
+  .meta { margin-top: 7px; color: #9da6b1; font-size: 12px; }
   .rank { text-align: center; }
   .rank-icon { width: 42px; height: 42px; object-fit: contain; }
-  .rank-title { margin-top: 3px; color: #5177aa; font-size: 11px; font-weight: 700; }
+  .rank-title { margin-top: 3px; color: #d3aa54; font-size: 11px; font-weight: 700; }
   .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-  .stat { padding-left: 12px; border-left: 1px solid #dce2ea; }
+  .stat { padding-left: 12px; border-left: 1px solid #3a4047; }
   .stat-value { font-size: 19px; font-weight: 700; }
-  .stat-label { margin-top: 4px; color: #8a95a5; font-size: 11px; }
-  .recent { margin-top: 8px; color: #7d899b; font-size: 11px; }
+  .stat-label { margin-top: 4px; color: #929ca8; font-size: 11px; }
+  .recent { margin-top: 8px; color: #9da6b1; font-size: 11px; }
   .battle { display: grid; grid-template-columns: 112px 62px minmax(180px, 1fr) 118px 120px; gap: 10px; align-items: center; min-height: 106px; margin-top: 7px; padding: 9px 14px 9px 16px; border-left: 4px solid; }
-  .battle.win { background: #e8f2ff; border-color: #4d8df7; }
-  .battle.loss { background: #fff0f2; border-color: #f05c70; }
-  .mode { color: #446b9f; font-size: 14px; font-weight: 700; }
-  .loss .mode, .loss .battle-result { color: #e55367; }
-  .battle-time, .duration { margin-top: 7px; color: #7d899b; font-size: 11px; }
-  .battle-result { margin-top: 18px; color: #397ddd; font-size: 13px; font-weight: 700; }
-  .champion { width: 58px; height: 58px; object-fit: cover; border-radius: 50%; background: #dce2ea; }
+  .battle.win { background: #172331; border-color: #4b9df2; }
+  .battle.loss { background: #291a1f; border-color: #f06478; }
+  .mode { color: #79b8f6; font-size: 14px; font-weight: 700; }
+  .loss .mode, .loss .battle-result { color: #ff7788; }
+  .battle-time, .duration { margin-top: 7px; color: #949eaa; font-size: 11px; }
+  .battle-result { margin-top: 18px; color: #64abf5; font-size: 13px; font-weight: 700; }
+  .champion { width: 58px; height: 58px; object-fit: cover; border-radius: 50%; background: #2a2f35; }
   .champion-name { overflow: hidden; font-size: 14px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
-  .kda { margin-top: 8px; font-size: 18px; white-space: nowrap; }
-  .deaths { color: #ed5870; }
-  .ratio { margin-top: 2px; color: #7d899b; font-size: 11px; }
+  .kda-line { display: flex; align-items: center; gap: 7px; margin-top: 8px; white-space: nowrap; }
+  .kda-line > span:first-child { flex: 0 0 auto; }
+  .kda { font-size: 18px; }
+  .deaths { color: #ff7185; }
+  .ratio { margin-top: 2px; color: #949eaa; font-size: 11px; }
   .items { display: flex; gap: 3px; margin-top: 10px; min-height: 24px; }
-  .item { width: 24px; height: 24px; object-fit: cover; background: #dce2ea; }
-  .metrics { color: #7d899b; font-size: 11px; line-height: 1.8; }
-  .metric-strong { color: #ed5870; font-size: 13px; }
-  .score { color: #56647a; }
-  .badge { display: inline-block; margin-top: 5px; padding: 2px 6px; border-radius: 8px; background: #6e7890; color: #fff; font-size: 10px; }
-  .badge.mvp { background: #7357da; }
+  .item { width: 24px; height: 24px; object-fit: cover; background: #2a2f35; }
+  .metrics { color: #a7b0bb; font-size: 11px; line-height: 1.8; }
+  .metric-strong { color: #ff7b8d; font-size: 13px; }
+  .score { color: #c2c8d0; }
+  .performance-badge { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; min-width: 30px; height: 16px; padding: 0 5px; border-radius: 3px; color: #151719; font-size: 8px; font-weight: 800; line-height: 1; }
+  .performance-badge.mvp { background: #d3aa54; }
+  .performance-badge.svp { background: #a998e8; }
   .lineups { display: grid; grid-template-columns: 1fr 18px 1fr; gap: 4px; align-items: center; }
   .team { display: grid; grid-template-columns: repeat(2, 22px); gap: 3px; justify-content: center; }
-  .team-icon { width: 22px; height: 22px; object-fit: cover; background: #dce2ea; }
-  .vs { color: #537bc2; font-size: 12px; font-style: italic; font-weight: 700; text-align: center; }
-  .empty { padding: 50px 0; text-align: center; color: #8a95a5; }
+  .team-icon { width: 22px; height: 22px; object-fit: cover; background: #2a2f35; }
+  .vs { color: #d3aa54; font-size: 12px; font-style: italic; font-weight: 700; text-align: center; }
+  .empty { padding: 50px 0; background: #1b1e22; text-align: center; color: #929ca8; }
 </style>
 <div class="page">
   <div class="header">
@@ -70,7 +73,10 @@
     {% if champion_images[battle.game_id] %}<img class="champion" src="{{ champion_images[battle.game_id] }}">{% else %}<div class="champion"></div>{% endif %}
     <div>
       <div class="champion-name">{{ battle.champion_name }}</div>
-      <div class="kda">{{ battle.kills }} / <span class="deaths">{{ battle.deaths }}</span> / {{ battle.assists }}</div>
+      <div class="kda-line">
+        <span class="kda">{{ battle.kills }} / <span class="deaths">{{ battle.deaths }}</span> / {{ battle.assists }}</span>
+        {% if battle.is_mvp %}<span class="performance-badge mvp">MVP</span>{% elif battle.is_svp %}<span class="performance-badge svp">SVP</span>{% endif %}
+      </div>
       <div class="ratio">{{ "%.2f"|format((battle.kills + battle.assists) / (battle.deaths if battle.deaths else 1)) }}:1 KDA</div>
       <div class="items">
         {% if target %}{% for item in target.items %}<img class="item" src="{{ item_images[item] }}">{% endfor %}{% endif %}
@@ -83,7 +89,6 @@
       <div>补刀 {{ target.minions }}</div>
       {% endif %}
       <div class="score">评分 {{ "%.1f"|format(battle.score) }}</div>
-      {% if battle.is_mvp %}<span class="badge mvp">MVP</span>{% elif battle.is_svp %}<span class="badge mvp">SVP</span>{% endif %}
     </div>
     <div class="lineups">
       <div class="team">
