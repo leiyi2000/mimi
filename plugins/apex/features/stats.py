@@ -24,6 +24,8 @@ LOCALE = "en"
 GAME_SLUG = "apex-legends"
 API_HOST = "https://drop-api.ea.com"
 REFERER = "https://www.ea.com/games/apex-legends/apex-legends/player-stats"
+REQUEST_ATTEMPTS = 3
+RETRY_DELAY_SECONDS = 0.5
 
 RENDER_WIDTH = 1600
 PAGE_WIDTH = RENDER_WIDTH // DEVICE_PIXEL_RATIO
@@ -158,6 +160,19 @@ _env = Environment(
 )
 
 _event_name: str | None = None
+
+
+async def _get_with_retry(
+    client: httpx.AsyncClient, url: str, **kwargs
+) -> httpx.Response:
+    for attempt in range(1, REQUEST_ATTEMPTS + 1):
+        try:
+            return await client.get(url, **kwargs)
+        except httpx.TransportError:
+            if attempt == REQUEST_ATTEMPTS:
+                raise
+            await asyncio.sleep(RETRY_DELAY_SECONDS * attempt)
+    raise RuntimeError("unreachable")
 
 
 def _slug(stat_id: str) -> str:
@@ -306,7 +321,8 @@ async def fetch_event_name(client: httpx.AsyncClient) -> str | None:
     global _event_name
     if _event_name:
         return _event_name
-    response = await client.get(
+    response = await _get_with_retry(
+        client,
         f"{API_HOST}/player/{GAME_SLUG}/highlights",
         params={"locale": LOCALE},
         headers={"drop-referrer": REFERER},
@@ -322,7 +338,8 @@ async def fetch_stats(player_name: str) -> dict | None:
         event_name = await fetch_event_name(client)
         if not event_name:
             return None
-        response = await client.get(
+        response = await _get_with_retry(
+            client,
             f"{API_HOST}/player/{player_name}/stats",
             params={
                 "gameSlug": GAME_SLUG,
@@ -350,8 +367,8 @@ async def handle_stats(event: MessageEvent) -> None:
 
     try:
         data = await fetch_stats(player_name)
-    except httpx.HTTPError:
-        log.warning("fetch stats failed: %s", player_name)
+    except httpx.HTTPError as exc:
+        log.warning("fetch stats failed for %s: %r", player_name, exc)
         await event.send_msg(Text(text="查询失败，请稍后再试。"))
         return
 

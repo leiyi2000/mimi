@@ -3,11 +3,18 @@ import json
 import os
 from pathlib import Path
 
+import httpx
 import pytest
 from napcat import Image, Text, MessageEvent
 
 from features.rendering import render_image
-from features.stats import RENDER_WIDTH, build_stats_html, handle_stats, _t_value
+from features.stats import (
+    RENDER_WIDTH,
+    _get_with_retry,
+    _t_value,
+    build_stats_html,
+    handle_stats,
+)
 from fake_client import FakeClient
 
 
@@ -105,6 +112,28 @@ async def test_handle_stats_uses_bound_ea_id(monkeypatch):
     await handle_stats(event)
 
     assert captured == ["bound_player"]
+
+
+async def test_get_with_retry_recovers_from_connect_timeout(monkeypatch):
+    attempts = 0
+
+    class FlakyClient:
+        async def get(self, url, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise httpx.ConnectTimeout("timed out")
+            return httpx.Response(200, request=httpx.Request("GET", url))
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr("features.stats.asyncio.sleep", no_sleep)
+
+    response = await _get_with_retry(FlakyClient(), "https://example.com/stats")
+
+    assert response.status_code == 200
+    assert attempts == 3
 
 
 @pytest.mark.skipif(
