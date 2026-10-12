@@ -61,7 +61,6 @@ updated: 2026-09-18
 
 ```bash
 git diff --check
-docker compose config --quiet
 cd plugins/help && uv run pytest
 cd plugins/apex && uv run pytest
 cd plugins/lol && uv run pytest

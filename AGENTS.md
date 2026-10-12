@@ -113,7 +113,6 @@
 cd plugins/lol && uv run pytest
 cd plugins/apex && uv run pytest
 cd plugins/help && uv run pytest
-docker compose config --quiet
 git diff --check
 ```
 

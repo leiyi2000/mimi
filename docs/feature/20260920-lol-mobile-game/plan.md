@@ -137,7 +137,6 @@ MobileBattleDetail
 
 ```bash
 cd plugins/lol && uv run pytest
-docker compose config --quiet
 git diff --check
 ```
 

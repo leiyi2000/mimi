@@ -156,7 +156,6 @@ docker compose ps
 docker compose logs --tail=200 mimi
 docker compose logs --tail=200 napcat
 docker compose logs --tail=200 qimei
-docker compose config --quiet
 ```
 
 ### 机器人无响应
@@ -233,7 +232,6 @@ docker compose config --quiet
 ```bash
 git status --short
 git diff --check
-docker compose config --quiet
 ```
 
 再执行受影响插件的测试，确认没有 Secret、运行数据、缓存或构建产物进入变更。

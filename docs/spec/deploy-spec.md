@@ -106,7 +106,6 @@ Token，默认请求地址已写入 `MUSIC_SIGN_API`。
 ## 4. 发布
 
 ```bash
-docker compose config
 docker compose build mimi qimei
 docker compose up -d
 docker compose ps
