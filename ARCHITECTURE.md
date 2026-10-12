@@ -38,7 +38,7 @@ flowchart LR
     NC <--> APEX
     NC <--> MUSIC
     NC <--> NIU
-    NC --> YASUO
+    NC <--> YASUO
 
     LOL --> QIMEI[QIMEI Java 服务]
     LOL --> MLOL[掌盟 API]
@@ -77,7 +77,7 @@ plugins/
   apex/                   # EA 战绩、绑定与地图轮换
   music/                  # 网易云搜索、登录与音乐卡片
   niu/                    # 群聊 AI
-  yasuo/                  # 群消息归档与查询 API
+  yasuo/                  # 群消息归档、撤回海报与查询 API
 qimei/
   src/main/java/qimei/    # QIMEI HTTP、APK 校验、Unidbg 调用
 ```
@@ -107,7 +107,7 @@ main / config
 | QQ 登录与 NapCat 配置 | NapCat | `data/napcat/` |
 | APEX 用户绑定与资产 | APEX 插件 | `data/mini/plugins/apex/data/` |
 | LOL 端游/手游独立用户绑定、唯一共享会话、设备 profile、QIMEI36 | LOL 插件 | `data/mini/plugins/lol/data/` |
-| 群消息与下载图片 | Yasuo 插件 | `data/mini/plugins/yasuo/data/` |
+| 群消息、撤回事件与下载图片 | Yasuo 插件 | `data/mini/plugins/yasuo/data/` |
 | QIMEI 所需固定 APK | QIMEI 服务 | `data/qimei/` |
 | 网易云 Cookie | Music 插件 | 配置的数据文件 |
 

@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <style>
+    * {
+      box-sizing: border-box;
+      letter-spacing: 0;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #111417;
+    }
+    body {
+      width: {{ page_width }}px;
+      color: #edf1f2;
+      font-family: "{{ font_name }}", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    .page {
+      width: {{ page_width }}px;
+      padding: 30px 34px 24px;
+      background: #111417;
+    }
+    .header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      padding-bottom: 18px;
+      border-bottom: 2px solid #e9eeee;
+    }
+    .title {
+      font-size: 27px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+    .meta {
+      color: #8f9ba0;
+      font-size: 12px;
+      line-height: 1.4;
+      text-align: right;
+    }
+    .record {
+      display: grid;
+      grid-template-columns: 44px minmax(0, 1fr);
+      column-gap: 14px;
+      padding: 22px 0;
+      border-bottom: 1px solid #31383c;
+    }
+    .record:last-child {
+      border-bottom: 0;
+    }
+    .avatar,
+    .avatar-fallback {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+    }
+    .avatar {
+      display: block;
+      object-fit: cover;
+      background: #252c30;
+    }
+    .avatar-fallback {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #2d383b;
+      color: #6fd2d0;
+      font-size: 19px;
+      font-weight: 700;
+    }
+    .content {
+      min-width: 0;
+    }
+    .record-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 14px;
+      min-width: 0;
+    }
+    .name {
+      min-width: 0;
+      overflow: hidden;
+      color: #f4f6f6;
+      font-size: 17px;
+      font-weight: 700;
+      line-height: 1.35;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .sent-at {
+      flex: none;
+      color: #859197;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .message {
+      margin-top: 9px;
+      color: #d7dddf;
+      font-size: 15px;
+      line-height: 1.65;
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+    }
+    .missing {
+      margin-top: 10px;
+      padding: 11px 13px;
+      border: 1px dashed #59636a;
+      border-radius: 4px;
+      color: #a6b0b5;
+      font-size: 14px;
+      line-height: 1.4;
+    }
+    .media-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .media-grid.single {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .media {
+      width: 100%;
+      min-height: 118px;
+      max-height: 220px;
+      border-radius: 4px;
+      object-fit: contain;
+      background: #090b0d;
+    }
+    .media-placeholder {
+      display: flex;
+      min-height: 118px;
+      align-items: center;
+      justify-content: center;
+      border: 1px dashed #525c62;
+      border-radius: 4px;
+      background: #191e21;
+      color: #8f9a9f;
+      font-size: 13px;
+    }
+    .more-images {
+      margin-top: 8px;
+      color: #8e999e;
+      font-size: 12px;
+    }
+    .recall-status {
+      margin-top: 11px;
+      color: #ee7e79;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .footer {
+      padding-top: 16px;
+      border-top: 1px solid #2a3034;
+      color: #778288;
+      font-size: 11px;
+      text-align: right;
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="header">
+      <div class="title">群撤回消息</div>
+      <div class="meta">{{ poster.items | length }} 条记录<br>生成于 {{ poster.generated_at }}</div>
+    </header>
+
+    {% for item in poster.items %}
+    <section class="record">
+      <div>
+        {% if item.avatar_asset_key %}
+        <img class="avatar" src="{{ item.avatar_asset_key }}" alt="">
+        {% else %}
+        <div class="avatar-fallback">{{ item.avatar_fallback }}</div>
+        {% endif %}
+      </div>
+      <div class="content">
+        <div class="record-head">
+          <div class="name">{{ item.display_name }}</div>
+          <div class="sent-at">发送于 {{ item.sent_at }}</div>
+        </div>
+
+        {% if item.content_state == "message_not_stored" %}
+        <div class="missing">原消息未存储</div>
+        {% else %}
+          {% if item.text %}
+          <div class="message">{{ item.text }}</div>
+          {% endif %}
+
+          {% if item.images %}
+          <div class="media-grid{% if item.images | length == 1 %} single{% endif %}">
+            {% for image in item.images %}
+              {% if image.state == "available" %}
+              <img class="media" src="{{ image.asset_key }}" alt="">
+              {% elif image.state == "not_stored" %}
+              <div class="media-placeholder">图片未存储</div>
+              {% else %}
+              <div class="media-placeholder">图片不可用</div>
+              {% endif %}
+            {% endfor %}
+          </div>
+          {% endif %}
+
+          {% if item.hidden_image_count %}
+          <div class="more-images">另有 {{ item.hidden_image_count }} 张图片未展示</div>
+          {% endif %}
+
+          {% if not item.text and not item.images %}
+          <div class="missing">消息内容未存储</div>
+          {% endif %}
+        {% endif %}
+
+        <div class="recall-status">
+          {% if item.recalled_by_admin %}由管理员撤回于{% else %}撤回于{% endif %}
+          {{ item.recalled_at }}
+        </div>
+      </div>
+    </section>
+    {% endfor %}
+
+    <footer class="footer">仅展示本群已捕获的撤回事件</footer>
+  </main>
+</body>
+</html>

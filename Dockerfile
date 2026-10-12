@@ -10,7 +10,6 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY mimi/ ./mimi/
 COPY plugins/ ./plugins/
-COPY .env ./.env
 
 # Install dependencies using uv
 RUN uv sync
@@ -19,4 +18,4 @@ RUN uv sync
 RUN for d in /app/plugins/*/; do [ -f "$d/pyproject.toml" ] && (cd "$d" && uv sync) || true; done
 
 # Set the command to run the application
-CMD ["uv", "run", "--env-file", ".env", "python3", "-m", "mimi.main"]
+CMD ["uv", "run", "python3", "-m", "mimi.main"]

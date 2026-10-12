@@ -21,8 +21,9 @@ def test_catalog_loads_all_visible_plugins():
         "apex",
         "music",
         "chat",
+        "yasuo",
     ]
-    assert sum(len(plugin.commands) for plugin in plugins) == 19
+    assert sum(len(plugin.commands) for plugin in plugins) == 21
 
 
 def test_catalog_filters_by_key_or_display_name():

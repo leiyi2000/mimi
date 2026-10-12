@@ -5,6 +5,8 @@ plugins/**/data/*
 
 .git/
 .venv/
+.env
+.env.*
 
 plugins/**/.git
 plugins/**/.venv

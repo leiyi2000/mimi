@@ -7,7 +7,11 @@ import httpx
 import aiofiles
 import aiofiles.os
 from models import GroupMessage
-from napcat import NapCatClient, GroupMessageEvent
+from napcat import GroupMessageEvent, GroupRecallNoticeEvent, NapCatClient
+
+from commands import RecallCommandHandler
+from rendering.poster import RecallPosterBuilder, RecallPosterRenderer
+from services import GroupMemberResolver, RecallService
 
 
 log = logging.getLogger(__name__)
@@ -20,6 +24,14 @@ class NapCatSync:
         self.host = os.getenv("NAPCAT_HOST", "127.0.0.1")
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
         self.client = NapCatClient(f"ws://{self.host}:{self.port}/", self.token)
+        self.recall_service = RecallService()
+        self.recall_handler = RecallCommandHandler(
+            recall_service=self.recall_service,
+            poster_builder=RecallPosterBuilder(
+                member_resolver=GroupMemberResolver(self.client),
+            ),
+            poster_renderer=RecallPosterRenderer(),
+        )
 
     def extract_image_urls(self, event: GroupMessageEvent) -> list[str]:
         image_urls = []
@@ -55,7 +67,7 @@ class NapCatSync:
                     await f.write(response.content)
 
                 return filepath
-        except Exception:  # noqa: BLE001
+        except (httpx.HTTPError, OSError):
             log.warning(f"Failed to download image: {url}")
             return None
 
@@ -64,7 +76,7 @@ class NapCatSync:
         image_urls: list[str],
         group_id: int,
         message_id: int,
-    ) -> list[str]:
+    ) -> list[str | None]:
         if not image_urls:
             return []
 
@@ -75,12 +87,15 @@ class NapCatSync:
 
         for url in image_urls:
             path = await self.download_image(url, save_dir)
-            if path:
-                paths.append(path)
+            paths.append(path)
 
         return paths
 
     async def save_message(self, event: GroupMessageEvent) -> GroupMessage:
+        existing = await GroupMessage.get_or_none(message_id=event.message_id)
+        if existing is not None:
+            return existing
+
         image_urls = self.extract_image_urls(event)
         local_paths = await self.download_images(
             image_urls,
@@ -100,14 +115,29 @@ class NapCatSync:
             time=event.time,
             self_id=event.self_id,
         )
-        log.info(f"Saved message {event.message_id} from group {event.group_id}")
+        log.info(
+            "saved message: message_id=%s group_id=%s",
+            event.message_id,
+            event.group_id,
+        )
         return message
 
     async def start(self):
-        log.info(f"Connecting to NapCat at {self.host}:{self.port}")
+        log.info("connecting to NapCat at %s:%s", self.host, self.port)
         async for event in self.client:
-            if isinstance(event, GroupMessageEvent):
-                await self.save_message(event)
+            try:
+                if isinstance(event, GroupMessageEvent):
+                    await self.save_message(event)
+                    await self.recall_handler.handle(event)
+                elif isinstance(event, GroupRecallNoticeEvent):
+                    await self.recall_service.record(event)
+            except Exception:
+                log.exception(
+                    "event processing failed: event=%s group_id=%s message_id=%s",
+                    type(event).__name__,
+                    getattr(event, "group_id", None),
+                    getattr(event, "message_id", None),
+                )
 
     async def run(self):
         while True:
