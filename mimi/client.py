@@ -39,7 +39,12 @@ class Client(NapCatClient):
         client_type = os.getenv("NAPCAT_CLIENT_TYPE", "ws")
 
         log.info(
-            f"Loading client from env, host={host}, port={port}, token={token}, client_type={client_type}"
+            "Loading client from env, host=%s, port=%s, token_configured=%s, "
+            "client_type=%s",
+            host,
+            port,
+            bool(token),
+            client_type,
         )
 
         if client_type == "ws":
