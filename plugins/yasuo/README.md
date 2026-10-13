@@ -27,6 +27,13 @@ Yasuo 归档 QQ 群消息和图片，记录群撤回事件，并提供同群撤�
 现有 `POST /` 接口继续提供群消息分页查询，不返回撤回事件。请求体是
 `GroupMessage.filter()` 的过滤条件，查询参数为 `page` 和 `page_size`。
 
+Niu 只调用默认绑定在 `127.0.0.1:6273` 的专用只读接口：
+
+- `POST /v1/agent/members/resolve`
+- `POST /v1/agent/messages/search`
+
+专用接口显式限制当前群、字段、游标、页大小和文本总量，不返回图片 Base64 或原始媒体。
+
 ## 数据
 
 - SQLite：`data/yasuo.db`

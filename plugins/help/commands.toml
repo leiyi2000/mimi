@@ -8,3 +8,4 @@ order = 0
 name = "帮助"
 usage = "帮助 [插件名]"
 description = "查看全部指令或指定插件的指令"
+agent = true

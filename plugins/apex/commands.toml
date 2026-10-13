@@ -13,8 +13,10 @@ description = "保存常用 EA ID"
 name = "APEX战绩"
 usage = "APEX战绩 [EA ID]"
 description = "查询玩家战绩，省略参数时使用绑定值"
+agent = true
 
 [[commands]]
 name = "APEX轮换"
 usage = "APEX轮换"
 description = "查看当前及下一张轮换地图"
+agent = true

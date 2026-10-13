@@ -8,8 +8,10 @@ order = 50
 name = "群撤回"
 usage = "群撤回 [1-10]"
 description = "生成当前群最近撤回消息海报，默认显示 5 条"
+agent = true
 
 [[commands]]
 name = "原始消息"
 usage = "原始消息 [序号]"
 description = "单独发送第 N 条撤回消息，默认发送最近一条"
+agent = true

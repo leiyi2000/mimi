@@ -40,8 +40,24 @@ chmod 600 .env
 | `MUSIC_SIGN_API` | 音乐卡片需要 | `https://apii.xianyuw.cn/api/v1/qq-musicArk` | QQ 音乐卡片签名接口 |
 | `MUSIC_SIGN_KEY` | 音乐卡片需要 | `replace-with-xianyuw-token` | 签名接口 Token |
 | `NETEASE_COOKIE` | 否 | 不配置 | 仅用于部署时预置网易云登录态 |
-| `ANTHROPIC_BASE_URL` | 温蒂需要 | 留空 | Anthropic 兼容接口地址 |
-| `ANTHROPIC_API_KEY` | 温蒂需要 | 留空 | Anthropic 兼容接口密钥 |
+| `ANTHROPIC_BASE_URL` | 南瓜需要 | `https://api.minimaxi.com/anthropic` | MiniMax Anthropic 兼容端点 |
+| `ANTHROPIC_API_KEY` | 南瓜需要 | `replace-with-minimax-token` | MiniMax Token |
+| `MINIMAX_API_BASE_URL` | 南瓜媒体能力需要 | `https://api.minimaxi.com/v1` | 图片和音乐原生端点 |
+| `MINIMAX_MODEL` | 否 | `MiniMax-M3.1-Flash-Preview` | 南瓜文本模型 |
+| `NIU_TRIGGER_PREFIX` | 否 | `南瓜` | 群消息文本触发前缀 |
+| `NIU_MAX_INPUT_IMAGES` | 否 | `4` | 单条南瓜消息的图片上限 |
+| `NIU_INPUT_IMAGE_MAX_BYTES` | 否 | `5242880` | 单张输入图片字节上限 |
+| `NIU_STICKERS_ENABLED` | 否 | `true` | 启用群表情包收集、整理和回复 |
+| `NIU_STICKER_MAX_ITEMS` | 否 | `200` | 每群表情包条目上限 |
+| `NIU_STICKER_DAILY_UPDATES` | 否 | `30` | 每群每日表情包变更次数上限 |
+| `NIU_GROUP_HISTORY_ENABLED` | 否 | `true` | 是否启用当前群历史查询 |
+| `YASUO_API_URL` | 群历史需要 | `http://127.0.0.1:6273` | Yasuo 内部 API |
+| `NIU_MONTY_MAX_PROCESSES` | 否 | `2` | Monty Worker 进程上限 |
+| `NIU_MONTY_MEMORY_MB` | 否 | `64` | Monty Session 堆上限 |
+| `NIU_MONTY_FEED_TIMEOUT` | 否 | `2` | Monty VM feed 秒数 |
+| `NIU_MONTY_REQUEST_TIMEOUT` | 否 | `5` | Monty Worker 硬超时 |
+| `NIU_IMAGE_ENABLED` | 否 | `true` | 图片 Skill；当前账号已完成付费权限验收 |
+| `NIU_MUSIC_ENABLED` | 否 | `false` | 完成音乐 API 权限验收后开启 |
 | `MLOL_HOST` | 否 | `mlol.qt.qq.com` | 掌盟接口主机 |
 | `QIMEI_URL` | LOL 登录需要 | `http://qimei:8080` | QIMEI36 服务地址 |
 
@@ -98,7 +114,7 @@ Token，默认请求地址已写入 `MUSIC_SIGN_API`。
 
 ## 3. 数据
 
-- NapCat、APEX、LOL、Yasuo 和 QIMEI 使用显式数据卷。
+- NapCat、APEX、LOL、Niu、Yasuo 和 QIMEI 使用显式数据卷。
 - 数据卷路径是运行契约，变更前提供迁移和回滚方案。
 - 备份包含登录凭据与聊天数据，必须加密并限制访问。
 - QIMEI APK 缓存可以重建；LOL 会话和用户绑定不能当作缓存删除。

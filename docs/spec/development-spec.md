@@ -23,7 +23,8 @@ updated: 2026-09-18
 - Python 模块使用 snake_case，文档路径使用 kebab-case。
 - 业务代码留在所属插件；插件入口不堆积领域转换和渲染细节。
 - 用户可见文案使用中文。
-- `commands.toml` 的 `name` 是真实触发词，`usage` 只用于展示。
+- `commands.toml` 的 `name` 是真实触发词，`usage` 只用于展示。只有适合由 Niu 通过群消息
+  代为调用的无身份副作用指令才设置 `agent = true`；该字段缺失时默认不开放。
 
 ## 3. 测试
 
@@ -47,8 +48,8 @@ updated: 2026-09-18
 ## 5. 文档同步
 
 - 新增、删除或修改命令时，逐项核对处理器、`commands.toml`、插件 README 和测试。
-- `commands.toml` 的 `name`、`usage`、`description`、`badge` 必须与实际触发词、参数、
-  行为和权限一致。
+- `commands.toml` 的 `name`、`usage`、`description`、`badge`、`agent` 必须与实际
+  触发词、参数、行为和权限一致。
 - 面向所有用户的能力、命令入口或输出样式变化时，检查并更新根 README；无须修改时也
   必须完成核对。
 - 架构变化：更新根 `ARCHITECTURE.md`。

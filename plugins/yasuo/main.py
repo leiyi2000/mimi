@@ -1,9 +1,9 @@
 import os
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
-from tortoise import Tortoise
+from tortoise.contrib.fastapi import RegisterTortoise
 from fastapi.middleware.cors import CORSMiddleware
 
 from settings import *
@@ -15,15 +15,19 @@ from tasks import NapCatSync
 async def lifespan(app: FastAPI):
     db_url = os.getenv("DATABASE_URL", "sqlite://data/yasuo.db")
     os.makedirs("data", exist_ok=True)
-    await Tortoise.init(
+    async with RegisterTortoise(
+        app=app,
         db_url=db_url,
         modules={"models": ["models"]},
-    )
-    await Tortoise.generate_schemas()
-    task = asyncio.create_task(NapCatSync().run())
-    yield
-    task.cancel()
-    await Tortoise.close_connections()
+        generate_schemas=True,
+    ):
+        task = asyncio.create_task(NapCatSync().run())
+        try:
+            yield
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 def create_app() -> FastAPI:
@@ -47,7 +51,7 @@ if __name__ == "__main__":
 
     uvicorn.run(
         app,
-        host="0.0.0.0",
+        host=os.getenv("YASUO_API_HOST", "127.0.0.1"),
         port=6273,
         reload=False,
     )

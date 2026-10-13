@@ -1,0 +1,1 @@
+"""External message protocol adapters."""

@@ -37,6 +37,7 @@ services:
             - ./data/mini/plugins/apex/data:/app/plugins/apex/data
             - ./data/mini/plugins/yasuo/data:/app/plugins/yasuo/data
             - ./data/mini/plugins/lol/data:/app/plugins/lol/data
+            - ./data/mini/plugins/niu/data:/app/plugins/niu/data
         depends_on:
             napcat:
                 condition: service_started
