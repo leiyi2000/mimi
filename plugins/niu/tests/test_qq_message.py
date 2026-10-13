@@ -91,6 +91,15 @@ def test_detects_direct_bot_mention():
     assert not QQMessageAdapter.mentions(segments, 456)
 
 
+def test_reply_text_collapses_chat_line_breaks_but_preserves_code_blocks():
+    assert (
+        QQMessageAdapter.reply_text("我在。\n\n你想说就说。")
+        == "我在。 你想说就说。"
+    )
+    code = "运行：\n```bash\necho ok\n```"
+    assert QQMessageAdapter.reply_text(code) == code
+
+
 def test_detects_only_explicit_marketface_images_for_passive_collection():
     assert QQMessageAdapter.is_passive_sticker(
         Image(file="marketface", url="https://example.com/sticker.gif")

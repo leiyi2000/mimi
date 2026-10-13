@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Sequence
 from typing import Protocol
 
@@ -68,6 +69,13 @@ class QQMessageAdapter:
             isinstance(segment, At) and segment.qq == str(user_id)
             for segment in segments
         )
+
+    @staticmethod
+    def reply_text(content: str) -> str:
+        text = content.strip()
+        if "```" in text:
+            return text
+        return re.sub(r"\s*\r?\n+\s*", " ", text)
 
     @staticmethod
     def is_passive_sticker(segment: object) -> bool:

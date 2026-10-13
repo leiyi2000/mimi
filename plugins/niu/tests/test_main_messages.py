@@ -106,7 +106,7 @@ async def test_handle_sends_mention_text_image_and_file():
 async def test_handle_can_send_final_text_without_mention():
     class PlainConversations(FakeConversations):
         async def accept(self, **kwargs):
-            await kwargs["send_text"]("普通回复", False)
+            await kwargs["send_text"]("第一句。\n\n第二句。", False)
             return True
 
     application = NiuApplication.__new__(NiuApplication)
@@ -120,7 +120,7 @@ async def test_handle_can_send_final_text_without_mention():
 
     await application.handle(event, SimpleNamespace())
 
-    assert event.sent == [[Text(text="普通回复")]]
+    assert event.sent == [[Text(text="第一句。 第二句。")]]
 
 
 def test_artifact_filename_is_sanitized():

@@ -83,7 +83,9 @@ async def test_plain_text_response(configured_env):
     assert not response.mention_sender
     assert client.requests[0]["system"].startswith("你是一个群聊助手")
     assert "八十个汉字" in client.requests[0]["system"]
-    assert "调用富回复渲染 Skill" in client.requests[0]["system"]
+    assert "调用富回复渲染 Skill" in client.requests[0]["system"].replace(
+        "\n", ""
+    )
 
 
 async def test_web_search_is_enabled_only_after_local_request(configured_env):

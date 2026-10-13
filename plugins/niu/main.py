@@ -178,6 +178,7 @@ class NiuApplication:
             content: str,
             mention_sender: bool = True,
         ) -> None:
+            content = QQMessageAdapter.reply_text(content)
             message = [Text(text=content)]
             if mention_sender:
                 message = [
