@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import struct
 from dataclasses import dataclass
 from functools import lru_cache
@@ -20,12 +21,15 @@ FONT_NAME = "NiuCJK"
 MAX_CONTENT_CHARS = 12_000
 MAX_RENDER_HEIGHT = 16_000
 MAX_RENDER_BYTES = 12 * 1024 * 1024
+AUTO_RENDER_MIN_CHARS = 40
 FONT_PATH = (
     Path(__file__).resolve().parent.parent
     / "assets"
     / "fonts"
     / "NotoSansSC.ttf"
 )
+INLINE_CODE_PATTERN = re.compile(r"`([^`\n]+)`")
+URL_PATTERN = re.compile(r"https?://[^\s<>()）]+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -313,6 +317,104 @@ class RichReplyRenderer:
         if not FONT_PATH.is_file():
             raise RuntimeError(f"render font missing: {FONT_PATH}")
         return [{"data": FONT_PATH.read_bytes(), "name": FONT_NAME}]
+
+
+class AutomaticReplyRenderer:
+    def __init__(
+        self,
+        renderer: RichReplyRenderer | None = None,
+        *,
+        min_chars: int = AUTO_RENDER_MIN_CHARS,
+    ) -> None:
+        if min_chars < 1:
+            raise ValueError("automatic render threshold must be positive")
+        self.renderer = renderer or RichReplyRenderer()
+        self.min_chars = min_chars
+
+    async def apply(
+        self,
+        text: str,
+        *,
+        title_hint: str,
+    ) -> tuple[str, Artifact] | None:
+        if not self.should_render(text):
+            return None
+        reply = self._reply(text, title_hint)
+        png = await asyncio.to_thread(self.renderer.render, reply)
+        return (
+            self._companion_text(text),
+            Artifact(
+                kind="image",
+                data=png,
+                mime_type="image/png",
+                title=reply.title,
+            ),
+        )
+
+    def should_render(self, text: str) -> bool:
+        stripped = text.strip()
+        return len(stripped) >= self.min_chars and "```" not in stripped
+
+    def _reply(self, text: str, title_hint: str) -> RichReply:
+        clean = self._display_text(text)
+        parts = [
+            part.strip()
+            for part in re.split(r"\s+-\s+(?=\S)", clean)
+            if part.strip()
+        ]
+        if len(parts) >= 4:
+            sections = (
+                ReplySection("概要", parts[0], (), None),
+                ReplySection("主要内容", "", tuple(parts[1:]), None),
+            )
+        else:
+            sections = (ReplySection("", clean, (), None),)
+        return RichReply(
+            title=self._title(title_hint),
+            subtitle="",
+            sections=sections,
+            footer="南瓜",
+        )
+
+    @staticmethod
+    def _display_text(text: str) -> str:
+        value = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+        value = re.sub(r"__(.+?)__", r"\1", value)
+        return INLINE_CODE_PATTERN.sub(r"\1", value).strip()
+
+    @staticmethod
+    def _title(title_hint: str) -> str:
+        if "总结" in title_hint:
+            return "项目总结" if "项目" in title_hint else "内容总结"
+        if "对比" in title_hint or "比较" in title_hint:
+            return "对比结果"
+        if "分析" in title_hint:
+            return "分析结果"
+        return "详细回复"
+
+    @staticmethod
+    def _companion_text(text: str) -> str:
+        copyable: list[str] = []
+        for value in URL_PATTERN.findall(text):
+            item = value.rstrip(".,;:!?，。；：！？")
+            if item not in copyable:
+                copyable.append(item)
+        for value in INLINE_CODE_PATTERN.findall(text):
+            item = value.strip()
+            if (
+                item
+                and len(item) <= 120
+                and (
+                    " " in item
+                    or item.startswith(("/", "http"))
+                )
+                and item not in copyable
+            ):
+                copyable.append(item)
+        if not copyable:
+            return "内容较长，已整理成图片。"
+        values = "；".join(copyable[:6])
+        return f"内容较长，已整理成图片。可复制内容：{values}"
 
 
 class RenderTools:

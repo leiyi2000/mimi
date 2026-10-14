@@ -23,7 +23,7 @@ from core.config import Config, ConfigError
 from core.conversation import ConversationStore, artifact_base64
 from core.mimi import MimiCommandCatalog, MimiCommandTools
 from core.prompts import PromptCatalog
-from core.rendering import RenderTools
+from core.rendering import AutomaticReplyRenderer, RenderTools
 from domain.memory import MemoryStore, MemoryTools
 from providers.group_history import GroupHistoryProvider, GroupHistoryTools
 from providers.image import ImageProvider
@@ -178,6 +178,7 @@ class NiuApplication:
             skills=self.skills,
             tools=self.tools,
             model_semaphore=model_semaphore,
+            automatic_renderer=AutomaticReplyRenderer(),
         )
         self.conversations = ConversationStore(
             config=config,

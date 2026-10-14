@@ -3,7 +3,12 @@ from pathlib import Path
 
 from PIL import Image
 
-from core.rendering import RenderTools, RichReplyRenderer
+from core.rendering import (
+    AUTO_RENDER_MIN_CHARS,
+    AutomaticReplyRenderer,
+    RenderTools,
+    RichReplyRenderer,
+)
 from core.tools import ToolContext, ToolRegistry
 
 
@@ -36,6 +41,15 @@ FIXTURE = {
 }
 
 
+class StubRenderer:
+    def __init__(self):
+        self.replies = []
+
+    def render(self, reply):
+        self.replies.append(reply)
+        return b"png"
+
+
 def test_renderer_escapes_model_content():
     renderer = RichReplyRenderer()
     reply = renderer.normalize(
@@ -56,6 +70,43 @@ def test_renderer_escapes_model_content():
     assert "&lt;script&gt;" in html
     assert "<script>" not in html
     assert "A &amp; B" in html
+
+
+async def test_automatic_renderer_applies_at_character_threshold():
+    renderer = StubRenderer()
+    automatic = AutomaticReplyRenderer(renderer)
+    text = (
+        "**OpenSpec** 项目概览"
+        + " - 核心思路是规范驱动开发"
+        + " - 工作流包含探索、提案和实施"
+        + " - 支持多个 AI 编程工具"
+        + "x" * AUTO_RENDER_MIN_CHARS
+        + " https://example.com `npm install openspec`"
+    )
+
+    result = await automatic.apply(text, title_hint="总结下这个项目")
+
+    assert result is not None
+    companion, artifact = result
+    assert artifact.kind == "image"
+    assert artifact.data == b"png"
+    assert artifact.title == "项目总结"
+    assert "https://example.com" in companion
+    assert "npm install openspec" in companion
+    assert renderer.replies[0].sections[1].heading == "主要内容"
+
+
+async def test_automatic_renderer_keeps_short_or_code_responses_as_text():
+    automatic = AutomaticReplyRenderer(StubRenderer())
+
+    assert await automatic.apply("简短回复", title_hint="问题") is None
+    assert (
+        await automatic.apply(
+            "```python\nprint('x')\n```" + "x" * AUTO_RENDER_MIN_CHARS,
+            title_hint="代码",
+        )
+        is None
+    )
 
 
 async def test_render_tool_returns_real_png():

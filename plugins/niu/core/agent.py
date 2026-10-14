@@ -18,6 +18,7 @@ from core.model import (
     ModelResponse,
 )
 from core.prompts import PromptCatalog
+from core.rendering import AutomaticReplyRenderer
 from core.run import RunEvent, RunStatus, RunTrace
 from core.skills import SkillRegistry
 from core.task import TaskFrame
@@ -62,6 +63,7 @@ class AgentLoop:
         skills: SkillRegistry,
         tools: ToolRegistry,
         model_semaphore: asyncio.Semaphore,
+        automatic_renderer: AutomaticReplyRenderer | None = None,
     ) -> None:
         self.model_provider = model_provider
         self.config = config
@@ -69,6 +71,7 @@ class AgentLoop:
         self.skills = skills
         self.tools = tools
         self.model_semaphore = model_semaphore
+        self.automatic_renderer = automatic_renderer
 
     async def run(
         self,
@@ -178,6 +181,7 @@ class AgentLoop:
                         active_skill_names=active_skills,
                         partial_text=text,
                         mention_sender=mention_sender,
+                        user_text=user_text,
                     )
                 if task.active and not task.finished:
                     if round_index >= self.config.max_tool_rounds:
@@ -190,6 +194,7 @@ class AgentLoop:
                             active_skill_names=active_skills,
                             partial_text=text,
                             mention_sender=mention_sender,
+                            user_text=user_text,
                         )
                     request_messages.extend(
                         (
@@ -204,11 +209,12 @@ class AgentLoop:
                         )
                     )
                     continue
-                return AgentResponse(
+                return await self._response(
                     text=text,
                     artifacts=tuple(artifacts),
                     status=task.outcome,
                     mention_sender=mention_sender,
+                    title_hint=user_text,
                 )
             if round_index >= self.config.max_tool_rounds:
                 return await self._final_synthesis(
@@ -220,6 +226,7 @@ class AgentLoop:
                     active_skill_names=active_skills,
                     partial_text=text,
                     mention_sender=mention_sender,
+                    user_text=user_text,
                 )
 
             request_messages.append(
@@ -448,6 +455,7 @@ class AgentLoop:
         active_skill_names: set[str],
         partial_text: str = "",
         mention_sender: bool = False,
+        user_text: str = "",
     ) -> AgentResponse:
         synthesis_messages = list(messages)
         if partial_text:
@@ -484,10 +492,39 @@ class AgentLoop:
                 if artifacts
                 else "这次未能在限制内完成，请缩小范围后重试。"
             )
-        return AgentResponse(
+        return await self._response(
             text=text,
             artifacts=tuple(artifacts),
             status="partially_completed",
+            mention_sender=mention_sender,
+            title_hint=user_text,
+        )
+
+    async def _response(
+        self,
+        *,
+        text: str,
+        artifacts: tuple[Artifact, ...],
+        status: RunStatus,
+        mention_sender: bool,
+        title_hint: str,
+    ) -> AgentResponse:
+        if self.automatic_renderer is not None and not artifacts:
+            try:
+                rendered = await self.automatic_renderer.apply(
+                    text,
+                    title_hint=title_hint,
+                )
+            except Exception:
+                log.exception("automatic rich reply rendering failed")
+            else:
+                if rendered is not None:
+                    text, artifact = rendered
+                    artifacts = (artifact,)
+        return AgentResponse(
+            text=text,
+            artifacts=artifacts,
+            status=status,
             mention_sender=mention_sender,
         )
 
