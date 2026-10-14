@@ -352,8 +352,7 @@ class AutomaticReplyRenderer:
         )
 
     def should_render(self, text: str) -> bool:
-        stripped = text.strip()
-        return len(stripped) >= self.min_chars and "```" not in stripped
+        return len(text.strip()) >= self.min_chars
 
     def _reply(self, text: str, title_hint: str) -> RichReply:
         clean = self._display_text(text)
@@ -378,7 +377,8 @@ class AutomaticReplyRenderer:
 
     @staticmethod
     def _display_text(text: str) -> str:
-        value = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+        value = re.sub(r"```[A-Za-z0-9_+-]*\n?", "", text)
+        value = re.sub(r"\*\*(.+?)\*\*", r"\1", value)
         value = re.sub(r"__(.+?)__", r"\1", value)
         return INLINE_CODE_PATTERN.sub(r"\1", value).strip()
 

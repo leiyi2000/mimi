@@ -96,17 +96,19 @@ async def test_automatic_renderer_applies_at_character_threshold():
     assert renderer.replies[0].sections[1].heading == "主要内容"
 
 
-async def test_automatic_renderer_keeps_short_or_code_responses_as_text():
-    automatic = AutomaticReplyRenderer(StubRenderer())
+async def test_automatic_renderer_only_keeps_short_responses_as_text():
+    renderer = StubRenderer()
+    automatic = AutomaticReplyRenderer(renderer)
 
     assert await automatic.apply("简短回复", title_hint="问题") is None
-    assert (
-        await automatic.apply(
-            "```python\nprint('x')\n```" + "x" * AUTO_RENDER_MIN_CHARS,
-            title_hint="代码",
-        )
-        is None
+    result = await automatic.apply(
+        "```python\nprint('x')\n```" + "x" * AUTO_RENDER_MIN_CHARS,
+        title_hint="代码",
     )
+
+    assert result is not None
+    assert "```" not in renderer.replies[0].sections[0].body
+    assert "print('x')" in renderer.replies[0].sections[0].body
 
 
 async def test_render_tool_returns_real_png():

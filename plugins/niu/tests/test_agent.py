@@ -164,7 +164,7 @@ async def test_render_tool_is_available_for_summary_on_first_round(configured_en
     )
 
     assert "## Skill: render" in client.requests[0].system
-    assert "不要因为存在一个 URL" in client.requests[0].system
+    assert "普通文字、代码、命令" in client.requests[0].system
     assert "render_rich_reply" in [
         tool["name"] for tool in client.requests[0].tools
     ]
