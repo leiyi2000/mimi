@@ -21,6 +21,8 @@ def test_catalog_builds_skill_from_explicit_agent_commands():
     assert skill.name == "mimi"
     assert skill.allowed_tools == ("run_mimi_command",)
     assert "`APEX轮换`" in skill.instructions
+    assert "`点歌 <歌曲名>[-歌手名]`" in skill.instructions
+    assert "Agent 自身没有同类 Provider" in skill.instructions
 
 
 async def test_command_tool_sends_only_catalog_commands_to_current_group():

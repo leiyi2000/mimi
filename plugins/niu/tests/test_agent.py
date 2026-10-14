@@ -7,6 +7,7 @@ import pytest
 
 from core.agent import AgentLoop, EmptyResponse
 from core.config import Config
+from core.mimi import MimiCommandCatalog, MimiCommandTools
 from core.prompts import PromptCatalog
 from core.skills import ReplyTools, SkillRegistry
 from core.tools import (
@@ -395,6 +396,35 @@ async def test_specialized_skill_is_injected_after_activation(configured_env):
     assert "## Skill: image" in client.requests[1]["system"]
     assert "generate_image" in [
         tool["name"] for tool in client.requests[1]["tools"]
+    ]
+
+
+async def test_mimi_commands_are_available_on_first_round(configured_env):
+    config = Config.from_env()
+    plugin_root = Path(__file__).resolve().parent.parent
+    commands = MimiCommandCatalog(plugin_root.parent).load()
+    skills = SkillRegistry(plugin_root / "skills")
+    skills.load(enabled=set())
+    skills.register(MimiCommandCatalog.skill(commands))
+    registry = ToolRegistry()
+    MimiCommandTools(commands).register(registry)
+    client = FakeClient([text_response("可以点歌。")])
+    loop = AgentLoop(
+        client=client,
+        config=config,
+        prompts=PromptCatalog.load(plugin_root / "prompts"),
+        skills=skills,
+        tools=registry,
+        model_semaphore=asyncio.Semaphore(1),
+        web_search_semaphore=asyncio.Semaphore(1),
+    )
+
+    await run(loop)
+
+    assert "## Skill: mimi" in client.requests[0]["system"]
+    assert "`点歌 <歌曲名>[-歌手名]`" in client.requests[0]["system"]
+    assert "run_mimi_command" in [
+        tool["name"] for tool in client.requests[0]["tools"]
     ]
 
 

@@ -151,7 +151,8 @@ Skill 只描述使用时机和允许的宿主 Tool。Tool 接收结构化参数�
 - 不可变安全规则。
 - 默认性格和 NapCat 输入输出协议。
 - 群级性格和相关长期记忆。
-- 全量 Skill Catalog，以及本轮已激活 Skill 的完整说明。
+- 全量 Skill Catalog，以及基础 Skill、动态 `mimi` Skill和本轮已激活专用 Skill 的完整
+  说明。
 - 当前群最近完整轮次。
 - 当前发言者、成员 At、引用发送者的 `user_id` 与昵称快照，以及分区后的文本、表情描述
   和当前轮图片。
@@ -342,7 +343,8 @@ data/stickers/groups/<group_id>/
 
 `MimiCommandCatalog` 在 Niu 启动时读取 `plugins/*/commands.toml`。只有显式设置
 `agent = true` 的指令进入动态 `mimi` Skill，Niu 自身的 `chat` 清单始终排除。绑定、
-登录、登出和管理类指令不设置该标记。
+登录、登出和管理类指令不设置该标记。`mimi` 默认激活并在首轮暴露完整命令表和
+`run_mimi_command`，避免模型因未主动路由 Skill 而否认点歌等已安装插件能力。
 
 模型调用 `run_mimi_command` 时必须提供一条完整指令。工具按清单做大小写不敏感的最长
 前缀匹配，拒绝未知指令、换行和超过 500 字符的输入，再通过当前事件的群发送回调发送单个
@@ -521,7 +523,8 @@ QuotedMessage(
 - 表情包按群隔离、商城表情去重、图片标注收藏、整理、删除、发送、容量与每日变更限额。
 - 群历史当前群绑定、成员解析、撤回与机器人消息排除。
 - Monty 纯计算、只读 Tool 回调、类型检查、文件/网络/环境/子进程隔离、时间和输出限制。
-- Skill 格式、两阶段激活、完整提示词和 Tool Schema 过滤。
+- Skill 格式、专用 Skill 两阶段激活、默认 `mimi` 指令注入、完整提示词和 Tool Schema
+  过滤。
 
 验收命令：
 

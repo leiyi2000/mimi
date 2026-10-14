@@ -156,8 +156,8 @@ Niu 使用文本前缀或直接 @ 接收群消息。`ConversationStore` 为每�
 NapCat 连接解析成员 At 和引用消息，向领域层提供带成员 ID、昵称快照、来源标记的文本与
 图片；当前消息和引用消息共用输入图片限额，短期历史仍只保存摘要。
 
-Agent 首轮只注入 Skill Catalog、基础 Skill 和对应 Tool；专用 Skill 经
-`activate_skill` 后才注入完整指令与 Schema。Web Search 先由本地
+Agent 首轮只注入 Skill Catalog、基础 Skill、动态 `mimi` Skill 和对应 Tool；其他专用
+Skill 经 `activate_skill` 后才注入完整指令与 Schema。Web Search 先由本地
 `request_web_search` Tool 请求，只在下一模型轮次占用搜索并发和搜索超时。长任务可通过
 `publish_plan` 在其他 Tool 前发送一次用户可见计划。轮次耗尽或输出截断时执行无 Tool 的
 最终总结；`RunTrace` 只记录运行 ID、阶段、耗时、Token 和错误码，不记录群聊原文或图片。
@@ -166,7 +166,8 @@ Agent 首轮只注入 Skill Catalog、基础 Skill 和对应 Tool；专用 Skill
 
 启动时 `MimiCommandCatalog` 扫描 `plugins/*/commands.toml`，把显式设置
 `agent = true` 的非 Niu 指令生成内存 `mimi` Skill。`run_mimi_command` 只允许发送该
-目录中的完整指令到当前群，由对应插件进程处理；绑定、登录和管理类指令不开放。
+目录中的完整指令到当前群，由对应插件进程处理；该 Skill 默认激活，避免模型因未路由
+Skill 而否认点歌等已有插件能力。绑定、登录和管理类指令不开放。
 群级性格和筛选后的长期记忆由 `MemoryStore` 原子写入 Niu 数据卷，完整群聊不持久化。
 `StickerStore` 按群保存商城表情元数据、`sub_type=1`/`marketface` 图片和模型确认收藏的
 反应图；照片、截图等普通群图片不被动保存。

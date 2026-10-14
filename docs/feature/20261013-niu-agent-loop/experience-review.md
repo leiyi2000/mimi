@@ -227,7 +227,8 @@ RunTrace
 
 - 首轮保留简短 Skill Catalog 和少数基础 Tool。
 - 模型通过 `activate_skill` 选择一到三个 Skill，下一轮才注入完整说明和对应 Tool。
-- 对记忆、回复附件等高频且意图明确的能力可直接激活，不必增加路由轮次。
+- 对记忆、回复附件和动态 `mimi` 指令等高频且意图明确的能力直接激活，不增加路由轮次；
+  `mimi` 必须在首轮提供完整命令表，避免模型否认点歌等已安装插件能力。
 - `ToolRegistry.schemas()` 根据已激活 Skill 过滤 Schema；未激活专用 Tool 即使被模型
   猜中也会返回 `SKILL_NOT_ACTIVE`。
 

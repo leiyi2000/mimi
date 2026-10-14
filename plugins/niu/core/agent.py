@@ -116,6 +116,7 @@ class AgentLoop:
         active_skills = self.skills.names() & {
             "agent-runtime",
             "memory",
+            "mimi",
             "reply",
             "web-search",
         }

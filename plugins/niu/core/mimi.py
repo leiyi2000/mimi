@@ -71,9 +71,9 @@ class MimiCommandCatalog:
         lines = [
             "# Mimi Commands",
             "",
-            "Use `run_mimi_command` when an existing Mimi command can answer",
-            "the request better than a text explanation. Send exactly one command",
-            "and include required arguments from its usage. Never invent commands.",
+            "当下列现有 Mimi 指令能完成用户请求时，优先调用 `run_mimi_command`，",
+            "不要只做文字解释。即使 Agent 自身没有同类 Provider，也不代表对应插件",
+            "不可用。每次只发送一条完整指令，按用法补齐必要参数，禁止编造指令。",
             "",
         ]
         current_plugin = ""
@@ -86,7 +86,10 @@ class MimiCommandCatalog:
             )
         return Skill(
             name="mimi",
-            description="调用 Mimi 已安装插件中明确允许 Agent 使用的群聊指令。",
+            description=(
+                "调用 Mimi 已安装插件的群聊指令，包括点歌、游戏战绩、"
+                "地图轮换、帮助和撤回查询。"
+            ),
             instructions="\n".join(lines).strip(),
             allowed_tools=("run_mimi_command",),
         )
