@@ -19,19 +19,12 @@ def test_builtin_skills_load_progressively():
     assert not registry.allows("generate_image")
 
 
-def test_web_search_can_be_exposed_for_model_decision():
+def test_web_search_skill_allows_search_tool():
     registry = SkillRegistry(SKILLS)
-    registry.load(
-        enabled={"web-search"},
-        server_tools={
-            "web-search": (
-                {"type": "web_search_20250305", "name": "web_search"},
-            )
-        },
-    )
+    registry.load(enabled={"web-search"})
 
-    assert registry.server_tools(include_web_search=False) == []
-    assert registry.server_tools(include_web_search=True)[0]["name"] == "web_search"
+    assert registry.allows("search_web")
+    assert "完整 URL" in registry.prompt()
 
 
 def test_render_skill_guides_complex_image_replies():

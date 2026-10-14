@@ -101,7 +101,8 @@ plugins/niu/
 │   ├── group_history.py
 │   ├── image.py
 │   ├── media.py
-│   └── music.py
+│   ├── music.py
+│   └── sticker_classifier.py
 ├── skills/
 │   ├── code/SKILL.md
 │   ├── group-history/SKILL.md
@@ -156,8 +157,7 @@ Skill 只描述使用时机和允许的宿主 Tool。Tool 接收结构化参数�
 - 当前群最近完整轮次。
 - 当前发言者、成员 At、引用发送者的 `user_id` 与昵称快照，以及分区后的文本、表情描述
   和当前轮图片。
-- 基础 Tool 与已激活 Skill 的 Tool Schema；Server Web Search 只在本地搜索请求后的下一
-  轮临时附加。
+- 基础 Tool 与已激活 Skill 的 Tool Schema；`search_web` 作为默认只读 Tool 首轮可用。
 
 循环：
 
@@ -166,7 +166,7 @@ messages.create()
   -> text: 返回
   -> activate_skill: 激活专用 Skill
   -> publish_plan: 先发送一次计划，再执行同轮其他 Tool
-  -> request_web_search: 下一轮临时启用 Server Web Search
+  -> search_web: 调用 AnySearch，返回标题、完整 URL 和摘要
   -> other tool_use[]: 并行执行并追加 tool_result
   -> 下一轮 messages.create()
 ```
@@ -186,9 +186,8 @@ Artifact。`thinking` 不发送也不写入历史。联网搜索和群历史结�
 2. 接纳时分配群内单调 `sequence` 并立即入队。
 3. 同群一次只处理一条消息。
 4. 每次模型 HTTP 请求单独获取全局模型信号量。
-5. 只有本地搜索请求后的模型轮次获取 Web Search 独立并发槽。
-6. Tool 执行期间不占用模型槽位。
-7. 有 Artifact 时先发送全部附件，再发送完成文本；全部成功后才追加 `CompletedTurn`。
+5. Tool 执行期间不占用模型槽位。
+6. 有 Artifact 时先发送全部附件，再发送完成文本；全部成功后才追加 `CompletedTurn`。
 
 每群保留最近若干完整用户/助手对，并同时受字符预算限制。空闲 TTL 后清空短期历史。
 `message_id` 在短期缓存内去重，Tool 结果以 `message_id + tool_use_id` 幂等。
@@ -257,20 +256,16 @@ CodeResult(
 
 ### Web Search
 
-启用后，基础 Tool 暴露：
+基础 Tool 默认暴露：
 
 ```json
-{"name": "request_web_search"}
+{"name": "search_web"}
 ```
 
-模型判断问题依赖实时公开信息时先调用该 Tool。只有紧随其后的一个模型轮次附加：
-
-```json
-{"type": "web_search_20250305", "name": "web_search"}
-```
-
-该轮才获取搜索信号量并使用搜索超时，后续总结恢复普通模型超时。网页内容不能触发写工具
-或代码之外的权限变化。
+该 Tool 固定调用 AnySearch，使用中文区域参数并最多返回 8 条结构化结果。每条结果保留
+标题、完整 HTTP(S) URL 和摘要，过滤非 HTTP(S) URL。用户要求具体链接时，模型只有在结果
+中取得完整 URL 后才能声称已找到；否则必须说明未找到，并可继续改写查询或加入
+`site:domain` 限定词。网页内容是低信任数据，不能触发写工具或代码之外的权限变化。
 
 ### Group History
 
@@ -329,6 +324,8 @@ data/stickers/groups/<group_id>/
 - NapCat 以 `Image(sub_type=1)` 或 `Image(file=marketface)` 上报的自定义表情会在触发
   判断前下载，并按内容摘要去重保存；该路径复用图片 MIME、字节数、像素、容量和每日更新
   限制。
+- 被动图片收集后由后台多模态模型补充摘要、情绪和标签，不阻塞群消息；分类尝试按群持久化
+  计数，每群每天默认最多 5 次，失败同样计入额度，避免异常重试放大调用。
 - 照片、截图等普通图片不被动保存。触发消息中的图片先作为当前轮多模态输入，由模型判断
   是否适合作为表情包，再调用 `collect_current_image_as_sticker` 生成摘要、情绪和标签。
 - 模型通过 `find_group_stickers` 获取候选元数据，自主选择最多一张并调用
@@ -336,6 +333,7 @@ data/stickers/groups/<group_id>/
 - 模型可调用 `organize_group_sticker` 修正元数据；只有损坏、重复或群友明确要求时删除。
 - 每群默认最多 200 个条目，每日最多执行 30 次收藏、整理或删除；重复收藏、无变化整理、
   未命中删除和发送不消耗每日额度。额度按自然日惰性重置。
+- 新表情进入已满的群表情库时随机淘汰一条旧记录；若旧记录包含图片，同时删除对应文件。
 - 图片数据和索引均留在 Niu 数据卷；旧版数组索引在下一次写入时迁移到带配额元数据的
   `schema_version: 2` 对象。
 
@@ -373,9 +371,9 @@ Agent 指令都必须通过正常代码评审、测试和部署。
 | `NIU_MAX_INPUT_IMAGES` | `4` | 单条触发消息的图片上限 |
 | `NIU_INPUT_IMAGE_MAX_BYTES` | `5242880` | 单张输入图片字节上限 |
 | `ANTHROPIC_API_KEY` | 无 | MiniMax Token |
+| `ANYSEARCH_API_KEY` | 无 | AnySearch API Key |
 | `ANTHROPIC_BASE_URL` | `https://api.minimaxi.com/anthropic` | 文本端点 |
 | `MINIMAX_API_BASE_URL` | `https://api.minimaxi.com/v1` | 媒体端点 |
-| `NIU_WEB_SEARCH_ENABLED` | `true` | 联网搜索 |
 | `NIU_GROUP_HISTORY_ENABLED` | `true` | 群历史 |
 | `YASUO_API_URL` | `http://127.0.0.1:6273` | Yasuo 本机 API |
 | `MONTY_BIN` | 当前虚拟环境的 `monty` | 固定 Worker 二进制 |
@@ -390,6 +388,7 @@ Agent 指令都必须通过正常代码评审、测试和部署。
 | `NIU_STICKERS_ENABLED` | `true` | 群表情包能力 |
 | `NIU_STICKER_MAX_ITEMS` | `200` | 每群表情包条目上限 |
 | `NIU_STICKER_DAILY_UPDATES` | `30` | 每群每日表情包变更次数上限 |
+| `NIU_STICKER_DAILY_CLASSIFICATIONS` | `5` | 每群每日后台 AI 分类次数上限 |
 
 必需配置缺失或越界时，插件以非零退出码失败且只输出变量名，不输出 Secret。
 
@@ -512,7 +511,7 @@ QuotedMessage(
 默认离线测试覆盖：
 
 - 文本、单轮/多轮 Tool Use、并行、未知工具、超时、空响应和轮次上限。
-- 按需 Web Search、计划执行屏障、最终总结、重复错误切换和脱敏 Run Trace。
+- AnySearch 结构化结果、计划执行屏障、最终总结、重复错误切换和脱敏 Run Trace。
 - QQ 文本、图片、小表情、商城表情、成员 At 和引用消息输入，以及文本、@、图片和文件输出。
 - 复杂回复结构校验、HTML 转义、中文字体和真实 PNG 渲染。
 - 未触发消息的 `MFace` 与 `sub_type=1`/`marketface` 图片旁路收集、机器人自身事件过滤

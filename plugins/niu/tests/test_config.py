@@ -8,17 +8,26 @@ def test_config_uses_new_model_and_prefix(configured_env):
 
     assert config.model == "MiniMax-M3.1-Flash-Preview"
     assert config.trigger_prefix == "南瓜"
+    assert config.anysearch_api_key == "test-search-key"
     assert not config.group_history_enabled
     assert config.image_enabled
     assert config.stickers_enabled
     assert config.sticker_max_items == 200
     assert config.sticker_daily_updates == 30
+    assert config.sticker_daily_classifications == 5
 
 
 def test_config_requires_api_key(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
     with pytest.raises(ConfigError, match="ANTHROPIC_API_KEY"):
+        Config.from_env()
+
+
+def test_config_requires_anysearch_api_key(configured_env, monkeypatch):
+    monkeypatch.delenv("ANYSEARCH_API_KEY", raising=False)
+
+    with pytest.raises(ConfigError, match="ANYSEARCH_API_KEY"):
         Config.from_env()
 
 

@@ -11,7 +11,8 @@ allowed-tools: collect_current_image_as_sticker find_group_stickers send_group_s
 - `summary` 客观描述画面和文字，`emotion` 描述适用情绪，`tags` 使用简短检索词。
 - 回复适合用表情包增强语气时，先调用 `find_group_stickers`，根据返回元数据自主选择最多
   一个，再调用 `send_group_sticker`。不要每次回复都发，也不要发送与语境无关的表情。
-- `MFace` 和 NapCat 标记为 `sub_type=1`/`marketface` 的图片由入口自动去重收集。发现
-  标签不准确时可调用 `organize_group_sticker` 修正。
+- `MFace` 和 NapCat 标记为 `sub_type=1`/`marketface` 的图片由入口自动去重收集；图片
+  元数据由每日额度受限的后台模型补充。发现标签不准确时可调用
+  `organize_group_sticker` 修正。
 - 只有损坏、重复，或群友明确要求删除时，才调用 `delete_group_sticker`。
 - 工具成功前不能声称已收集、整理、删除或发送。

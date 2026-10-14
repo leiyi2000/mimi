@@ -5,7 +5,7 @@ from napcat import At, File, Image, MFace, Text
 
 from main import NiuApplication
 from domain.message_content import InputImage, UserMessage
-from core.tools import Artifact
+from core.tools import Artifact, ToolImage
 
 
 class FakeQQMessages:
@@ -325,6 +325,55 @@ async def test_handle_collects_sticker_image_without_triggering_conversation():
     assert call["user_id"] == 123
     assert call["image"].data == b"sticker"
     assert not application.conversations.accepted
+
+
+async def test_passive_sticker_classification_updates_metadata():
+    class FakeClassifier:
+        def __init__(self):
+            self.calls = []
+
+        async def classify(self, image):
+            self.calls.append(image)
+            return SimpleNamespace(
+                summary="小猫挥手",
+                emotion="开心",
+                tags=("猫", "挥手"),
+            )
+
+    class FakeStore:
+        def __init__(self):
+            self.reserved = []
+            self.applied = []
+
+        async def reserve_classification(self, group_id):
+            self.reserved.append(group_id)
+            return True
+
+        async def apply_classification(self, **kwargs):
+            self.applied.append(kwargs)
+
+    application = NiuApplication.__new__(NiuApplication)
+    application.sticker_classifier = FakeClassifier()
+    application.stickers = FakeStore()
+    image = ToolImage(b"gif", "image/gif", "[动画表情]")
+
+    await application._classify_sticker(
+        group_id=2,
+        sticker_id="image-id",
+        image=image,
+    )
+
+    assert application.stickers.reserved == [2]
+    assert application.sticker_classifier.calls == [image]
+    assert application.stickers.applied == [
+        {
+            "group_id": 2,
+            "sticker_id": "image-id",
+            "summary": "小猫挥手",
+            "emotion": "开心",
+            "tags": ("猫", "挥手"),
+        }
+    ]
 
 
 async def test_handle_ignores_messages_sent_by_the_bot():

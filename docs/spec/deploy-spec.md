@@ -42,6 +42,7 @@ chmod 600 .env
 | `NETEASE_COOKIE` | 否 | 不配置 | 仅用于部署时预置网易云登录态 |
 | `ANTHROPIC_BASE_URL` | 南瓜需要 | `https://api.minimaxi.com/anthropic` | MiniMax Anthropic 兼容端点 |
 | `ANTHROPIC_API_KEY` | 南瓜需要 | `replace-with-minimax-token` | MiniMax Token |
+| `ANYSEARCH_API_KEY` | 南瓜需要 | 不配置 | AnySearch API Key |
 | `MINIMAX_API_BASE_URL` | 南瓜媒体能力需要 | `https://api.minimaxi.com/v1` | 图片和音乐原生端点 |
 | `MINIMAX_MODEL` | 否 | `MiniMax-M3.1-Flash-Preview` | 南瓜文本模型 |
 | `NIU_TRIGGER_PREFIX` | 否 | `南瓜` | 群消息文本触发前缀 |
@@ -50,6 +51,7 @@ chmod 600 .env
 | `NIU_STICKERS_ENABLED` | 否 | `true` | 启用群表情包收集、整理和回复 |
 | `NIU_STICKER_MAX_ITEMS` | 否 | `200` | 每群表情包条目上限 |
 | `NIU_STICKER_DAILY_UPDATES` | 否 | `30` | 每群每日表情包变更次数上限 |
+| `NIU_STICKER_DAILY_CLASSIFICATIONS` | 否 | `5` | 每群每日后台 AI 分类次数上限 |
 | `NIU_GROUP_HISTORY_ENABLED` | 否 | `true` | 是否启用当前群历史查询 |
 | `YASUO_API_URL` | 群历史需要 | `http://127.0.0.1:6273` | Yasuo 内部 API |
 | `NIU_MONTY_MAX_PROCESSES` | 否 | `2` | Monty Worker 进程上限 |

@@ -227,24 +227,6 @@ class AgentRuntimeTools:
                 skill_name="agent-runtime",
             )
         )
-        registry.register(
-            Tool(
-                name="request_web_search",
-                description=(
-                    "Enable web search for the next model round when current public "
-                    "information is required."
-                ),
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "reason": {"type": "string", "maxLength": 200},
-                    },
-                    "required": ["reason"],
-                },
-                handler=self.request_web_search,
-                skill_name="web-search",
-            )
-        )
 
     async def activate_skill(
         self,
@@ -291,13 +273,3 @@ class AgentRuntimeTools:
         )
         await context.send_group_text(text)
         return ToolResult("PLAN_PUBLISHED")
-
-    async def request_web_search(
-        self,
-        context: ToolContext,
-        arguments: dict[str, Any],
-    ) -> ToolResult:
-        reason = str(arguments["reason"]).strip()
-        if not 1 <= len(reason) <= 200:
-            raise ValueError("invalid search reason")
-        return ToolResult("WEB_SEARCH_REQUESTED")

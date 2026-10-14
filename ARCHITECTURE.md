@@ -157,11 +157,11 @@ NapCat 连接解析成员 At 和引用消息，向领域层提供带成员 ID、
 图片；当前消息和引用消息共用输入图片限额，短期历史仍只保存摘要。
 
 Agent 首轮只注入 Skill Catalog、基础 Skill、动态 `mimi` Skill 和对应 Tool；其他专用
-Skill 经 `activate_skill` 后才注入完整指令与 Schema。Web Search 先由本地
-`request_web_search` Tool 请求，只在下一模型轮次占用搜索并发和搜索超时。长任务可通过
-`publish_plan` 在其他 Tool 前发送一次用户可见计划。轮次耗尽或输出截断时执行无 Tool 的
-最终总结；`RunTrace` 只记录运行 ID、阶段、耗时、Token 和错误码，不记录群聊原文或图片。
-包含附件的结果先发送附件，全部成功后才发送完成文本。
+Skill 经 `activate_skill` 后才注入完整指令与 Schema。Web Search 默认通过本地
+`search_web` Tool 调用 AnySearch，并向模型保留结构化标题、完整 URL 和摘要。长任务可通过
+`publish_plan` 在其他 Tool 前发送一次用户可见计划。轮次耗尽或输出截断时执行无 Tool
+的最终总结；`RunTrace` 只记录运行 ID、阶段、耗时、Token 和错误码，不记录群聊原文或
+图片。包含附件的结果先发送附件，全部成功后才发送完成文本。
 最终文本默认不 At；模型只有调用 `mention_current_sender` 后，发送层才 At 当前发言者。
 
 启动时 `MimiCommandCatalog` 扫描 `plugins/*/commands.toml`，把显式设置
@@ -170,7 +170,8 @@ Skill 经 `activate_skill` 后才注入完整指令与 Schema。Web Search 先�
 Skill 而否认点歌等已有插件能力。绑定、登录和管理类指令不开放。
 群级性格和筛选后的长期记忆由 `MemoryStore` 原子写入 Niu 数据卷，完整群聊不持久化。
 `StickerStore` 按群保存商城表情元数据、`sub_type=1`/`marketface` 图片和模型确认收藏的
-反应图；照片、截图等普通群图片不被动保存。
+反应图；被动图片由受每日额度约束的后台多模态分类器补充检索元数据，不阻塞群消息。库满
+后新表情随机替换一条旧记录并清理对应图片；照片、截图等普通群图片不被动保存。
 群历史只能通过 Yasuo 默认绑定在 `127.0.0.1:6273` 的 `/v1/agent/*` 只读接口访问，Niu
 不导入 Yasuo 代码或读取其数据库。受限 Python 由 Pydantic Monty Worker 执行，不提供
 Shell、外部 Skill 安装或动态代码注册。复杂回复通过结构化 Tool 输入和固定 HTML 模板，

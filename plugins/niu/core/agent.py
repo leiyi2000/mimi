@@ -58,7 +58,6 @@ class AgentLoop:
         skills: SkillRegistry,
         tools: ToolRegistry,
         model_semaphore: asyncio.Semaphore,
-        web_search_semaphore: asyncio.Semaphore,
     ) -> None:
         self.client = client
         self.config = config
@@ -66,7 +65,6 @@ class AgentLoop:
         self.skills = skills
         self.tools = tools
         self.model_semaphore = model_semaphore
-        self.web_search_semaphore = web_search_semaphore
 
     async def run(
         self,
@@ -109,7 +107,6 @@ class AgentLoop:
         trace: RunTrace,
     ) -> AgentResponse:
         request_messages = list(messages)
-        use_search = False
         read_only_only = False
         plan_published = False
         mention_sender = False
@@ -127,7 +124,6 @@ class AgentLoop:
             response = await self._request(
                 messages=request_messages,
                 memory_context=memory_context,
-                use_search=use_search,
                 read_only_only=read_only_only,
                 active_skill_names=active_skills,
             )
@@ -140,12 +136,6 @@ class AgentLoop:
                     duration_ms=int((time.monotonic() - started_at) * 1000),
                 )
             )
-            used_search = use_search
-            use_search = False
-            if used_search:
-                trace.events.append(
-                    RunEvent(kind="web_search_completed", round_index=round_index)
-                )
             text = self._text(response)
             tool_uses = [
                 block
@@ -311,12 +301,6 @@ class AgentLoop:
                     "search_group_messages",
                 }:
                     read_only_only = True
-                if (
-                    str(block.name) == "request_web_search"
-                    and not result.is_error
-                    and self.config.web_search_enabled
-                ):
-                    use_search = True
                 tool_results.append(
                     {
                         "type": "tool_result",
@@ -385,7 +369,6 @@ class AgentLoop:
             response = await self._request(
                 messages=synthesis_messages,
                 memory_context=memory_context,
-                use_search=False,
                 read_only_only=True,
                 expose_tools=False,
                 active_skill_names=active_skill_names,
@@ -417,7 +400,6 @@ class AgentLoop:
         *,
         messages: list[dict[str, Any]],
         memory_context: str,
-        use_search: bool,
         read_only_only: bool,
         expose_tools: bool = True,
         active_skill_names: set[str] | None = None,
@@ -435,10 +417,6 @@ class AgentLoop:
             if expose_tools
             else []
         )
-        if expose_tools:
-            tool_schemas.extend(
-                self.skills.server_tools(include_web_search=use_search)
-            )
         system = "\n\n".join(
             part
             for part in (
@@ -452,13 +430,8 @@ class AgentLoop:
         )
         try:
             async with self.model_semaphore:
-                if use_search:
-                    async with self.web_search_semaphore:
-                        return await self._create_message(
-                            messages, system, tool_schemas, use_search
-                        )
                 return await self._create_message(
-                    messages, system, tool_schemas, use_search
+                    messages, system, tool_schemas
                 )
         except anthropic.AuthenticationError as exc:
             raise AuthenticationError() from exc
@@ -475,13 +448,8 @@ class AgentLoop:
         messages: list[dict[str, Any]],
         system: str,
         tool_schemas: list[dict[str, Any]],
-        use_search: bool,
     ) -> Any:
-        timeout = (
-            self.config.web_search_timeout
-            if use_search
-            else self.config.request_timeout
-        )
+        timeout = self.config.request_timeout
         async with asyncio.timeout(timeout):
             request: dict[str, Any] = {
                 "model": self.config.model,

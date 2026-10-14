@@ -22,7 +22,6 @@ class Skill:
     description: str
     instructions: str
     allowed_tools: tuple[str, ...]
-    server_tools: tuple[dict[str, str], ...] = ()
 
 
 class SkillRegistry:
@@ -34,21 +33,12 @@ class SkillRegistry:
         self,
         *,
         enabled: set[str],
-        server_tools: dict[str, tuple[dict[str, str], ...]] | None = None,
     ) -> None:
         self._skills.clear()
         for directory in sorted(self.skill_root.iterdir()):
             if not directory.is_dir() or directory.name not in enabled:
                 continue
-            skill = self._parse(directory)
-            configured_server_tools = (server_tools or {}).get(skill.name, ())
-            self._skills[skill.name] = Skill(
-                name=skill.name,
-                description=skill.description,
-                instructions=skill.instructions,
-                allowed_tools=skill.allowed_tools,
-                server_tools=configured_server_tools,
-            )
+            self._skills[directory.name] = self._parse(directory)
 
     def register(self, skill: Skill) -> None:
         if skill.name in self._skills:
@@ -72,15 +62,6 @@ class SkillRegistry:
 
     def names(self) -> set[str]:
         return set(self._skills)
-
-    def server_tools(self, *, include_web_search: bool) -> list[dict[str, str]]:
-        if not include_web_search:
-            return []
-        return [
-            tool
-            for skill in self._skills.values()
-            for tool in skill.server_tools
-        ]
 
     def _parse(self, directory: Path) -> Skill:
         path = directory / "SKILL.md"

@@ -68,9 +68,7 @@ class Config:
     anthropic_base_url: str
     anthropic_api_key: str
     minimax_api_base_url: str
-    web_search_enabled: bool
-    web_search_timeout: int
-    web_search_max_concurrency: int
+    anysearch_api_key: str
     group_history_enabled: bool
     yasuo_api_url: str
     group_history_timeout: int
@@ -94,6 +92,7 @@ class Config:
     stickers_enabled: bool
     sticker_max_items: int
     sticker_daily_updates: int
+    sticker_daily_classifications: int
 
     @classmethod
     def from_env(cls) -> Config:
@@ -146,13 +145,7 @@ class Config:
             minimax_api_base_url=_required(
                 "MINIMAX_API_BASE_URL", "https://api.minimaxi.com/v1"
             ).rstrip("/"),
-            web_search_enabled=_boolean("NIU_WEB_SEARCH_ENABLED", True),
-            web_search_timeout=_integer(
-                "NIU_WEB_SEARCH_TIMEOUT", 120, 10, 300
-            ),
-            web_search_max_concurrency=_integer(
-                "NIU_WEB_SEARCH_MAX_CONCURRENCY", 2, 1, 16
-            ),
+            anysearch_api_key=_required("ANYSEARCH_API_KEY"),
             group_history_enabled=history_enabled,
             yasuo_api_url=_required(
                 "YASUO_API_URL", "http://127.0.0.1:6273"
@@ -201,5 +194,8 @@ class Config:
             ),
             sticker_daily_updates=_integer(
                 "NIU_STICKER_DAILY_UPDATES", 30, 1, 1000
+            ),
+            sticker_daily_classifications=_integer(
+                "NIU_STICKER_DAILY_CLASSIFICATIONS", 5, 0, 100
             ),
         )

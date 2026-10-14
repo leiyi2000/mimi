@@ -30,11 +30,16 @@ from providers.group_history import GroupHistoryProvider, GroupHistoryTools
 from providers.image import ImageProvider
 from providers.media import MediaDownloader, MediaError
 from providers.music import MusicProvider
+from providers.sticker_classifier import (
+    StickerClassificationError,
+    StickerClassifier,
+)
+from providers.web_search import AnySearchProvider, WebSearchTools
 from adapters.napcat_context import NapCatContextAdapter
 from adapters.qq_message import InputMessageError, QQMessageAdapter
 import settings  # noqa: F401
 from core.skills import MediaTools, ReplyTools, SkillRegistry
-from domain.stickers import StickerStore, StickerStoreError, StickerTools
+from domain.stickers import Sticker, StickerStore, StickerStoreError, StickerTools
 from core.tools import AgentRuntimeTools, Artifact, ToolImage, ToolRegistry
 
 
@@ -45,9 +50,14 @@ class NiuApplication:
     def __init__(self, config: Config) -> None:
         self.config = config
         skill_root = Path(__file__).resolve().parent / "skills"
-        enabled = {"agent-runtime", "code", "memory", "render", "reply"}
-        if config.web_search_enabled:
-            enabled.add("web-search")
+        enabled = {
+            "agent-runtime",
+            "code",
+            "memory",
+            "render",
+            "reply",
+            "web-search",
+        }
         if config.group_history_enabled:
             enabled.add("group-history")
         if config.image_enabled:
@@ -58,18 +68,14 @@ class NiuApplication:
             enabled.add("stickers")
 
         self.skills = SkillRegistry(skill_root)
-        self.skills.load(
-            enabled=enabled,
-            server_tools={
-                "web-search": (
-                    {"type": "web_search_20250305", "name": "web_search"},
-                )
-            },
-        )
+        self.skills.load(enabled=enabled)
         mimi_commands = MimiCommandCatalog(skill_root.parent.parent).load()
         self.skills.register(MimiCommandCatalog.skill(mimi_commands))
         self.tools = ToolRegistry()
         AgentRuntimeTools().register(self.tools)
+        WebSearchTools(
+            AnySearchProvider(config.anysearch_api_key)
+        ).register(self.tools)
         MimiCommandTools(mimi_commands).register(self.tools)
         RenderTools().register(self.tools)
         self.memory = MemoryStore(
@@ -107,7 +113,7 @@ class NiuApplication:
                 api_base_url=config.minimax_api_base_url,
                 api_key=config.anthropic_api_key,
                 downloader=downloader,
-                timeout=config.web_search_timeout,
+                timeout=max(config.request_timeout, 120),
             )
             if config.music_enabled
             else None
@@ -118,6 +124,7 @@ class NiuApplication:
             config.data_dir,
             max_items=config.sticker_max_items,
             daily_update_limit=config.sticker_daily_updates,
+            daily_classification_limit=config.sticker_daily_classifications,
         )
         if config.stickers_enabled:
             StickerTools(self.stickers).register(self.tools)
@@ -133,18 +140,30 @@ class NiuApplication:
         self.monty = MontyRunner(config, self.tools)
         self.monty.register()
 
+        model_client = create_anthropic_client(config).messages
+        model_semaphore = asyncio.Semaphore(config.max_concurrency)
+        self.sticker_classifier = (
+            StickerClassifier(
+                client=model_client,
+                model=config.model,
+                semaphore=model_semaphore,
+                timeout=config.request_timeout,
+            )
+            if config.stickers_enabled
+            else None
+        )
+        self._sticker_classification_tasks: dict[
+            tuple[int, str], asyncio.Task[None]
+        ] = {}
         self.agent = AgentLoop(
-            client=create_anthropic_client(config).messages,
+            client=model_client,
             config=config,
             prompts=PromptCatalog.load(
                 Path(__file__).resolve().parent / "prompts"
             ),
             skills=self.skills,
             tools=self.tools,
-            model_semaphore=asyncio.Semaphore(config.max_concurrency),
-            web_search_semaphore=asyncio.Semaphore(
-                config.web_search_max_concurrency
-            ),
+            model_semaphore=model_semaphore,
         )
         self.conversations = ConversationStore(
             config=config,
@@ -152,7 +171,26 @@ class NiuApplication:
             memory=self.memory,
         )
 
+    async def start(self) -> None:
+        if self.sticker_classifier is None:
+            return
+        for group_id, sticker, image in (
+            await self.stickers.pending_classifications()
+        ):
+            self._schedule_sticker_classification(
+                group_id=group_id,
+                sticker=sticker,
+                image=image,
+            )
+
     async def close(self) -> None:
+        for task in self._sticker_classification_tasks.values():
+            task.cancel()
+        if self._sticker_classification_tasks:
+            await asyncio.gather(
+                *self._sticker_classification_tasks.values(),
+                return_exceptions=True,
+            )
         await self.conversations.close()
         await self.monty.close()
 
@@ -258,14 +296,20 @@ class NiuApplication:
                     image = await self.qq_messages.download_passive_sticker(
                         segment
                     )
-                    await self.stickers.collect_passive_image(
+                    tool_image = ToolImage(
+                        image.data,
+                        image.mime_type,
+                        image.label,
+                    )
+                    sticker = await self.stickers.collect_passive_image(
                         group_id=event.group_id,
                         user_id=int(event.user_id),
-                        image=ToolImage(
-                            image.data,
-                            image.mime_type,
-                            image.label,
-                        ),
+                        image=tool_image,
+                    )
+                    self._schedule_sticker_classification(
+                        group_id=event.group_id,
+                        sticker=sticker,
+                        image=tool_image,
                     )
             except (MediaError, StickerStoreError, ValueError):
                 log.exception(
@@ -273,6 +317,80 @@ class NiuApplication:
                     event.group_id,
                     event.message_id,
                 )
+
+    def _schedule_sticker_classification(
+        self,
+        *,
+        group_id: int,
+        sticker: Sticker,
+        image: ToolImage,
+    ) -> None:
+        classifier = getattr(self, "sticker_classifier", None)
+        tasks = getattr(self, "_sticker_classification_tasks", None)
+        if (
+            classifier is None
+            or tasks is None
+            or not self.stickers.needs_classification(sticker)
+        ):
+            return
+        key = (group_id, sticker.id)
+        current = tasks.get(key)
+        if current is not None and not current.done():
+            return
+        task = asyncio.create_task(
+            self._classify_sticker(
+                group_id=group_id,
+                sticker_id=sticker.id,
+                image=image,
+            ),
+            name=f"sticker-classifier-{group_id}-{sticker.id}",
+        )
+        tasks[key] = task
+
+        def remove(completed: asyncio.Task[None]) -> None:
+            if tasks.get(key) is completed:
+                tasks.pop(key, None)
+
+        task.add_done_callback(remove)
+
+    async def _classify_sticker(
+        self,
+        *,
+        group_id: int,
+        sticker_id: str,
+        image: ToolImage,
+    ) -> None:
+        classifier = self.sticker_classifier
+        if classifier is None:
+            return
+        try:
+            if not await self.stickers.reserve_classification(group_id):
+                return
+            metadata = await classifier.classify(image)
+            await self.stickers.apply_classification(
+                group_id=group_id,
+                sticker_id=sticker_id,
+                summary=metadata.summary,
+                emotion=metadata.emotion,
+                tags=metadata.tags,
+            )
+        except (
+            StickerClassificationError,
+            StickerStoreError,
+            TimeoutError,
+        ):
+            log.exception(
+                "sticker classification failed: group_id=%s sticker_id=%s",
+                group_id,
+                sticker_id,
+            )
+        except Exception:
+            log.exception(
+                "unexpected sticker classification failure: "
+                "group_id=%s sticker_id=%s",
+                group_id,
+                sticker_id,
+            )
 
     @staticmethod
     def _artifact_filename(artifact: Artifact) -> str:
@@ -295,6 +413,7 @@ async def run(config: Config) -> None:
     token = os.getenv("NAPCAT_TOKEN") or None
     application = NiuApplication(config)
     try:
+        await application.start()
         while True:
             try:
                 client = NapCatClient(f"ws://{host}:{port}/", token)

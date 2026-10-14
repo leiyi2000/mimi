@@ -4,9 +4,10 @@ import asyncio
 import hashlib
 import json
 import os
+import random
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import date
 from pathlib import Path
@@ -59,6 +60,7 @@ class StickerIndex:
     records: dict[str, Sticker]
     quota_date: str = ""
     daily_updates: int = 0
+    daily_classifications: int = 0
 
 
 class StickerStore:
@@ -68,12 +70,16 @@ class StickerStore:
         *,
         max_items: int,
         daily_update_limit: int,
+        daily_classification_limit: int = 5,
         today: Callable[[], date] | None = None,
+        choose: Callable[[Sequence[Sticker]], Sticker] | None = None,
     ) -> None:
         self.root = root / "stickers" / "groups"
         self.max_items = max_items
         self.daily_update_limit = daily_update_limit
+        self.daily_classification_limit = daily_classification_limit
         self.today = today or date.today
+        self.choose = choose or random.choice
         self._locks: dict[int, asyncio.Lock] = {}
 
     def _lock(self, group_id: int) -> asyncio.Lock:
@@ -84,14 +90,35 @@ class StickerStore:
             raise ValueError("invalid group id")
         return self.root / str(group_id)
 
-    def _consume_daily_update(self, index: StickerIndex) -> None:
+    def _reset_daily_quota(self, index: StickerIndex) -> None:
         current_date = self.today().isoformat()
         if index.quota_date != current_date:
             index.quota_date = current_date
             index.daily_updates = 0
+            index.daily_classifications = 0
+
+    def _consume_daily_update(self, index: StickerIndex) -> None:
+        self._reset_daily_quota(index)
         if index.daily_updates >= self.daily_update_limit:
             raise StickerStoreError("STICKER_DAILY_UPDATE_LIMIT")
         index.daily_updates += 1
+
+    def _evict_for_insert(self, index: StickerIndex) -> Sticker | None:
+        if len(index.records) < self.max_items:
+            return None
+        victim = self.choose(tuple(index.records.values()))
+        del index.records[victim.id]
+        return victim
+
+    async def _delete_sticker_file(
+        self,
+        group_id: int,
+        sticker: Sticker | None,
+    ) -> None:
+        if sticker is None or not sticker.file_name:
+            return
+        path = self._group_dir(group_id) / sticker.file_name
+        await asyncio.to_thread(path.unlink, True)
 
     async def collect_mface(
         self,
@@ -130,11 +157,11 @@ class StickerStore:
                     )
                     await self._save(group_id, index)
                 return False
-            if len(index.records) >= self.max_items:
-                raise StickerStoreError("STICKER_STORE_FULL")
             self._consume_daily_update(index)
+            victim = self._evict_for_insert(index)
             index.records[sticker.id] = sticker
             await self._save(group_id, index)
+            await self._delete_sticker_file(group_id, victim)
         return True
 
     async def collect_image(
@@ -174,6 +201,103 @@ class StickerStore:
             tags=(),
         )
 
+    async def reserve_classification(self, group_id: int) -> bool:
+        async with self._lock(group_id):
+            index = await self._load(group_id)
+            self._reset_daily_quota(index)
+            if (
+                index.daily_classifications
+                >= self.daily_classification_limit
+            ):
+                return False
+            index.daily_classifications += 1
+            await self._save(group_id, index)
+        return True
+
+    async def apply_classification(
+        self,
+        *,
+        group_id: int,
+        sticker_id: str,
+        summary: str,
+        emotion: str,
+        tags: tuple[str, ...],
+    ) -> Sticker:
+        summary = summary.strip()
+        emotion = emotion.strip()
+        tags = tuple(
+            dict.fromkeys(tag.strip()[:40] for tag in tags if tag.strip())
+        )[:12]
+        if not 1 <= len(summary) <= 200 or len(emotion) > 80:
+            raise ValueError("invalid sticker metadata")
+        async with self._lock(group_id):
+            index = await self._load(group_id)
+            current = index.records.get(sticker_id)
+            if current is None:
+                raise StickerStoreError("STICKER_NOT_FOUND")
+            if current.kind != "image":
+                raise StickerStoreError("STICKER_NOT_CLASSIFIABLE")
+            updated = replace(
+                current,
+                summary=summary,
+                emotion=emotion,
+                tags=tags,
+            )
+            index.records[sticker_id] = updated
+            await self._save(group_id, index)
+        return updated
+
+    async def pending_classifications(
+        self,
+    ) -> list[tuple[int, Sticker, ToolImage]]:
+        if not self.root.exists():
+            return []
+        pending: list[tuple[int, Sticker, ToolImage]] = []
+        for group_dir in sorted(self.root.iterdir()):
+            if not group_dir.is_dir() or not group_dir.name.isdigit():
+                continue
+            group_id = int(group_dir.name)
+            async with self._lock(group_id):
+                index = await self._load(group_id)
+                self._reset_daily_quota(index)
+                remaining = max(
+                    0,
+                    self.daily_classification_limit
+                    - index.daily_classifications,
+                )
+                candidates = [
+                    sticker
+                    for sticker in index.records.values()
+                    if self.needs_classification(sticker)
+                ][:remaining]
+            for sticker in candidates:
+                path = group_dir / sticker.file_name
+                try:
+                    data = await asyncio.to_thread(path.read_bytes)
+                except OSError:
+                    continue
+                pending.append(
+                    (
+                        group_id,
+                        sticker,
+                        ToolImage(
+                            data,
+                            sticker.mime_type,
+                            sticker.summary,
+                        ),
+                    )
+                )
+        return pending
+
+    @staticmethod
+    def needs_classification(sticker: Sticker) -> bool:
+        return (
+            sticker.kind == "image"
+            and bool(sticker.file_name)
+            and not sticker.emotion
+            and not sticker.tags
+        )
+
     async def _collect_image(
         self,
         *,
@@ -206,9 +330,8 @@ class StickerStore:
             existing = index.records.get(sticker_id)
             if existing is not None:
                 return existing
-            if len(index.records) >= self.max_items:
-                raise StickerStoreError("STICKER_STORE_FULL")
             self._consume_daily_update(index)
+            victim = self._evict_for_insert(index)
             group_dir = self._group_dir(group_id)
             group_dir.mkdir(parents=True, exist_ok=True)
             file_name = f"{sticker_id}{extension}"
@@ -230,6 +353,7 @@ class StickerStore:
                 )
                 index.records[sticker.id] = sticker
                 await self._save(group_id, index)
+                await self._delete_sticker_file(group_id, victim)
             except Exception:
                 temporary.unlink(missing_ok=True)
                 path.unlink(missing_ok=True)
@@ -344,16 +468,21 @@ class StickerStore:
                 items = payload
                 quota_date = ""
                 daily_updates = 0
+                daily_classifications = 0
             elif isinstance(payload, dict):
                 items = payload["stickers"]
                 quota = payload["quota"]
                 quota_date = str(quota["date"])
                 daily_updates = int(quota["updates"])
+                daily_classifications = int(
+                    quota.get("classifications", 0)
+                )
             else:
                 raise TypeError("invalid sticker index")
             if (
                 not isinstance(items, list)
                 or daily_updates < 0
+                or daily_classifications < 0
                 or len(items) > self.max_items
             ):
                 raise TypeError("invalid sticker index")
@@ -366,7 +495,12 @@ class StickerStore:
                 )
                 for item in items
             }
-            return StickerIndex(records, quota_date, daily_updates)
+            return StickerIndex(
+                records=records,
+                quota_date=quota_date,
+                daily_updates=daily_updates,
+                daily_classifications=daily_classifications,
+            )
         except (
             OSError,
             json.JSONDecodeError,
@@ -387,6 +521,7 @@ class StickerStore:
                 "quota": {
                     "date": index.quota_date,
                     "updates": index.daily_updates,
+                    "classifications": index.daily_classifications,
                 },
                 "stickers": [
                     asdict(record) for record in index.records.values()

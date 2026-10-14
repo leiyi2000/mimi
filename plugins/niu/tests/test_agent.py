@@ -62,7 +62,6 @@ def build_loop(config, client, tool_registry=None):
         skills=skills,
         tools=tool_registry or ToolRegistry(),
         model_semaphore=asyncio.Semaphore(1),
-        web_search_semaphore=asyncio.Semaphore(1),
     )
 
 
@@ -89,34 +88,28 @@ async def test_plain_text_response(configured_env):
     )
 
 
-async def test_web_search_is_enabled_only_after_local_request(configured_env):
+async def test_web_search_tool_is_available_on_first_round(configured_env):
     config = Config.from_env()
     client = FakeClient(
-        [
-            SimpleNamespace(
-                content=[
-                    Block(
-                        type="tool_use",
-                        id="search",
-                        name="request_web_search",
-                        input={"reason": "需要最新信息"},
-                    )
-                ]
-            ),
-            text_response("搜索结果"),
-        ]
+        [tool_response(name="search_web"), text_response("搜索结果")]
     )
     skills = SkillRegistry(Path(__file__).resolve().parent.parent / "skills")
-    skills.load(
-        enabled={"web-search"},
-        server_tools={
-            "web-search": (
-                {"type": "web_search_20250305", "name": "web_search"},
-            )
-        },
-    )
+    skills.load(enabled={"web-search"})
     tools = ToolRegistry()
     AgentRuntimeTools().register(tools)
+
+    async def search_web(context, arguments):
+        return ToolResult("SEARCH_RESULTS")
+
+    tools.register(
+        Tool(
+            name="search_web",
+            description="search",
+            input_schema={"type": "object"},
+            handler=search_web,
+            skill_name="web-search",
+        )
+    )
     loop = AgentLoop(
         client=client,
         config=config,
@@ -126,22 +119,16 @@ async def test_web_search_is_enabled_only_after_local_request(configured_env):
         skills=skills,
         tools=tools,
         model_semaphore=asyncio.Semaphore(1),
-        web_search_semaphore=asyncio.Semaphore(1),
     )
 
     await run(loop)
 
-    assert client.requests[0]["tools"] == [
-        tools._tools["activate_skill"].api_schema(),
-        tools._tools["request_web_search"].api_schema()
+    assert [tool["name"] for tool in client.requests[0]["tools"]] == [
+        "activate_skill",
+        "search_web",
     ]
     assert client.requests[0]["timeout"] == config.request_timeout
-    assert client.requests[1]["tools"] == [
-        tools._tools["activate_skill"].api_schema(),
-        tools._tools["request_web_search"].api_schema(),
-        {"type": "web_search_20250305", "name": "web_search"}
-    ]
-    assert client.requests[1]["timeout"] == config.web_search_timeout
+    assert client.requests[1]["timeout"] == config.request_timeout
 
 
 async def test_tool_result_is_sent_back(configured_env):
@@ -384,7 +371,6 @@ async def test_specialized_skill_is_injected_after_activation(configured_env):
         skills=skills,
         tools=registry,
         model_semaphore=asyncio.Semaphore(1),
-        web_search_semaphore=asyncio.Semaphore(1),
     )
 
     await run(loop)
@@ -416,7 +402,6 @@ async def test_mimi_commands_are_available_on_first_round(configured_env):
         skills=skills,
         tools=registry,
         model_semaphore=asyncio.Semaphore(1),
-        web_search_semaphore=asyncio.Semaphore(1),
     )
 
     await run(loop)
@@ -453,7 +438,6 @@ async def test_model_can_choose_to_mention_current_sender(configured_env):
         skills=skills,
         tools=registry,
         model_semaphore=asyncio.Semaphore(1),
-        web_search_semaphore=asyncio.Semaphore(1),
     )
 
     response = await run(loop)

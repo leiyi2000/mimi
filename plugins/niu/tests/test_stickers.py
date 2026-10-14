@@ -150,6 +150,7 @@ async def test_capacity_and_daily_update_limits_are_independent(tmp_path):
         max_items=2,
         daily_update_limit=1,
         today=lambda: current_day,
+        choose=lambda records: records[0],
     )
     first = {
         "group_id": 1,
@@ -184,15 +185,97 @@ async def test_capacity_and_daily_update_limits_are_independent(tmp_path):
         }
     )
     current_day += timedelta(days=1)
-    with pytest.raises(StickerStoreError, match="STICKER_STORE_FULL"):
-        await store.collect_mface(
-            **{
-                **first,
-                "emoji_id": "third",
-                "key": "third-key",
-                "summary": "第三个",
-            }
-        )
+    assert await store.collect_mface(
+        **{
+            **first,
+            "emoji_id": "third",
+            "key": "third-key",
+            "summary": "第三个",
+        }
+    )
+    assert {
+        sticker.summary for sticker in await store.find(1, "", 10)
+    } == {"第二个", "第三个"}
+
+
+async def test_daily_classification_limit_persists_and_resets(tmp_path):
+    current_day = date(2026, 10, 14)
+    store = StickerStore(
+        tmp_path,
+        max_items=10,
+        daily_update_limit=10,
+        daily_classification_limit=2,
+        today=lambda: current_day,
+    )
+
+    assert await store.reserve_classification(1)
+    assert await store.reserve_classification(1)
+    assert not await store.reserve_classification(1)
+
+    reloaded = StickerStore(
+        tmp_path,
+        max_items=10,
+        daily_update_limit=10,
+        daily_classification_limit=2,
+        today=lambda: current_day,
+    )
+    assert not await reloaded.reserve_classification(1)
+
+    current_day += timedelta(days=1)
+    assert await reloaded.reserve_classification(1)
+
+
+async def test_classification_updates_metadata_without_update_quota(tmp_path):
+    store = StickerStore(
+        tmp_path,
+        max_items=10,
+        daily_update_limit=1,
+        daily_classification_limit=1,
+    )
+    sticker = await store.collect_passive_image(
+        group_id=1,
+        user_id=2,
+        image=ToolImage(b"gif", "image/gif", "[动画表情]"),
+    )
+
+    assert await store.reserve_classification(1)
+    updated = await store.apply_classification(
+        group_id=1,
+        sticker_id=sticker.id,
+        summary="小猫挥手",
+        emotion="开心",
+        tags=("猫", "挥手"),
+    )
+
+    assert updated.summary == "小猫挥手"
+    assert updated.emotion == "开心"
+    assert updated.tags == ("猫", "挥手")
+
+
+async def test_capacity_replacement_deletes_evicted_image_file(tmp_path):
+    store = StickerStore(
+        tmp_path,
+        max_items=1,
+        daily_update_limit=10,
+        choose=lambda records: records[0],
+    )
+    first = await store.collect_passive_image(
+        group_id=1,
+        user_id=2,
+        image=ToolImage(b"first", "image/gif", "第一个"),
+    )
+    first_path = (
+        tmp_path / "stickers" / "groups" / "1" / first.file_name
+    )
+
+    second = await store.collect_passive_image(
+        group_id=1,
+        user_id=2,
+        image=ToolImage(b"second", "image/gif", "第二个"),
+    )
+
+    assert not first_path.exists()
+    assert [item.id for item in await store.find(1, "", 10)] == [second.id]
 
 
 async def test_noop_update_and_missing_delete_do_not_consume_quota(tmp_path):
