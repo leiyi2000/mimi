@@ -40,11 +40,13 @@ chmod 600 .env
 | `MUSIC_SIGN_API` | 音乐卡片需要 | `https://apii.xianyuw.cn/api/v1/qq-musicArk` | QQ 音乐卡片签名接口 |
 | `MUSIC_SIGN_KEY` | 音乐卡片需要 | `replace-with-xianyuw-token` | 签名接口 Token |
 | `NETEASE_COOKIE` | 否 | 不配置 | 仅用于部署时预置网易云登录态 |
-| `ANTHROPIC_BASE_URL` | 南瓜需要 | `https://api.minimaxi.com/anthropic` | MiniMax Anthropic 兼容端点 |
-| `ANTHROPIC_API_KEY` | 南瓜需要 | `replace-with-minimax-token` | MiniMax Token |
+| `NIU_MODEL_PROVIDER` | 否 | `minimax` | 文本 Provider：`minimax`、`openai` 或 `anthropic` |
+| `NIU_MODEL` | 否 | 随 Provider 变化 | 文本模型名称 |
+| `NIU_MODEL_BASE_URL` | 否 | 随 Provider 变化 | 文本模型 API 地址 |
+| `NIU_MODEL_API_KEY` | 南瓜需要 | `replace-with-model-token` | 文本模型 Token |
 | `ANYSEARCH_API_KEY` | 南瓜需要 | 不配置 | AnySearch API Key |
 | `MINIMAX_API_BASE_URL` | 南瓜媒体能力需要 | `https://api.minimaxi.com/v1` | 图片和音乐原生端点 |
-| `MINIMAX_MODEL` | 否 | `MiniMax-M3.1-Flash-Preview` | 南瓜文本模型 |
+| `MINIMAX_API_KEY` | 南瓜媒体能力需要 | `replace-with-minimax-token` | MiniMax 图片和音乐 Token |
 | `NIU_TRIGGER_PREFIX` | 否 | `南瓜` | 群消息文本触发前缀 |
 | `NIU_MAX_INPUT_IMAGES` | 否 | `4` | 单条南瓜消息的图片上限 |
 | `NIU_INPUT_IMAGE_MAX_BYTES` | 否 | `5242880` | 单张输入图片字节上限 |
@@ -66,6 +68,11 @@ chmod 600 .env
 使用内置默认值，位于各自 `data/` 目录，通常不需要写入环境配置。该 `data/` 目录必须
 持久且可写：设备档案漂移会使 QIMEI36 缓存失效并重新注册，等价于更换设备，可能触发掌盟
 风控。设备档案的生成方式见 [LOL 插件说明](../../plugins/lol/README.md#设备档案)。
+
+MiniMax 默认模式兼容旧的 `MINIMAX_MODEL`、`ANTHROPIC_BASE_URL` 和
+`ANTHROPIC_API_KEY`。新部署统一使用 `NIU_MODEL_*`；使用 GPT 时将 Provider 设为
+`openai`，使用 Claude 时设为 `anthropic`。图片和音乐始终走 MiniMax 原生端点，因此在
+文本模型切换到 GPT 或 Claude 后，启用媒体 Skill 仍需单独配置 `MINIMAX_API_KEY`。
 
 ### 1.3 外部凭据
 

@@ -2,6 +2,21 @@
 name: stickers
 description: 自主管理当前群的表情包库；识别、收集、整理群友表情包，并在合适语境中选择发送。
 allowed-tools: collect_current_image_as_sticker find_group_stickers send_group_sticker organize_group_sticker delete_group_sticker
+triggers:
+  - 收藏表情
+  - 收集表情
+  - 发个表情
+  - 找个表情包
+  - 整理表情包
+  - 删除表情包
+examples:
+  - 把这张图收藏成表情
+  - 找一张开心的表情包
+  - 删除这个重复表情
+anti-triggers:
+  - 生成原创图片
+  - 保存普通照片或截图
+priority: 60
 ---
 
 # Group Stickers

@@ -7,6 +7,7 @@ from core.tools import ToolContext
 from providers.web_search import (
     ANYSEARCH_URL,
     AnySearchProvider,
+    UrlFetchProvider,
     WebSearchError,
     WebSearchTools,
 )
@@ -135,3 +136,106 @@ async def test_tool_preserves_empty_results_without_claiming_a_match():
     assert payload["query"] == "missing"
     assert payload["results"] == []
     assert "低信任" in payload["notice"]
+
+
+async def test_fetch_url_extracts_bounded_html_as_untrusted_content(
+    monkeypatch,
+):
+    async def allow_public(url: str) -> None:
+        assert url == "https://example.com/page"
+
+    monkeypatch.setattr(
+        UrlFetchProvider,
+        "_validate_public_url",
+        staticmethod(allow_public),
+    )
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html; charset=utf-8"},
+            content=(
+                b"<html><head><title>Example</title>"
+                b"<script>ignore()</script></head>"
+                b"<body><h1>Heading</h1><p>Useful text</p></body></html>"
+            ),
+            request=request,
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handle),
+        follow_redirects=False,
+    ) as client:
+        tools = WebSearchTools(
+            AnySearchProvider(
+                "secret-key",
+                FakeSearchClient(response(payload={"results": []})),
+            ),
+            UrlFetchProvider(client),
+        )
+        result = await tools.fetch_url(
+            ToolContext(1, 2, 3, "tester"),
+            {"url": "https://example.com/page"},
+        )
+
+    payload = json.loads(result.content)
+    assert not result.is_error
+    assert payload["final_url"] == "https://example.com/page"
+    assert payload["title"] == "Example"
+    assert "Heading" in payload["text"]
+    assert "Useful text" in payload["text"]
+    assert "ignore()" not in payload["text"]
+    assert "低信任" in payload["notice"]
+
+
+async def test_fetch_url_rejects_private_address_before_request():
+    called = False
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, request=request)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handle),
+        follow_redirects=False,
+    ) as client:
+        fetcher = UrlFetchProvider(client)
+        with pytest.raises(WebSearchError, match="FETCH_PRIVATE_ADDRESS"):
+            await fetcher.fetch("http://127.0.0.1/secret")
+
+    assert not called
+
+
+async def test_fetch_url_revalidates_redirect_target(monkeypatch):
+    checked: list[str] = []
+
+    async def validate(url: str) -> None:
+        checked.append(url)
+        if url.startswith("http://127.0.0.1"):
+            raise WebSearchError("FETCH_PRIVATE_ADDRESS")
+
+    monkeypatch.setattr(
+        UrlFetchProvider,
+        "_validate_public_url",
+        staticmethod(validate),
+    )
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            302,
+            headers={"location": "http://127.0.0.1/admin"},
+            request=request,
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handle),
+        follow_redirects=False,
+    ) as client:
+        with pytest.raises(WebSearchError, match="FETCH_PRIVATE_ADDRESS"):
+            await UrlFetchProvider(client).fetch("https://example.com/start")
+
+    assert checked == [
+        "https://example.com/start",
+        "http://127.0.0.1/admin",
+    ]

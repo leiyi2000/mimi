@@ -45,7 +45,7 @@ flowchart LR
     APEX --> EA[EA / ALS API]
     MUSIC --> NCM[ncm-api]
     MUSIC --> SIGN[音乐卡片签名服务]
-    NIU --> LLM[MiniMax Anthropic 兼容 API]
+    NIU --> LLM[MiniMax / OpenAI / Anthropic]
     NIU --> MM[MiniMax 图片与音乐 API]
     NIU --> YAPI[Yasuo Agent 只读 API]
     NIU --> SANDBOX[Sandbox]
@@ -61,7 +61,7 @@ flowchart LR
 | `ncm-api` | 网易云搜索、登录和账户接口 | 外部服务状态 |
 | `qimei` | 通过 Unidbg 与原生库注册 QIMEI36 | `data/qimei/` 仅缓存 APK |
 | `mimi` | 根进程与全部插件子进程 | 插件数据卷 |
-| `sandbox` | 在一次性工作区降权执行 Niu Code Tool | `/workspaces` tmpfs |
+| `sandbox` | 降权执行 Niu 的一次性 Code Tool 与 Run 级 Workspace Tool | `/workspaces` tmpfs |
 | `sandbox-egress-proxy` | 代理 Sandbox 公网流量并拒绝私网目标 | 无持久状态 |
 
 `mimi/main.py` 创建 `PluginManager`。管理器扫描 `plugins/` 的直接子目录，读取
@@ -153,17 +153,22 @@ LOL 插件以 profile digest 校验 QIMEI36 缓存，缓存未命中时才调用
 ## Niu Agent 链路
 
 Niu 使用文本前缀或直接 @ 接收群消息。`ConversationStore` 为每个群维护有界 FIFO 队列
-和短期完整轮次，`AgentLoop` 调用 MiniMax M3.1 并执行已启用 Skill 暴露的 Tool。模型
-请求只在调用期间占用全局并发槽位，工具执行和媒体发送不占用模型槽位；单条业务失败不会
-重建 NapCat 连接。入口在任何解析前丢弃 `user_id == self_id` 的事件，防止机器人回复或
-代发指令再次触发 Niu；其他群消息即使未触发对话，也会旁路收集 `MFace` 和 NapCat
-明确标记为 `Image(sub_type=1)` 或 `Image(file=marketface)` 的自定义表情。
+和短期完整轮次，`AgentLoop` 只依赖 `ModelProvider`，通过内部统一的请求、内容块、工具
+调用、停止原因、用量和错误模型调用 MiniMax、OpenAI 或 Anthropic。厂商协议转换留在
+`providers/model.py`；MiniMax 和 Claude 使用 Anthropic 消息协议，GPT 使用 OpenAI Chat
+Completions 协议。模型请求只在调用期间占用全局并发槽位，工具执行和媒体发送不占用模型
+槽位；单条业务失败不会重建 NapCat 连接。入口在任何解析前丢弃
+`user_id == self_id` 的事件，防止机器人回复或代发指令再次触发 Niu；其他群消息即使未
+触发对话，也会旁路收集 `MFace` 和 NapCat 明确标记为 `Image(sub_type=1)` 或
+`Image(file=marketface)` 的自定义表情。
 
 插件内部按职责分为 `adapters/` QQ 协议适配、`core/` Agent 编排与工具协议、
 `domain/` 领域模型和持久化，以及 `providers/` 外部服务适配；入口只负责装配这些边界。
-`PromptCatalog` 严格加载安全、默认性格和 NapCat 协议三层固定提示词。QQ 适配层通过当前
-NapCat 连接解析成员 At 和引用消息，向领域层提供带成员 ID、昵称快照、来源标记的文本与
-图片；当前消息和引用消息共用输入图片限额，短期历史仍只保存摘要。
+`PromptCatalog` 严格加载安全、任务执行、群聊表达和 NapCat 协议四层固定提示词，并以
+独立 XML section 组装能力目录、低优先级记忆、激活 Skill、任务状态和当前运行指令；每轮
+只注入最新状态，记忆内容在进入 section 前转义。QQ 适配层通过当前 NapCat 连接解析成员 At
+和引用消息，向领域层提供带成员 ID、昵称快照、来源标记的文本与图片；当前消息和引用消息
+共用输入图片限额，短期历史仍只保存摘要。
 
 Agent 首轮只注入 Skill Catalog、基础 Skill、动态 `mimi` Skill 和对应 Tool；其他专用
 Skill 经 `activate_skill` 后才注入完整指令与 Schema。Web Search 默认通过本地
@@ -182,12 +187,13 @@ Skill 而否认点歌等已有插件能力。绑定、登录和管理类指令�
 反应图；被动图片由受每日额度约束的后台多模态分类器补充检索元数据，不阻塞群消息。库满
 后新表情随机替换一条旧记录并清理对应图片；照片、截图等普通群图片不被动保存。
 群历史只能通过 Yasuo 默认绑定在 `127.0.0.1:6273` 的 `/v1/agent/*` 只读接口访问，Niu
-不导入 Yasuo 代码或读取其数据库。Code Tool 通过 Bearer 认证调用独立
-`sandbox`：每次执行创建 tmpfs 工作区和独立数值 UID，可使用 Bash、Python、pip、
-curl 与 Git，并只回收 `output/` 下的常规文件。Sandbox 不读取 Mimi `.env`、不挂数据卷
-或 Docker Socket；任务 UID 在容器出口规则下只能连接 Squid，代理拒绝回环、私网、
-链路本地、CGNAT、元数据地址和非 80/443 端口。执行受超时、内存、进程、文件、输出和
-并发限额约束，结束后删除工作区。
+不导入 Yasuo 代码或读取其数据库。Code Tool 通过 Bearer 认证调用独立 `sandbox`，每次
+执行创建一次性 tmpfs 工作区；Workspace Skill 则以 Agent `run_id` 懒创建工作区，同一
+Run 内可分步列举、读写、执行和显式导出文件，Agent 无论成功或异常退出都会请求删除。
+两种模式都使用独立数值 UID，可使用 Bash、Python、pip、curl 与 Git。Sandbox 不读取
+Mimi `.env`、不挂数据卷或 Docker Socket；文件 API 拒绝绝对路径、路径穿越和符号链接，
+任务 UID 在容器出口规则下只能连接 Squid，代理拒绝回环、私网、链路本地、CGNAT、元数据
+地址和非 80/443 端口。执行受超时、内存、进程、文件、输出和并发限额约束。
 
 复杂回复通过结构化 Tool 输入和固定 HTML 模板，由 pytakumi 渲染为图片；模型不能注入
 HTML、样式、脚本、外链或宿主文件。图片与音乐 Provider 通过独立环境变量启用。

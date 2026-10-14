@@ -2,6 +2,20 @@
 name: group-history
 description: 查询和总结当前群已归档的历史文本，或分析当前群成员的抽象说话风格；用户明确询问过去讨论或短期上下文不足时使用。
 allowed-tools: resolve_group_member search_group_messages
+triggers:
+  - 群历史
+  - 聊天记录
+  - 之前谁说
+  - 以前谁说
+  - 群里说过
+examples:
+  - 查一下群里之前怎么讨论的
+  - 谁说过这句话
+  - 总结昨天的群聊
+anti-triggers:
+  - 查询互联网资料
+  - 读取其他群消息
+priority: 90
 ---
 
 # Group History

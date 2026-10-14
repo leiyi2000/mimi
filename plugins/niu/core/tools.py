@@ -26,7 +26,9 @@ class ToolContext:
     nickname: str
     is_admin: bool = False
     images: tuple[ToolImage, ...] = ()
+    quoted_images: tuple[ToolImage, ...] = ()
     send_group_text: Callable[[str], Awaitable[None]] | None = None
+    run_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +74,7 @@ class ToolResult:
 
 
 ToolHandler = Callable[[ToolContext, dict[str, Any]], Awaitable[ToolResult]]
+RunCleanupHandler = Callable[[ToolContext], Awaitable[None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +86,8 @@ class Tool:
     timeout: float = 15.0
     read_only: bool = True
     skill_name: str = ""
+    completion_required: bool = False
+    task_only: bool = False
 
     def api_schema(self) -> dict[str, Any]:
         return {
@@ -96,22 +101,30 @@ class Tool:
 class ToolRegistry:
     _tools: dict[str, Tool] = field(default_factory=dict)
     _results: dict[str, ToolResult] = field(default_factory=dict)
+    _run_cleanup_handlers: list[RunCleanupHandler] = field(
+        default_factory=list
+    )
 
     def register(self, tool: Tool) -> None:
         if tool.name in self._tools:
             raise ValueError(f"duplicate tool: {tool.name}")
         self._tools[tool.name] = tool
 
+    def register_run_cleanup(self, handler: RunCleanupHandler) -> None:
+        self._run_cleanup_handlers.append(handler)
+
     def schemas(
         self,
         *,
         read_only_only: bool = False,
         skill_names: set[str] | None = None,
+        task_active: bool = False,
     ) -> list[dict[str, Any]]:
         return [
             tool.api_schema()
             for tool in self._tools.values()
             if not read_only_only or tool.read_only
+            if not tool.task_only or task_active
             if skill_names is None
             or not tool.skill_name
             or tool.skill_name in skill_names
@@ -128,6 +141,21 @@ class ToolRegistry:
         tool = self._tools.get(tool_name)
         return tool.skill_name if tool is not None else None
 
+    def requires_completion(self, tool_name: str) -> bool:
+        tool = self._tools.get(tool_name)
+        return bool(tool and tool.completion_required)
+
+    def is_read_only(self, tool_name: str) -> bool:
+        tool = self._tools.get(tool_name)
+        return bool(tool and tool.read_only)
+
+    def tools_by_skill(self) -> dict[str, set[str]]:
+        result: dict[str, set[str]] = {}
+        for tool in self._tools.values():
+            if tool.skill_name:
+                result.setdefault(tool.skill_name, set()).add(tool.name)
+        return result
+
     async def execute(
         self,
         *,
@@ -136,7 +164,8 @@ class ToolRegistry:
         arguments: dict[str, Any],
         context: ToolContext,
     ) -> ToolResult:
-        idempotency_key = f"{context.message_id}:{tool_use_id}"
+        run_key = context.run_id or str(context.message_id)
+        idempotency_key = f"{run_key}:{tool_use_id}"
         if idempotency_key in self._results:
             return self._results[idempotency_key]
         tool = self._tools.get(name)
@@ -176,9 +205,39 @@ class ToolRegistry:
         self._results[idempotency_key] = result
         return result
 
+    async def cleanup_run(self, context: ToolContext) -> None:
+        if context.run_id:
+            prefix = f"{context.run_id}:"
+            self._results = {
+                key: value
+                for key, value in self._results.items()
+                if not key.startswith(prefix)
+            }
+        errors: list[BaseException] = []
+        for handler in reversed(self._run_cleanup_handlers):
+            try:
+                await handler(context)
+            except Exception as exc:
+                errors.append(exc)
+                log.exception(
+                    "run cleanup failed: run_id=%s group_id=%s",
+                    context.run_id,
+                    context.group_id,
+                )
+        if errors:
+            raise RuntimeError(
+                f"{len(errors)} run cleanup handler(s) failed"
+            ) from errors[0]
+
 
 class AgentRuntimeTools:
+    def __init__(self, skill_names: tuple[str, ...] = ()) -> None:
+        self.skill_names = skill_names
+
     def register(self, registry: ToolRegistry) -> None:
+        skill_items: dict[str, Any] = {"type": "string"}
+        if self.skill_names:
+            skill_items["enum"] = list(self.skill_names)
         registry.register(
             Tool(
                 name="activate_skill",
@@ -193,7 +252,7 @@ class AgentRuntimeTools:
                             "type": "array",
                             "minItems": 1,
                             "maxItems": 3,
-                            "items": {"type": "string"},
+                            "items": skill_items,
                         }
                     },
                     "required": ["skills"],
@@ -225,6 +284,43 @@ class AgentRuntimeTools:
                 handler=self.publish_plan,
                 read_only=False,
                 skill_name="agent-runtime",
+            )
+        )
+        registry.register(
+            Tool(
+                name="complete_task",
+                description=(
+                    "Pass the task finish gate before the final answer after a "
+                    "tool requiring completion evidence has run. Report partial "
+                    "completion honestly when blocked."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "status": {
+                            "enum": ["completed", "partially_completed"]
+                        },
+                        "summary": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500,
+                        },
+                        "remaining": {
+                            "type": "array",
+                            "maxItems": 5,
+                            "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 200,
+                            },
+                        },
+                    },
+                    "required": ["status", "summary"],
+                },
+                handler=self.complete_task,
+                read_only=True,
+                skill_name="agent-runtime",
+                task_only=True,
             )
         )
 
@@ -273,3 +369,10 @@ class AgentRuntimeTools:
         )
         await context.send_group_text(text)
         return ToolResult("PLAN_PUBLISHED")
+
+    async def complete_task(
+        self,
+        context: ToolContext,
+        arguments: dict[str, Any],
+    ) -> ToolResult:
+        return ToolResult("TASK_COMPLETION_RECORDED")

@@ -6,7 +6,7 @@ from core.config import Config
 from core.conversation import ConversationStore
 from core.tools import Artifact
 from domain.memory import MemoryStore
-from domain.message_content import InputImage, UserMessage
+from domain.message_content import InputImage, QuotedMessage, UserMessage
 
 
 class FakeAgent:
@@ -181,6 +181,61 @@ async def test_current_images_are_multimodal_but_history_is_summary(
         "描述这张图\n[表情：微笑]\n[图片 0：截图]"
     )
     assert "aW1hZ2" not in store._groups[1].history[0].user_text
+    await store.close()
+
+
+async def test_quoted_images_are_available_to_tools(configured_env):
+    config = Config.from_env()
+    agent = FakeAgent()
+    store = ConversationStore(
+        config=config,
+        agent=agent,
+        memory=MemoryStore(
+            config.data_dir,
+            max_items=1,
+            max_chars=100,
+            notes_max_chars=10,
+        ),
+    )
+
+    async def send_text(text, mention_sender):
+        pass
+
+    async def send_artifact(artifact):
+        pass
+
+    message = UserMessage(
+        "参考这张图画一个新场景",
+        quoted=QuotedMessage(
+            message_id="quoted-1",
+            sender_id=3,
+            sender_nickname="原作者",
+            text="人物参考",
+            images=(
+                InputImage(
+                    b"quoted-image",
+                    "image/jpeg",
+                    "引用人物",
+                    source="quoted",
+                ),
+            ),
+        ),
+    )
+    assert await store.accept(
+        message_id=1,
+        group_id=1,
+        user_id=2,
+        nickname="用户",
+        message=message,
+        send_text=send_text,
+        send_artifact=send_artifact,
+    )
+    await store._groups[1].queue.join()
+
+    context = agent.calls[0]["context"]
+    assert context.images == ()
+    assert context.quoted_images[0].data == b"quoted-image"
+    assert context.quoted_images[0].label == "引用人物"
     await store.close()
 
 

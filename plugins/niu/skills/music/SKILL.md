@@ -2,6 +2,20 @@
 name: music
 description: 根据风格说明和可选歌词生成音乐；用户明确要求创作歌曲、配乐或纯音乐时使用。
 allowed-tools: generate_music
+triggers:
+  - 生成音乐
+  - 写首歌
+  - 创作歌曲
+  - 生成配乐
+  - 做首歌
+examples:
+  - 写一首摇滚歌
+  - 生成一段纯音乐
+  - 给这段歌词配乐
+anti-triggers:
+  - 播放已有歌曲
+  - 搜索歌曲信息
+priority: 100
 ---
 
 # Music

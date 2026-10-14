@@ -4,23 +4,27 @@ import asyncio
 import json
 import logging
 import time
-from dataclasses import dataclass
-from typing import Any, Protocol
-
-import anthropic
+from dataclasses import dataclass, replace
+from typing import Any
 
 from core.config import Config
+from core.model import (
+    ModelAuthenticationError,
+    ModelConnectionError,
+    ModelProvider,
+    ModelProviderError,
+    ModelRateLimitError,
+    ModelRequest,
+    ModelResponse,
+)
 from core.prompts import PromptCatalog
 from core.run import RunEvent, RunStatus, RunTrace
 from core.skills import SkillRegistry
+from core.task import TaskFrame
 from core.tools import Artifact, ToolContext, ToolRegistry, ToolResult
 
 
 log = logging.getLogger(__name__)
-
-
-class MessageClient(Protocol):
-    async def create(self, **kwargs: Any) -> Any: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,14 +56,14 @@ class AgentLoop:
     def __init__(
         self,
         *,
-        client: MessageClient,
+        model_provider: ModelProvider,
         config: Config,
         prompts: PromptCatalog,
         skills: SkillRegistry,
         tools: ToolRegistry,
         model_semaphore: asyncio.Semaphore,
     ) -> None:
-        self.client = client
+        self.model_provider = model_provider
         self.config = config
         self.prompts = prompts
         self.skills = skills
@@ -72,31 +76,40 @@ class AgentLoop:
         messages: list[dict[str, Any]],
         context: ToolContext,
         memory_context: str,
+        user_text: str = "",
     ) -> AgentResponse:
         trace = RunTrace(
             group_id=context.group_id,
             message_id=context.message_id,
         )
+        run_context = replace(context, run_id=trace.run_id)
         try:
-            response = await self._run(
-                messages=messages,
-                context=context,
-                memory_context=memory_context,
-                trace=trace,
-            )
-        except Exception as exc:
-            trace.finish("failed", error_code=type(exc).__name__)
+            try:
+                response = await self._run(
+                    messages=messages,
+                    context=run_context,
+                    memory_context=memory_context,
+                    user_text=user_text,
+                    trace=trace,
+                )
+            except Exception as exc:
+                trace.finish("failed", error_code=type(exc).__name__)
+                self._log_trace(trace)
+                raise
+            trace.finish(response.status)
             self._log_trace(trace)
-            raise
-        trace.finish(response.status)
-        self._log_trace(trace)
-        return AgentResponse(
-            text=response.text,
-            artifacts=response.artifacts,
-            status=response.status,
-            trace=trace,
-            mention_sender=response.mention_sender,
-        )
+            return AgentResponse(
+                text=response.text,
+                artifacts=response.artifacts,
+                status=response.status,
+                trace=trace,
+                mention_sender=response.mention_sender,
+            )
+        finally:
+            try:
+                await self.tools.cleanup_run(run_context)
+            except RuntimeError:
+                pass
 
     async def _run(
         self,
@@ -104,12 +117,14 @@ class AgentLoop:
         messages: list[dict[str, Any]],
         context: ToolContext,
         memory_context: str,
+        user_text: str,
         trace: RunTrace,
     ) -> AgentResponse:
         request_messages = list(messages)
         read_only_only = False
         plan_published = False
         mention_sender = False
+        task = TaskFrame()
         active_skills = self.skills.names() & {
             "agent-runtime",
             "memory",
@@ -117,6 +132,12 @@ class AgentLoop:
             "reply",
             "web-search",
         }
+        preactivated_skills = self.skills.match_explicit(user_text)
+        active_skills.update(preactivated_skills)
+        trace.events.extend(
+            RunEvent(kind="skill_preactivated", tool_name=name)
+            for name in sorted(preactivated_skills)
+        )
         artifacts: list[Artifact] = []
         error_counts: dict[tuple[str, str], int] = {}
         for round_index in range(self.config.max_tool_rounds + 1):
@@ -126,6 +147,7 @@ class AgentLoop:
                 memory_context=memory_context,
                 read_only_only=read_only_only,
                 active_skill_names=active_skills,
+                task=task,
             )
             trace.model_rounds += 1
             self._record_usage(trace, response)
@@ -156,9 +178,35 @@ class AgentLoop:
                         partial_text=text,
                         mention_sender=mention_sender,
                     )
+                if task.active and not task.finished:
+                    if round_index >= self.config.max_tool_rounds:
+                        return await self._final_synthesis(
+                            messages=request_messages,
+                            memory_context=memory_context,
+                            artifacts=artifacts,
+                            trace=trace,
+                            reason="任务完成门尚未通过，且已达到工具轮次上限。",
+                            active_skill_names=active_skills,
+                            partial_text=text,
+                            mention_sender=mention_sender,
+                        )
+                    request_messages.extend(
+                        (
+                            {"role": "assistant", "content": text},
+                            {
+                                "role": "user",
+                                "content": (
+                                    "任务完成门尚未通过。请根据真实工具结果调用 "
+                                    "complete_task，不要直接给出最终答复。"
+                                ),
+                            },
+                        )
+                    )
+                    continue
                 return AgentResponse(
                     text=text,
                     artifacts=tuple(artifacts),
+                    status=task.outcome,
                     mention_sender=mention_sender,
                 )
             if round_index >= self.config.max_tool_rounds:
@@ -176,20 +224,12 @@ class AgentLoop:
             request_messages.append(
                 {
                     "role": "assistant",
-                    "content": [
-                        block.model_dump()
-                        if hasattr(block, "model_dump")
-                        else block
-                        for block in response.content
-                        if getattr(block, "type", "") in {"text", "tool_use"}
-                    ],
+                    "content": [block.as_message_block() for block in response.content],
                 }
             )
             results: dict[str, ToolResult] = {}
             activation_blocks = [
-                block
-                for block in tool_uses
-                if str(block.name) == "activate_skill"
+                block for block in tool_uses if str(block.name) == "activate_skill"
             ]
             for block in activation_blocks:
                 block_id = str(block.id)
@@ -217,9 +257,7 @@ class AgentLoop:
                     active_skills.update(requested)
 
             plan_blocks = [
-                block
-                for block in tool_uses
-                if str(block.name) == "publish_plan"
+                block for block in tool_uses if str(block.name) == "publish_plan"
             ]
             for block in plan_blocks:
                 block_id = str(block.id)
@@ -244,7 +282,8 @@ class AgentLoop:
             other_blocks = [
                 block
                 for block in tool_uses
-                if str(block.name) not in {"activate_skill", "publish_plan"}
+                if str(block.name)
+                not in {"activate_skill", "publish_plan", "complete_task"}
             ]
             executable_blocks = []
             for block in other_blocks:
@@ -257,18 +296,43 @@ class AgentLoop:
                         safe_details={"skill": skill_name},
                     )
                 else:
+                    if self.tools.requires_completion(str(block.name)):
+                        was_active = task.active
+                        task.require(str(block.name))
+                        if not was_active:
+                            trace.events.append(
+                                RunEvent(
+                                    kind="task_started",
+                                    round_index=round_index,
+                                    tool_name=str(block.name),
+                                )
+                            )
                     executable_blocks.append(block)
-            other_results = await asyncio.gather(
-                *(
-                    self._execute_tool(
-                        block=block,
-                        context=context,
-                        round_index=round_index,
-                        trace=trace,
+            if all(
+                self.tools.is_read_only(str(block.name)) for block in executable_blocks
+            ):
+                other_results = await asyncio.gather(
+                    *(
+                        self._execute_tool(
+                            block=block,
+                            context=context,
+                            round_index=round_index,
+                            trace=trace,
+                        )
+                        for block in executable_blocks
                     )
-                    for block in executable_blocks
                 )
-            )
+            else:
+                other_results = []
+                for block in executable_blocks:
+                    other_results.append(
+                        await self._execute_tool(
+                            block=block,
+                            context=context,
+                            round_index=round_index,
+                            trace=trace,
+                        )
+                    )
             results.update(
                 (str(block.id), result)
                 for block, result in zip(
@@ -277,6 +341,39 @@ class AgentLoop:
                     strict=True,
                 )
             )
+            for block in executable_blocks:
+                task.record(str(block.name), results[str(block.id)])
+
+            completion_blocks = [
+                block for block in tool_uses if str(block.name) == "complete_task"
+            ]
+            for block in completion_blocks:
+                block_id = str(block.id)
+                if len(tool_uses) != len(completion_blocks):
+                    results[block_id] = ToolResult.error(
+                        "COMPLETION_MUST_BE_SEPARATE",
+                        "完成声明必须在观察全部工具结果后的下一轮单独提交。",
+                        retryable=True,
+                    )
+                    continue
+                gate_error = task.complete(dict(block.input))
+                if gate_error is not None:
+                    results[block_id] = gate_error
+                    continue
+                result = await self._execute_tool(
+                    block=block,
+                    context=context,
+                    round_index=round_index,
+                    trace=trace,
+                )
+                results[block_id] = result
+                if not result.is_error:
+                    trace.events.append(
+                        RunEvent(
+                            kind="task_completed",
+                            round_index=round_index,
+                        )
+                    )
             tool_results = []
             for block in tool_uses:
                 result = results[str(block.id)]
@@ -353,9 +450,7 @@ class AgentLoop:
     ) -> AgentResponse:
         synthesis_messages = list(messages)
         if partial_text:
-            synthesis_messages.append(
-                {"role": "assistant", "content": partial_text}
-            )
+            synthesis_messages.append({"role": "assistant", "content": partial_text})
         synthesis_messages.append(
             {
                 "role": "user",
@@ -373,8 +468,8 @@ class AgentLoop:
                 expose_tools=False,
                 active_skill_names=active_skill_names,
                 system_extra=(
-                    "This is the final synthesis. Do not request or describe new "
-                    "tool calls. Return only the best supported answer."
+                    "这是最终汇总轮次。不得请求或描述新的工具调用，只返回现有证据"
+                    "支持的最佳答复。"
                 ),
             )
             trace.model_rounds += 1
@@ -404,7 +499,8 @@ class AgentLoop:
         expose_tools: bool = True,
         active_skill_names: set[str] | None = None,
         system_extra: str = "",
-    ) -> Any:
+        task: TaskFrame | None = None,
+    ) -> ModelResponse:
         tool_schemas = (
             self.tools.schemas(
                 read_only_only=read_only_only,
@@ -413,34 +509,31 @@ class AgentLoop:
                     if active_skill_names is not None
                     else self.skills.names()
                 ),
+                task_active=bool(task and task.active and not task.finished),
             )
             if expose_tools
             else []
         )
-        system = "\n\n".join(
-            part
-            for part in (
-                self.prompts.fixed_prompt(),
-                "Enabled skills:\n" + self.skills.catalog(),
-                memory_context,
-                self.skills.prompt(active_skill_names),
-                system_extra,
-            )
-            if part
+        system = self.prompts.build(
+            capability_catalog=self.skills.catalog(),
+            memory_context=memory_context,
+            active_skills=self.skills.prompt(active_skill_names),
+            task_state=task.prompt() if task is not None else "",
+            run_directive=system_extra,
         )
         try:
             async with self.model_semaphore:
-                return await self._create_message(
-                    messages, system, tool_schemas
-                )
-        except anthropic.AuthenticationError as exc:
+                return await self._create_message(messages, system, tool_schemas)
+        except ModelAuthenticationError as exc:
             raise AuthenticationError() from exc
-        except anthropic.RateLimitError as exc:
+        except ModelRateLimitError as exc:
             raise RateLimitError() from exc
-        except (anthropic.APIConnectionError, anthropic.APITimeoutError, TimeoutError) as exc:
+        except ModelConnectionError as exc:
             raise AgentError() from exc
-        except anthropic.APIStatusError as exc:
-            log.warning("model API status error: status=%s", exc.status_code)
+        except TimeoutError as exc:
+            raise AgentError() from exc
+        except ModelProviderError as exc:
+            log.warning("model provider error: %s", exc)
             raise AgentError() from exc
 
     async def _create_message(
@@ -448,25 +541,23 @@ class AgentLoop:
         messages: list[dict[str, Any]],
         system: str,
         tool_schemas: list[dict[str, Any]],
-    ) -> Any:
+    ) -> ModelResponse:
         timeout = self.config.request_timeout
         async with asyncio.timeout(timeout):
-            request: dict[str, Any] = {
-                "model": self.config.model,
-                "max_tokens": self.config.max_tokens,
-                "system": system,
-                "messages": messages,
-                "output_config": {"effort": self.config.reasoning_effort},
-                "timeout": timeout,
-            }
-            if tool_schemas:
-                request["tools"] = tool_schemas
-            return await self.client.create(
-                **request,
+            return await self.model_provider.complete(
+                ModelRequest(
+                    model=self.config.model,
+                    max_tokens=self.config.max_tokens,
+                    system=system,
+                    messages=messages,
+                    tools=tool_schemas,
+                    reasoning_effort=self.config.reasoning_effort,
+                    timeout=timeout,
+                )
             )
 
     @staticmethod
-    def _text(response: Any) -> str:
+    def _text(response: ModelResponse) -> str:
         parts = [
             str(block.text).strip()
             for block in response.content
@@ -476,10 +567,9 @@ class AgentLoop:
         return "\n".join(parts)
 
     @staticmethod
-    def _record_usage(trace: RunTrace, response: Any) -> None:
-        usage = getattr(response, "usage", None)
-        trace.input_tokens += int(getattr(usage, "input_tokens", 0) or 0)
-        trace.output_tokens += int(getattr(usage, "output_tokens", 0) or 0)
+    def _record_usage(trace: RunTrace, response: ModelResponse) -> None:
+        trace.input_tokens += response.usage.input_tokens
+        trace.output_tokens += response.usage.output_tokens
 
     @staticmethod
     def _log_trace(trace: RunTrace) -> None:
@@ -491,10 +581,3 @@ class AgentLoop:
                 separators=(",", ":"),
             ),
         )
-
-
-def create_anthropic_client(config: Config) -> anthropic.AsyncAnthropic:
-    return anthropic.AsyncAnthropic(
-        api_key=config.anthropic_api_key,
-        base_url=config.anthropic_base_url,
-    )

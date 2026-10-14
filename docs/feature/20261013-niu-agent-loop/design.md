@@ -283,11 +283,17 @@ Token。请求中的 `group_id` 只能由 Niu 的 `ToolContext` 注入。目标�
 
 ### Image
 
-`generate_image` 固定调用 `image-01`，只生成一张。返回 URL 立即下载，拒绝重定向，限制
-MIME、字节和像素，再转换为 NapCat Base64 图片。
+`generate_image` 固定调用 `image-01`，只生成一张。纯文字请求走文生图；用户要求保持
+输入图片中的人物形象时，Tool 可按统一图片序号从当前消息和引用消息中选择一张参考图，
+以 Base64 Data URI 作为 `subject_reference` 提交。MiniMax 仅支持单张 JPEG/PNG 人物
+主体参考；QQ 输入中的 GIF/WebP 取首帧转为 JPEG，其他格式、空图片和 10 MiB 以上图片
+明确拒绝。返回 URL 立即下载，拒绝重定向，限制 MIME、字节和像素，再转换为 NapCat
+Base64 图片。
 
 2026-10-13 已使用当前部署 Token 完成真实付费验证：生成并下载 1024×1024 JPEG，MIME、
 大小和像素校验通过。验证图位于 Git 忽略的 `plugins/niu/tests/output/`。
+2026-10-14 使用 MiniMax 官方示例人物图完成参考图真实付费验证：Base64
+`subject_reference` 成功生成并下载 1024×1024 JPEG，未持久化参考图和生成结果。
 
 ### Music
 
@@ -360,7 +366,10 @@ Agent 指令都必须通过正常代码评审、测试和部署。
 | 变量 | 默认值 | 用途 |
 | --- | --- | --- |
 | `NIU_TRIGGER_PREFIX` | `南瓜` | 文本触发前缀 |
-| `MINIMAX_MODEL` | `MiniMax-M3.1-Flash-Preview` | 文本模型 |
+| `NIU_MODEL_PROVIDER` | `minimax` | `minimax`、`openai` 或 `anthropic` |
+| `NIU_MODEL` | 随 Provider 变化 | 文本模型 |
+| `NIU_MODEL_BASE_URL` | 随 Provider 变化 | 文本模型端点 |
+| `NIU_MODEL_API_KEY` | 无 | 文本模型 Token |
 | `NIU_REASONING_EFFORT` | `low` | 思考深度 |
 | `NIU_MAX_TOKENS` | `1024` | 单轮输出限制 |
 | `NIU_MAX_TOOL_ROUNDS` | `4` | 工具轮数 |
@@ -370,10 +379,9 @@ Agent 指令都必须通过正常代码评审、测试和部署。
 | `NIU_GROUP_QUEUE_SIZE` | `20` | 单群队列容量 |
 | `NIU_MAX_INPUT_IMAGES` | `4` | 单条触发消息的图片上限 |
 | `NIU_INPUT_IMAGE_MAX_BYTES` | `5242880` | 单张输入图片字节上限 |
-| `ANTHROPIC_API_KEY` | 无 | MiniMax Token |
 | `ANYSEARCH_API_KEY` | 无 | AnySearch API Key |
-| `ANTHROPIC_BASE_URL` | `https://api.minimaxi.com/anthropic` | 文本端点 |
 | `MINIMAX_API_BASE_URL` | `https://api.minimaxi.com/v1` | 媒体端点 |
+| `MINIMAX_API_KEY` | 无 | MiniMax 图片和音乐 Token |
 | `NIU_GROUP_HISTORY_ENABLED` | `true` | 群历史 |
 | `YASUO_API_URL` | `http://127.0.0.1:6273` | Yasuo 本机 API |
 | `MONTY_BIN` | 当前虚拟环境的 `monty` | 固定 Worker 二进制 |

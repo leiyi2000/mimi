@@ -86,6 +86,13 @@ class ExecutionResult:
     files: tuple[Artifact, ...]
 
 
+@dataclass(slots=True)
+class WorkspaceState:
+    path: Path
+    uid: int
+    lock: threading.RLock
+
+
 class RequestError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -99,23 +106,12 @@ class SandboxExecutor:
         self._slots = threading.BoundedSemaphore(settings.max_concurrency)
         self._uid_lock = threading.Lock()
         self._next_uid = 20_000
+        self._workspace_lock = threading.Lock()
+        self._workspaces: dict[str, WorkspaceState] = {}
+        self._deleted_workspaces: set[str] = set()
 
     def execute(self, payload: dict[str, Any]) -> ExecutionResult:
-        script = payload.get("script")
-        if not isinstance(script, str) or not script.strip():
-            raise RequestError("INVALID_SCRIPT", "script must not be empty")
-        if len(script.encode()) > self.settings.max_script_bytes:
-            raise RequestError("SCRIPT_TOO_LARGE", "script exceeds size limit")
-        timeout = payload.get("timeout", min(30, self.settings.max_timeout))
-        if (
-            not isinstance(timeout, int)
-            or isinstance(timeout, bool)
-            or not 1 <= timeout <= self.settings.max_timeout
-        ):
-            raise RequestError(
-                "INVALID_TIMEOUT",
-                f"timeout must be between 1 and {self.settings.max_timeout}",
-            )
+        script, timeout = self._validate_execution(payload)
         files = self._validate_files(payload.get("files", {}))
 
         if not self._slots.acquire(blocking=False):
@@ -138,6 +134,302 @@ class SandboxExecutor:
         finally:
             shutil.rmtree(workspace, ignore_errors=True)
             self._slots.release()
+
+    def execute_workspace(
+        self, workspace_id: str, payload: dict[str, Any]
+    ) -> ExecutionResult:
+        script, timeout = self._validate_execution(payload)
+        state = self._get_workspace(workspace_id)
+        if not self._slots.acquire(blocking=False):
+            raise RequestError(
+                "SANDBOX_BUSY", "sandbox concurrency limit reached"
+            )
+        with state.lock:
+            control = state.path / ".sandbox"
+            script_path = control / f"{uuid.uuid4().hex}.sh"
+            try:
+                control.mkdir(mode=0o700, exist_ok=True)
+                os.chown(control, state.uid, state.uid)
+                script_path.write_text(script, encoding="utf-8")
+                script_path.chmod(0o700)
+                os.chown(script_path, state.uid, state.uid)
+                return self._run(
+                    state.path,
+                    script_path,
+                    timeout,
+                    state.uid,
+                    collect_artifacts=False,
+                )
+            finally:
+                script_path.unlink(missing_ok=True)
+                for name in (".stdout", ".stderr"):
+                    (state.path / name).unlink(missing_ok=True)
+                self._slots.release()
+
+    def write_workspace(
+        self, workspace_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        raw_path = payload.get("path")
+        content = payload.get("content")
+        if not isinstance(raw_path, str) or not isinstance(content, str):
+            raise RequestError(
+                "INVALID_REQUEST", "path and content must be strings"
+            )
+        encoded = content.encode()
+        if len(encoded) > self.settings.max_input_bytes:
+            raise RequestError("INPUT_TOO_LARGE", "content exceeds size limit")
+        relative = self._workspace_relative_path(raw_path)
+        state = self._get_workspace(workspace_id)
+        with state.lock:
+            target = self._resolve_workspace_path(
+                state, relative, allow_missing=True
+            )
+            self._create_workspace_parents(state, target.parent)
+            if target.exists() and not target.is_file():
+                raise RequestError(
+                    "INVALID_FILE_PATH", "target must be a regular file"
+                )
+            temporary = target.with_name(f".sandbox-write-{uuid.uuid4().hex}")
+            try:
+                temporary.write_bytes(encoded)
+                temporary.chmod(0o600)
+                os.chown(temporary, state.uid, state.uid)
+                temporary.replace(target)
+            finally:
+                temporary.unlink(missing_ok=True)
+        return {"path": relative.as_posix(), "size": len(encoded)}
+
+    def read_workspace(
+        self, workspace_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        raw_path = payload.get("path")
+        if not isinstance(raw_path, str):
+            raise RequestError("INVALID_REQUEST", "path must be a string")
+        relative = self._workspace_relative_path(raw_path)
+        state = self._get_workspace(workspace_id)
+        with state.lock:
+            target = self._resolve_workspace_path(
+                state, relative, allow_missing=False
+            )
+            if not target.is_file():
+                raise RequestError(
+                    "INVALID_FILE_PATH", "target must be a regular file"
+                )
+            data, truncated = _read_bytes_limited(
+                target, self.settings.max_output_bytes
+            )
+            size = target.stat().st_size
+        return {
+            "path": relative.as_posix(),
+            "content": data.decode("utf-8", errors="replace"),
+            "size": size,
+            "truncated": truncated,
+        }
+
+    def list_workspace(
+        self, workspace_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        raw_path = payload.get("path", "")
+        recursive = payload.get("recursive", False)
+        if not isinstance(raw_path, str) or not isinstance(recursive, bool):
+            raise RequestError(
+                "INVALID_REQUEST", "path must be a string and recursive a boolean"
+            )
+        relative = (
+            self._workspace_relative_path(raw_path) if raw_path else None
+        )
+        state = self._get_workspace(workspace_id)
+        with state.lock:
+            target = (
+                self._resolve_workspace_path(
+                    state, relative, allow_missing=False
+                )
+                if relative is not None
+                else state.path
+            )
+            if not target.is_dir():
+                raise RequestError(
+                    "INVALID_FILE_PATH", "target must be a directory"
+                )
+            iterator = target.rglob("*") if recursive else target.iterdir()
+            entries: list[dict[str, Any]] = []
+            truncated = False
+            for path in iterator:
+                if path.name in {".sandbox", ".stdout", ".stderr"}:
+                    continue
+                if path.is_symlink():
+                    raise RequestError(
+                        "SYMLINK_NOT_ALLOWED",
+                        "symbolic links are not allowed",
+                    )
+                if len(entries) >= 1000:
+                    truncated = True
+                    break
+                entries.append(
+                    {
+                        "path": path.relative_to(state.path).as_posix(),
+                        "type": "directory" if path.is_dir() else "file",
+                        "size": path.stat().st_size if path.is_file() else 0,
+                    }
+                )
+        return {"entries": entries, "truncated": truncated}
+
+    def export_workspace(
+        self, workspace_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        raw_paths = payload.get("paths")
+        if (
+            not isinstance(raw_paths, list)
+            or not 1 <= len(raw_paths) <= self.settings.max_artifacts
+            or any(not isinstance(path, str) for path in raw_paths)
+        ):
+            raise RequestError(
+                "INVALID_REQUEST",
+                "paths must be a non-empty list of file paths",
+            )
+        state = self._get_workspace(workspace_id)
+        artifacts: list[Artifact] = []
+        total = 0
+        with state.lock:
+            for raw_path in raw_paths:
+                relative = self._workspace_relative_path(raw_path)
+                target = self._resolve_workspace_path(
+                    state, relative, allow_missing=False
+                )
+                if not target.is_file():
+                    raise RequestError(
+                        "INVALID_FILE_PATH",
+                        "only regular files can be exported",
+                    )
+                size = target.stat().st_size
+                if (
+                    size > self.settings.max_artifact_bytes
+                    or total + size > self.settings.max_artifact_bytes
+                ):
+                    raise RequestError(
+                        "ARTIFACT_TOO_LARGE",
+                        "export exceeds artifact size limit",
+                    )
+                data = target.read_bytes()
+                total += len(data)
+                artifacts.append(
+                    Artifact(
+                        path=relative.as_posix(),
+                        mime_type=(
+                            mimetypes.guess_type(target.name)[0]
+                            or "application/octet-stream"
+                        ),
+                        data=base64.b64encode(data).decode(),
+                        size=len(data),
+                    )
+                )
+        return {"files": [asdict(artifact) for artifact in artifacts]}
+
+    def delete_workspace(self, workspace_id: str) -> None:
+        workspace_id = _validate_workspace_id(workspace_id)
+        with self._workspace_lock:
+            state = self._workspaces.get(workspace_id)
+            self._deleted_workspaces.add(workspace_id)
+            if len(self._deleted_workspaces) > 10_000:
+                self._deleted_workspaces.pop()
+        if state is None:
+            return
+        with state.lock:
+            self._terminate_uid_processes(state.uid)
+            shutil.rmtree(state.path, ignore_errors=True)
+        with self._workspace_lock:
+            self._workspaces.pop(workspace_id, None)
+
+    def _validate_execution(
+        self, payload: dict[str, Any]
+    ) -> tuple[str, int]:
+        script = payload.get("script")
+        if not isinstance(script, str) or not script.strip():
+            raise RequestError("INVALID_SCRIPT", "script must not be empty")
+        if len(script.encode()) > self.settings.max_script_bytes:
+            raise RequestError("SCRIPT_TOO_LARGE", "script exceeds size limit")
+        timeout = payload.get("timeout", min(30, self.settings.max_timeout))
+        if (
+            not isinstance(timeout, int)
+            or isinstance(timeout, bool)
+            or not 1 <= timeout <= self.settings.max_timeout
+        ):
+            raise RequestError(
+                "INVALID_TIMEOUT",
+                f"timeout must be between 1 and {self.settings.max_timeout}",
+            )
+        return script, timeout
+
+    def _get_workspace(self, workspace_id: str) -> WorkspaceState:
+        workspace_id = _validate_workspace_id(workspace_id)
+        with self._workspace_lock:
+            if workspace_id in self._deleted_workspaces:
+                raise RequestError(
+                    "WORKSPACE_CLOSED", "workspace has already been deleted"
+                )
+            state = self._workspaces.get(workspace_id)
+            if state is not None:
+                return state
+            path = self.settings.workspace_root / workspace_id
+            if path.exists():
+                shutil.rmtree(path)
+            try:
+                path.mkdir(mode=0o700, parents=True)
+            except FileExistsError as exc:
+                raise RequestError(
+                    "WORKSPACE_CONFLICT", "workspace path already exists"
+                ) from exc
+            uid = self._allocate_uid()
+            os.chown(path, uid, uid)
+            state = WorkspaceState(path, uid, threading.RLock())
+            self._workspaces[workspace_id] = state
+            return state
+
+    @staticmethod
+    def _workspace_relative_path(value: str) -> PurePosixPath:
+        path = _safe_relative_path(value)
+        if path.parts[0] == ".sandbox":
+            raise RequestError(
+                "INVALID_FILE_PATH", "reserved workspace path"
+            )
+        return path
+
+    @staticmethod
+    def _resolve_workspace_path(
+        state: WorkspaceState,
+        relative: PurePosixPath,
+        *,
+        allow_missing: bool,
+    ) -> Path:
+        current = state.path
+        for part in relative.parts:
+            current = current / part
+            if not os.path.lexists(current):
+                if allow_missing:
+                    continue
+                raise RequestError("FILE_NOT_FOUND", "workspace path not found")
+            if current.is_symlink():
+                raise RequestError(
+                    "SYMLINK_NOT_ALLOWED", "symbolic links are not allowed"
+                )
+        return current
+
+    @staticmethod
+    def _create_workspace_parents(
+        state: WorkspaceState, parent: Path
+    ) -> None:
+        missing: list[Path] = []
+        current = parent
+        while current != state.path and not current.exists():
+            missing.append(current)
+            current = current.parent
+        if current.is_symlink() or not current.is_dir():
+            raise RequestError(
+                "INVALID_FILE_PATH", "parent must be a regular directory"
+            )
+        for path in reversed(missing):
+            path.mkdir(mode=0o700)
+            os.chown(path, state.uid, state.uid)
 
     def _validate_files(self, value: Any) -> dict[PurePosixPath, str]:
         if value is None:
@@ -177,7 +469,13 @@ class SandboxExecutor:
             target.write_text(content, encoding="utf-8")
 
     def _run(
-        self, workspace: Path, script_path: Path, timeout: int, uid: int
+        self,
+        workspace: Path,
+        script_path: Path,
+        timeout: int,
+        uid: int,
+        *,
+        collect_artifacts: bool = True,
     ) -> ExecutionResult:
         stdout_path = workspace / ".stdout"
         stderr_path = workspace / ".stderr"
@@ -245,9 +543,13 @@ class SandboxExecutor:
         stderr, stderr_truncated = _read_limited(
             stderr_path, self.settings.max_output_bytes // 2
         )
-        artifacts, artifact_truncated = self._collect_artifacts(
-            workspace / "output"
-        )
+        if collect_artifacts:
+            artifacts, artifact_truncated = self._collect_artifacts(
+                workspace / "output"
+            )
+        else:
+            artifacts = ()
+            artifact_truncated = False
         return ExecutionResult(
             exit_code=exit_code,
             stdout=stdout,
@@ -348,9 +650,6 @@ class SandboxHandler(BaseHTTPRequestHandler):
         self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_POST(self) -> None:
-        if self.path != "/v1/execute":
-            self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
-            return
         if not self._authenticated():
             self._json(
                 HTTPStatus.UNAUTHORIZED,
@@ -359,19 +658,36 @@ class SandboxHandler(BaseHTTPRequestHandler):
             return
         try:
             payload = self._read_payload()
-            result = self.server.executor.execute(payload)
+            if self.path == "/v1/execute":
+                result: Any = asdict(self.server.executor.execute(payload))
+            else:
+                workspace_id, action = self._workspace_route()
+                operations = {
+                    "execute": self.server.executor.execute_workspace,
+                    "write": self.server.executor.write_workspace,
+                    "read": self.server.executor.read_workspace,
+                    "files": self.server.executor.list_workspace,
+                    "export": self.server.executor.export_workspace,
+                }
+                operation = operations.get(action)
+                if operation is None:
+                    raise RequestError(
+                        "NOT_FOUND", "workspace operation not found"
+                    )
+                operation_result = operation(workspace_id, payload)
+                result = (
+                    asdict(operation_result)
+                    if isinstance(operation_result, ExecutionResult)
+                    else operation_result
+                )
         except RequestError as exc:
-            status = (
-                HTTPStatus.TOO_MANY_REQUESTS
-                if exc.code == "SANDBOX_BUSY"
-                else HTTPStatus.BAD_REQUEST
-            )
+            status = self._request_error_status(exc.code)
             self._json(
                 status,
                 {"error": {"code": exc.code, "message": exc.message}},
             )
             return
-        except Exception:
+        except Exception:  # noqa: BLE001 - HTTP boundary must return safe errors.
             traceback.print_exc()
             self.log_error("unhandled execute error")
             self._json(
@@ -384,7 +700,54 @@ class SandboxHandler(BaseHTTPRequestHandler):
                 },
             )
             return
-        self._json(HTTPStatus.OK, asdict(result))
+        self._json(HTTPStatus.OK, result)
+
+    def do_DELETE(self) -> None:
+        if not self._authenticated():
+            self._json(
+                HTTPStatus.UNAUTHORIZED,
+                {"error": {"code": "UNAUTHORIZED", "message": "unauthorized"}},
+            )
+            return
+        try:
+            workspace_id, action = self._workspace_route(
+                allow_workspace_root=True
+            )
+            if action:
+                raise RequestError(
+                    "NOT_FOUND", "workspace operation not found"
+                )
+            self.server.executor.delete_workspace(workspace_id)
+        except RequestError as exc:
+            self._json(
+                self._request_error_status(exc.code),
+                {"error": {"code": exc.code, "message": exc.message}},
+            )
+            return
+        self._json(HTTPStatus.OK, {"deleted": True})
+
+    def _workspace_route(
+        self, *, allow_workspace_root: bool = False
+    ) -> tuple[str, str]:
+        parts = self.path.split("?")[0].strip("/").split("/")
+        expected = 3 if allow_workspace_root else 4
+        if (
+            len(parts) != expected
+            or parts[:2] != ["v1", "workspaces"]
+        ):
+            raise RequestError("NOT_FOUND", "route not found")
+        workspace_id = _validate_workspace_id(parts[2])
+        return workspace_id, parts[3] if len(parts) == 4 else ""
+
+    @staticmethod
+    def _request_error_status(code: str) -> HTTPStatus:
+        if code == "SANDBOX_BUSY":
+            return HTTPStatus.TOO_MANY_REQUESTS
+        if code in {"FILE_NOT_FOUND", "NOT_FOUND"}:
+            return HTTPStatus.NOT_FOUND
+        if code in {"WORKSPACE_CLOSED", "WORKSPACE_CONFLICT"}:
+            return HTTPStatus.CONFLICT
+        return HTTPStatus.BAD_REQUEST
 
     def _authenticated(self) -> bool:
         authorization = self.headers.get("Authorization", "")
@@ -459,11 +822,27 @@ def _safe_relative_path(value: str) -> PurePosixPath:
     return path
 
 
-def _read_limited(path: Path, limit: int) -> tuple[str, bool]:
+def _validate_workspace_id(value: str) -> str:
+    if (
+        len(value) != 32
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise RequestError(
+            "INVALID_WORKSPACE_ID", "workspace id must be 32 lowercase hex chars"
+        )
+    return value
+
+
+def _read_bytes_limited(path: Path, limit: int) -> tuple[bytes, bool]:
     size = path.stat().st_size
     with path.open("rb") as file:
         data = file.read(limit)
-    return data.decode("utf-8", errors="replace"), size > len(data)
+    return data, size > len(data)
+
+
+def _read_limited(path: Path, limit: int) -> tuple[str, bool]:
+    data, truncated = _read_bytes_limited(path, limit)
+    return data.decode("utf-8", errors="replace"), truncated
 
 
 def main() -> None:

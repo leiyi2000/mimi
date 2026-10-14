@@ -568,6 +568,7 @@ class StickerTools:
                 handler=self.collect,
                 read_only=False,
                 skill_name="stickers",
+                completion_required=True,
             )
         )
         registry.register(
@@ -605,6 +606,7 @@ class StickerTools:
                 handler=self.send,
                 read_only=False,
                 skill_name="stickers",
+                completion_required=True,
             )
         )
         registry.register(
@@ -633,6 +635,7 @@ class StickerTools:
                 handler=self.organize,
                 read_only=False,
                 skill_name="stickers",
+                completion_required=True,
             )
         )
         registry.register(
@@ -647,6 +650,7 @@ class StickerTools:
                 handler=self.delete,
                 read_only=False,
                 skill_name="stickers",
+                completion_required=True,
             )
         )
 

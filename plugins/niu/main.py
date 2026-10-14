@@ -18,7 +18,7 @@ from napcat import (
     Text,
 )
 
-from core.agent import AgentLoop, create_anthropic_client
+from core.agent import AgentLoop
 from core.config import Config, ConfigError
 from core.conversation import ConversationStore, artifact_base64
 from core.mimi import MimiCommandCatalog, MimiCommandTools
@@ -29,7 +29,8 @@ from providers.group_history import GroupHistoryProvider, GroupHistoryTools
 from providers.image import ImageProvider
 from providers.media import MediaDownloader, MediaError
 from providers.music import MusicProvider
-from providers.sandbox import SandboxProvider, SandboxTools
+from providers.model import create_model_provider
+from providers.sandbox import SandboxProvider, SandboxTools, WorkspaceTools
 from providers.sticker_classifier import (
     StickerClassificationError,
     StickerClassifier,
@@ -57,6 +58,7 @@ class NiuApplication:
             "render",
             "reply",
             "web-search",
+            "workspace",
         }
         if config.group_history_enabled:
             enabled.add("group-history")
@@ -72,10 +74,8 @@ class NiuApplication:
         mimi_commands = MimiCommandCatalog(skill_root.parent.parent).load()
         self.skills.register(MimiCommandCatalog.skill(mimi_commands))
         self.tools = ToolRegistry()
-        AgentRuntimeTools().register(self.tools)
-        WebSearchTools(
-            AnySearchProvider(config.anysearch_api_key)
-        ).register(self.tools)
+        AgentRuntimeTools(self.skills.activation_names()).register(self.tools)
+        WebSearchTools(AnySearchProvider(config.anysearch_api_key)).register(self.tools)
         MimiCommandTools(mimi_commands).register(self.tools)
         RenderTools().register(self.tools)
         self.memory = MemoryStore(
@@ -101,7 +101,7 @@ class NiuApplication:
         image_provider = (
             ImageProvider(
                 api_base_url=config.minimax_api_base_url,
-                api_key=config.anthropic_api_key,
+                api_key=config.minimax_api_key,
                 downloader=downloader,
                 timeout=config.request_timeout,
             )
@@ -111,7 +111,7 @@ class NiuApplication:
         music_provider = (
             MusicProvider(
                 api_base_url=config.minimax_api_base_url,
-                api_key=config.anthropic_api_key,
+                api_key=config.minimax_api_key,
                 downloader=downloader,
                 timeout=max(config.request_timeout, 120),
             )
@@ -146,12 +146,21 @@ class NiuApplication:
             self.sandbox,
             max_timeout=config.sandbox_timeout,
         ).register(self.tools)
+        WorkspaceTools(
+            self.sandbox,
+            max_timeout=config.sandbox_timeout,
+        ).register(self.tools)
+        self.skills.validate_tool_bindings(self.tools.tools_by_skill())
 
-        model_client = create_anthropic_client(config).messages
+        self.model_provider = create_model_provider(
+            provider=config.model_provider,
+            api_key=config.model_api_key,
+            base_url=config.model_base_url,
+        )
         model_semaphore = asyncio.Semaphore(config.max_concurrency)
         self.sticker_classifier = (
             StickerClassifier(
-                client=model_client,
+                model_provider=self.model_provider,
                 model=config.model,
                 semaphore=model_semaphore,
                 timeout=config.request_timeout,
@@ -163,11 +172,9 @@ class NiuApplication:
             tuple[int, str], asyncio.Task[None]
         ] = {}
         self.agent = AgentLoop(
-            client=model_client,
+            model_provider=self.model_provider,
             config=config,
-            prompts=PromptCatalog.load(
-                Path(__file__).resolve().parent / "prompts"
-            ),
+            prompts=PromptCatalog.load(Path(__file__).resolve().parent / "prompts"),
             skills=self.skills,
             tools=self.tools,
             model_semaphore=model_semaphore,
@@ -181,9 +188,7 @@ class NiuApplication:
     async def start(self) -> None:
         if self.sticker_classifier is None:
             return
-        for group_id, sticker, image in (
-            await self.stickers.pending_classifications()
-        ):
+        for group_id, sticker, image in await self.stickers.pending_classifications():
             self._schedule_sticker_classification(
                 group_id=group_id,
                 sticker=sticker,
@@ -199,6 +204,7 @@ class NiuApplication:
                 return_exceptions=True,
             )
         await self.conversations.close()
+        await self.model_provider.close()
         await self.sandbox.close()
 
     async def handle(
@@ -212,9 +218,7 @@ class NiuApplication:
             await self._collect_stickers(event)
         text = self.qq_messages.text(event.message)
         prompt = self.conversations.parse_trigger(text)
-        if prompt is None and self.qq_messages.mentions(
-            event.message, event.self_id
-        ):
+        if prompt is None and self.qq_messages.mentions(event.message, event.self_id):
             prompt = text.strip()
         if prompt is None:
             return
@@ -300,9 +304,7 @@ class NiuApplication:
                         summary=segment.summary,
                     )
                 elif self.qq_messages.is_passive_sticker(segment):
-                    image = await self.qq_messages.download_passive_sticker(
-                        segment
-                    )
+                    image = await self.qq_messages.download_passive_sticker(segment)
                     tool_image = ToolImage(
                         image.data,
                         image.mime_type,
@@ -393,8 +395,7 @@ class NiuApplication:
             )
         except Exception:
             log.exception(
-                "unexpected sticker classification failure: "
-                "group_id=%s sticker_id=%s",
+                "unexpected sticker classification failure: group_id=%s sticker_id=%s",
                 group_id,
                 sticker_id,
             )
@@ -449,7 +450,8 @@ def main() -> None:
         log.error("invalid configuration: %s", exc)
         raise SystemExit(2) from exc
     log.info(
-        "niu plugin running: model=%s trigger_prefix=%s",
+        "niu plugin running: provider=%s model=%s trigger_prefix=%s",
+        config.model_provider,
         config.model,
         config.trigger_prefix,
     )

@@ -126,6 +126,7 @@ class MimiCommandTools:
                 handler=self.run,
                 read_only=False,
                 skill_name="mimi",
+                completion_required=True,
             )
         )
 

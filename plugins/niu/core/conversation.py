@@ -192,6 +192,14 @@ class ConversationStore:
                 ToolImage(image.data, image.mime_type, image.label)
                 for image in turn.message.images
             ),
+            quoted_images=tuple(
+                ToolImage(image.data, image.mime_type, image.label)
+                for image in (
+                    turn.message.quoted.images
+                    if turn.message.quoted is not None
+                    else ()
+                )
+            ),
             send_group_text=turn.send_group_text,
         )
         messages = self._messages(state.history, turn)
@@ -204,6 +212,7 @@ class ConversationStore:
                 messages=messages,
                 context=context,
                 memory_context=memory_context,
+                user_text=current_text,
             )
         except AgentError as exc:
             await turn.send_text(exc.user_message, True)

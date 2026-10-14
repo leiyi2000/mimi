@@ -2,6 +2,20 @@
 name: render
 description: 将信息密集、包含多个分段、清单或对比表格的复杂回复渲染成清晰图片。
 allowed-tools: render_rich_reply
+triggers:
+  - 长图
+  - 信息图
+  - 图片版总结
+  - 渲染成图片
+  - 做成图片
+examples:
+  - 把对比结果做成长图
+  - 生成图片版总结
+  - 将这份清单渲染成图片
+anti-triggers:
+  - 生成原创画面
+  - 需要复制的代码或链接
+priority: 70
 ---
 
 # Rich Reply Rendering

@@ -1,7 +1,21 @@
 ---
 name: web-search
 description: 查询新闻、天气、价格、版本和其他依赖当前时间的公开信息；用户明确要求联网或问题需要实时事实时使用。
-allowed-tools: search_web
+allowed-tools: search_web fetch_url
+triggers:
+  - 搜索网页
+  - 上网搜索
+  - 联网搜索
+  - 查最新
+  - 最新消息
+  - 找到链接
+examples:
+  - 搜索最新新闻并给出来源
+  - 找到指定网页的完整链接
+  - 核验候选页面内容
+anti-triggers:
+  - 查询当前群聊天记录
+  - 执行有副作用的网页操作
 ---
 
 # Web Search

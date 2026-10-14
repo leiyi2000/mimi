@@ -393,6 +393,7 @@ class RenderTools:
                 timeout=30,
                 read_only=False,
                 skill_name="render",
+                completion_required=True,
             )
         )
 

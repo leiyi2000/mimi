@@ -16,5 +16,7 @@
 | [群撤回消息查询](20261012-recalled-message-query/design.md) | - | - | implemented |
 | [Niu 轻量 Agent Loop](20261013-niu-agent-loop/design.md) | - | - | shipped |
 | [Niu Sandbox](20261014-niu-sandbox/design.md) | - | - | implemented |
+| [Niu Agent 目标驱动优化](20261014-niu-agent-purpose/design.md) | - | - | implemented |
+| [Niu Model Provider](20261014-niu-model-provider/design.md) | - | - | implemented |
 
 早期 Music 与 Niu 的接入属于插件运行时演进，在第一篇档案中说明，不额外拆文档。

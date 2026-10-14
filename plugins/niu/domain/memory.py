@@ -354,6 +354,7 @@ class MemoryTools:
                 handler=self.remember,
                 read_only=False,
                 skill_name="memory",
+                completion_required=True,
             )
         )
         registry.register(
@@ -363,6 +364,7 @@ class MemoryTools:
                 input_schema={"type": "object", "properties": {}},
                 handler=self.list_memories,
                 skill_name="memory",
+                completion_required=True,
             )
         )
         registry.register(
@@ -380,6 +382,7 @@ class MemoryTools:
                 handler=self.forget,
                 read_only=False,
                 skill_name="memory",
+                completion_required=True,
             )
         )
         registry.register(
@@ -396,6 +399,7 @@ class MemoryTools:
                 handler=self.update_personality,
                 read_only=False,
                 skill_name="memory",
+                completion_required=True,
             )
         )
         registry.register(
@@ -406,6 +410,7 @@ class MemoryTools:
                 handler=self.reset_personality,
                 read_only=False,
                 skill_name="memory",
+                completion_required=True,
             )
         )
 

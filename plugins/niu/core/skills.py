@@ -22,6 +22,10 @@ class Skill:
     description: str
     instructions: str
     allowed_tools: tuple[str, ...]
+    triggers: tuple[str, ...] = ()
+    examples: tuple[str, ...] = ()
+    anti_triggers: tuple[str, ...] = ()
+    priority: int = 0
 
 
 class SkillRegistry:
@@ -53,15 +57,75 @@ class SkillRegistry:
         )
 
     def catalog(self) -> str:
-        return "\n".join(
-            f"- {skill.name}: {skill.description}" for skill in self._skills.values()
-        )
+        lines = ["<available_skills>"]
+        for skill in self._skills.values():
+            lines.extend(
+                (
+                    "  <skill>",
+                    f"    <name>{skill.name}</name>",
+                    f"    <summary>{skill.description}</summary>",
+                )
+            )
+            if skill.examples:
+                lines.append(
+                    "    <examples>"
+                    + "；".join(skill.examples)
+                    + "</examples>"
+                )
+            if skill.anti_triggers:
+                lines.append(
+                    "    <do_not_use_when>"
+                    + "；".join(skill.anti_triggers)
+                    + "</do_not_use_when>"
+                )
+            lines.extend(
+                (
+                    "    <tools>"
+                    + ", ".join(skill.allowed_tools)
+                    + "</tools>",
+                    "  </skill>",
+                )
+            )
+        lines.append("</available_skills>")
+        return "\n".join(lines)
 
     def allows(self, tool_name: str) -> bool:
         return any(tool_name in skill.allowed_tools for skill in self._skills.values())
 
     def names(self) -> set[str]:
         return set(self._skills)
+
+    def activation_names(self) -> tuple[str, ...]:
+        return tuple(sorted(self._skills))
+
+    def match_explicit(self, text: str, *, limit: int = 3) -> set[str]:
+        folded = text.casefold()
+        matched = [
+            skill
+            for skill in self._skills.values()
+            if skill.triggers
+            and any(trigger.casefold() in folded for trigger in skill.triggers)
+        ]
+        matched.sort(key=lambda skill: (-skill.priority, skill.name))
+        return {skill.name for skill in matched[:limit]}
+
+    def validate_tool_bindings(
+        self,
+        tools_by_skill: dict[str, set[str]],
+    ) -> None:
+        for name, skill in self._skills.items():
+            expected = set(skill.allowed_tools)
+            actual = tools_by_skill.get(name, set())
+            if expected != actual:
+                raise ValueError(
+                    f"skill tool mismatch: {name}: "
+                    f"expected={sorted(expected)} actual={sorted(actual)}"
+                )
+        unknown = set(tools_by_skill) - self.names()
+        if unknown:
+            raise ValueError(
+                f"tools reference unknown skills: {sorted(unknown)}"
+            )
 
     def _parse(self, directory: Path) -> Skill:
         path = directory / "SKILL.md"
@@ -85,7 +149,33 @@ class SkillRegistry:
         allowed = metadata.get("allowed-tools", "")
         if not isinstance(allowed, str):
             raise TypeError(f"{path}: allowed-tools must be a string")
-        return Skill(name, description, body.strip(), tuple(allowed.split()))
+        priority = metadata.get("priority", 0)
+        if not isinstance(priority, int) or isinstance(priority, bool):
+            raise TypeError(f"{path}: priority must be an integer")
+        return Skill(
+            name,
+            description,
+            body.strip(),
+            tuple(allowed.split()),
+            self._string_list(path, metadata, "triggers"),
+            self._string_list(path, metadata, "examples"),
+            self._string_list(path, metadata, "anti-triggers"),
+            priority,
+        )
+
+    @staticmethod
+    def _string_list(
+        path: Path,
+        metadata: dict[str, Any],
+        key: str,
+    ) -> tuple[str, ...]:
+        value = metadata.get(key, [])
+        if not isinstance(value, list) or any(
+            not isinstance(item, str) or not item.strip()
+            for item in value
+        ):
+            raise TypeError(f"{path}: {key} must be a string list")
+        return tuple(item.strip() for item in value)
 
 
 class MediaTools:
@@ -102,13 +192,24 @@ class MediaTools:
             registry.register(
                 Tool(
                     name="generate_image",
-                    description="Generate one image from a detailed prompt.",
+                    description=(
+                        "Generate one image from a detailed prompt, optionally "
+                        "preserving a person from one input image."
+                    ),
                     input_schema={
                         "type": "object",
                         "properties": {
                             "prompt": {"type": "string"},
                             "aspect_ratio": {
                                 "enum": ["1:1", "16:9", "4:3", "3:4", "9:16"]
+                            },
+                            "reference_image_index": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "description": (
+                                    "Optional image index from the current and "
+                                    "quoted message, in displayed order."
+                                ),
                             },
                         },
                         "required": ["prompt"],
@@ -117,6 +218,7 @@ class MediaTools:
                     timeout=120,
                     read_only=False,
                     skill_name="image",
+                    completion_required=True,
                 )
             )
         if self.music_provider is not None:
@@ -137,6 +239,7 @@ class MediaTools:
                     timeout=180,
                     read_only=False,
                     skill_name="music",
+                    completion_required=True,
                 )
             )
 
@@ -144,10 +247,27 @@ class MediaTools:
         self, context: ToolContext, arguments: dict[str, Any]
     ) -> ToolResult:
         assert self.image_provider is not None
+        reference_image = None
+        raw_index = arguments.get("reference_image_index")
+        if raw_index is not None:
+            if not isinstance(raw_index, int) or isinstance(raw_index, bool):
+                raise ValueError("invalid reference image index")
+            available_images = context.images + context.quoted_images
+            if not 0 <= raw_index < len(available_images):
+                return ToolResult.error(
+                    "REFERENCE_IMAGE_NOT_FOUND",
+                    "指定的参考图片不存在，请使用消息中显示的图片序号。",
+                    retryable=True,
+                    safe_details={
+                        "available_image_count": str(len(available_images))
+                    },
+                )
+            reference_image = available_images[raw_index]
         try:
             artifact = await self.image_provider.generate(
                 str(arguments["prompt"]),
                 str(arguments.get("aspect_ratio", "1:1")),
+                reference_image,
             )
         except MediaError as exc:
             return ToolResult(str(exc), is_error=True)
@@ -213,6 +333,7 @@ class ReplyTools:
                 handler=self.attach_text_file,
                 read_only=False,
                 skill_name="reply",
+                completion_required=True,
             )
         )
 

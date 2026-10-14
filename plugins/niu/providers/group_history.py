@@ -93,6 +93,7 @@ class GroupHistoryTools:
                 },
                 handler=self.search,
                 skill_name="group-history",
+                completion_required=True,
             )
         )
 
