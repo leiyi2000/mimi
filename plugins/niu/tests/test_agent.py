@@ -126,6 +126,50 @@ async def test_web_search_tool_is_available_on_first_round(configured_env):
     assert client.requests[1].timeout == config.request_timeout
 
 
+async def test_render_tool_is_available_for_summary_on_first_round(configured_env):
+    config = Config.from_env()
+    client = FakeProvider([text_response("总结完成")])
+    skills = SkillRegistry(Path(__file__).resolve().parent.parent / "skills")
+    skills.load(enabled={"render"})
+    tools = ToolRegistry()
+    AgentRuntimeTools(skills.activation_names()).register(tools)
+
+    async def render_reply(context, arguments):
+        return ToolResult("RICH_REPLY_RENDERED")
+
+    tools.register(
+        Tool(
+            name="render_rich_reply",
+            description="render",
+            input_schema={"type": "object"},
+            handler=render_reply,
+            read_only=False,
+            skill_name="render",
+        )
+    )
+    loop = AgentLoop(
+        model_provider=client,
+        config=config,
+        prompts=PromptCatalog.load(Path(__file__).resolve().parent.parent / "prompts"),
+        skills=skills,
+        tools=tools,
+        model_semaphore=asyncio.Semaphore(1),
+    )
+
+    await loop.run(
+        messages=[{"role": "user", "content": "总结下这个项目"}],
+        context=ToolContext(1, 2, 3, "tester"),
+        memory_context="none",
+        user_text="总结下这个项目",
+    )
+
+    assert "## Skill: render" in client.requests[0].system
+    assert "不要因为存在一个 URL" in client.requests[0].system
+    assert "render_rich_reply" in [
+        tool["name"] for tool in client.requests[0].tools
+    ]
+
+
 async def test_tool_result_is_sent_back(configured_env):
     config = Config.from_env()
     registry = ToolRegistry()

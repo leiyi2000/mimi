@@ -129,6 +129,7 @@ class AgentLoop:
             "agent-runtime",
             "memory",
             "mimi",
+            "render",
             "reply",
             "web-search",
         }
