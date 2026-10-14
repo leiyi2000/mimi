@@ -25,11 +25,11 @@ from core.mimi import MimiCommandCatalog, MimiCommandTools
 from core.prompts import PromptCatalog
 from core.rendering import RenderTools
 from domain.memory import MemoryStore, MemoryTools
-from core.monty import MontyRunner
 from providers.group_history import GroupHistoryProvider, GroupHistoryTools
 from providers.image import ImageProvider
 from providers.media import MediaDownloader, MediaError
 from providers.music import MusicProvider
+from providers.sandbox import SandboxProvider, SandboxTools
 from providers.sticker_classifier import (
     StickerClassificationError,
     StickerClassifier,
@@ -137,8 +137,15 @@ class NiuApplication:
                     max_chars=config.group_history_max_chars,
                 )
             ).register(self.tools)
-        self.monty = MontyRunner(config, self.tools)
-        self.monty.register()
+        self.sandbox = SandboxProvider(
+            base_url=config.sandbox_url,
+            token=config.sandbox_token,
+            request_timeout=config.sandbox_timeout,
+        )
+        SandboxTools(
+            self.sandbox,
+            max_timeout=config.sandbox_timeout,
+        ).register(self.tools)
 
         model_client = create_anthropic_client(config).messages
         model_semaphore = asyncio.Semaphore(config.max_concurrency)
@@ -192,7 +199,7 @@ class NiuApplication:
                 return_exceptions=True,
             )
         await self.conversations.close()
-        await self.monty.close()
+        await self.sandbox.close()
 
     async def handle(
         self,

@@ -9,6 +9,9 @@ def test_config_uses_new_model_and_prefix(configured_env):
     assert config.model == "MiniMax-M3.1-Flash-Preview"
     assert config.trigger_prefix == "南瓜"
     assert config.anysearch_api_key == "test-search-key"
+    assert config.sandbox_url == "http://sandbox:8080"
+    assert config.sandbox_token == "test-sandbox-token"
+    assert config.sandbox_timeout == 30
     assert not config.group_history_enabled
     assert config.image_enabled
     assert config.stickers_enabled
@@ -28,6 +31,13 @@ def test_config_requires_anysearch_api_key(configured_env, monkeypatch):
     monkeypatch.delenv("ANYSEARCH_API_KEY", raising=False)
 
     with pytest.raises(ConfigError, match="ANYSEARCH_API_KEY"):
+        Config.from_env()
+
+
+def test_config_requires_sandbox_token(configured_env, monkeypatch):
+    monkeypatch.delenv("SANDBOX_TOKEN", raising=False)
+
+    with pytest.raises(ConfigError, match="SANDBOX_TOKEN"):
         Config.from_env()
 
 

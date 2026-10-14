@@ -12,6 +12,7 @@ sys.path.insert(0, str(PLUGIN_ROOT))
 def configured_env(monkeypatch, tmp_path):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.setenv("ANYSEARCH_API_KEY", "test-search-key")
+    monkeypatch.setenv("SANDBOX_TOKEN", "test-sandbox-token")
     monkeypatch.setenv("NIU_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("NIU_GROUP_HISTORY_ENABLED", "false")
     return tmp_path

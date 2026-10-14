@@ -187,7 +187,8 @@ docker compose logs --tail=200 qimei
 | APEX 轮换无响应 | `APEX_AUTH`、ALS API、插件日志 |
 | 点歌失败 | 分别检查 `ncm-api` 与音乐卡片签名服务 |
 | VIP 歌曲失败 | `网易云信息`、Cookie 是否过期 |
-| 南瓜不回复 | 消息是否以 `NIU_TRIGGER_PREFIX` 开头、模型地址与密钥、Monty 二进制 |
+| 南瓜不回复 | `NIU_TRIGGER_PREFIX`、模型地址与密钥、Sandbox 健康状态及 Token 是否一致 |
+| 南瓜代码执行失败 | `sandbox` 与 `sandbox-egress-proxy` 日志、tmpfs、出口 ACL 和资源限额 |
 | Yasuo 查不到数据 | 是否为群消息、数据库卷、`POST /` 与分页参数 |
 
 ## 性能优化

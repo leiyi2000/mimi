@@ -13,7 +13,8 @@
   Yasuo 专用接口查询当前群历史。
 - 长耗时或多步骤任务会在执行 Tool 前发布一次简短计划；简单问题直接回答。
 - 工具轮次耗尽或回答截断时，基于已有结果生成尽力而为的部分完成答复。
-- 使用 Pydantic Monty 执行无文件、无网络、无环境变量的受限 Python。
+- 通过独立 `sandbox` 执行 Bash、Python、pip、curl 和 Git；任务使用一次性工作区，
+  公网流量经过拒绝私网目标的代理，Sandbox 不挂载 Mimi 数据或业务密钥。
 - 图片 Provider 已通过真实付费验收并默认启用；音乐因当前账号无 API 权限保持关闭。
 - Skill 只随仓库代码发布，不支持搜索、下载或运行时安装。
 - 普通回复保持单段、1–3 个短句的聊天语气，默认不 @；模型只在确实需要提醒时自主选择
@@ -61,8 +62,8 @@
 | `NIU_INPUT_IMAGE_MAX_BYTES` | `5242880` | 单张输入图片最大字节数 |
 | `NIU_GROUP_HISTORY_ENABLED` | `true` | 启用群历史 Skill |
 | `YASUO_API_URL` | `http://127.0.0.1:6273` | Yasuo API 地址 |
-| `NIU_MONTY_MAX_PROCESSES` | `2` | Monty Worker 上限 |
-| `NIU_MONTY_MEMORY_MB` | `64` | 单次代码执行堆上限 |
+| `SANDBOX_TOKEN` | 无 | Mimi 与 Sandbox 间的 Bearer Token，必需 |
+| `NIU_SANDBOX_TIMEOUT` | `30` | 单次代码执行秒数，上限 60 |
 | `NIU_IMAGE_ENABLED` | `true` | 图片 Skill 开关；当前账号已完成真实验收 |
 | `NIU_MUSIC_ENABLED` | `false` | 音乐权限验收后显式开启 |
 | `NIU_STICKERS_ENABLED` | `true` | 群表情包收集、整理和回复开关 |

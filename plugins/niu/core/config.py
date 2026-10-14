@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,17 +15,6 @@ def _integer(name: str, default: int, minimum: int, maximum: int) -> int:
         value = int(raw)
     except ValueError as exc:
         raise ConfigError(f"{name} must be an integer") from exc
-    if not minimum <= value <= maximum:
-        raise ConfigError(f"{name} must be between {minimum} and {maximum}")
-    return value
-
-
-def _number(name: str, default: float, minimum: float, maximum: float) -> float:
-    raw = os.getenv(name, str(default))
-    try:
-        value = float(raw)
-    except ValueError as exc:
-        raise ConfigError(f"{name} must be a number") from exc
     if not minimum <= value <= maximum:
         raise ConfigError(f"{name} must be between {minimum} and {maximum}")
     return value
@@ -74,13 +62,9 @@ class Config:
     group_history_timeout: int
     group_history_max_items: int
     group_history_max_chars: int
-    monty_binary_path: Path
-    monty_max_processes: int
-    monty_memory_mb: int
-    monty_feed_timeout: float
-    monty_request_timeout: float
-    monty_max_host_calls: int
-    monty_output_kb: int
+    sandbox_url: str
+    sandbox_token: str
+    sandbox_timeout: int
     memory_max_items: int
     memory_max_chars: int
     memory_compact_bytes: int
@@ -107,12 +91,6 @@ class Config:
             raise ConfigError("NIU_REASONING_EFFORT must be low, medium, or high")
 
         history_enabled = _boolean("NIU_GROUP_HISTORY_ENABLED", True)
-        monty_binary_path = Path(
-            os.getenv("MONTY_BIN", str(Path(sys.executable).with_name("monty")))
-        ).resolve()
-        if not monty_binary_path.is_file():
-            raise ConfigError(f"MONTY_BIN does not exist: {monty_binary_path}")
-
         return cls(
             trigger_prefix=prefix,
             model=_required(
@@ -159,21 +137,11 @@ class Config:
             group_history_max_chars=_integer(
                 "NIU_GROUP_HISTORY_MAX_CHARS", 8000, 100, 30000
             ),
-            monty_binary_path=monty_binary_path,
-            monty_max_processes=_integer(
-                "NIU_MONTY_MAX_PROCESSES", 2, 1, 16
-            ),
-            monty_memory_mb=_integer("NIU_MONTY_MEMORY_MB", 64, 8, 1024),
-            monty_feed_timeout=_number(
-                "NIU_MONTY_FEED_TIMEOUT", 2.0, 0.1, 30.0
-            ),
-            monty_request_timeout=_number(
-                "NIU_MONTY_REQUEST_TIMEOUT", 5.0, 0.5, 60.0
-            ),
-            monty_max_host_calls=_integer(
-                "NIU_MONTY_MAX_HOST_CALLS", 32, 0, 1000
-            ),
-            monty_output_kb=_integer("NIU_MONTY_OUTPUT_KB", 128, 1, 1024),
+            sandbox_url=_required(
+                "SANDBOX_URL", "http://sandbox:8080"
+            ).rstrip("/"),
+            sandbox_token=_required("SANDBOX_TOKEN"),
+            sandbox_timeout=_integer("NIU_SANDBOX_TIMEOUT", 30, 1, 60),
             memory_max_items=_integer("NIU_MEMORY_MAX_ITEMS", 20, 0, 100),
             memory_max_chars=_integer("NIU_MEMORY_MAX_CHARS", 4000, 0, 20000),
             memory_compact_bytes=_integer(

@@ -1,7 +1,7 @@
 ---
 status: active
 owner: Mimi maintainers
-updated: 2026-09-18
+updated: 2026-10-14
 ---
 
 # 部署规范
@@ -54,10 +54,8 @@ chmod 600 .env
 | `NIU_STICKER_DAILY_CLASSIFICATIONS` | 否 | `5` | 每群每日后台 AI 分类次数上限 |
 | `NIU_GROUP_HISTORY_ENABLED` | 否 | `true` | 是否启用当前群历史查询 |
 | `YASUO_API_URL` | 群历史需要 | `http://127.0.0.1:6273` | Yasuo 内部 API |
-| `NIU_MONTY_MAX_PROCESSES` | 否 | `2` | Monty Worker 进程上限 |
-| `NIU_MONTY_MEMORY_MB` | 否 | `64` | Monty Session 堆上限 |
-| `NIU_MONTY_FEED_TIMEOUT` | 否 | `2` | Monty VM feed 秒数 |
-| `NIU_MONTY_REQUEST_TIMEOUT` | 否 | `5` | Monty Worker 硬超时 |
+| `SANDBOX_TOKEN` | 南瓜需要 | 随机高熵字符串 | Mimi 与 Sandbox 间的 Bearer Token |
+| `NIU_SANDBOX_TIMEOUT` | 否 | `30` | 单次代码执行秒数，上限 60 |
 | `NIU_IMAGE_ENABLED` | 否 | `true` | 图片 Skill；当前账号已完成付费权限验收 |
 | `NIU_MUSIC_ENABLED` | 否 | `false` | 完成音乐 API 权限验收后开启 |
 | `MLOL_HOST` | 否 | `mlol.qt.qq.com` | 掌盟接口主机 |
@@ -105,12 +103,17 @@ Token，默认请求地址已写入 `MUSIC_SIGN_API`。
 - Secret 只在运行时注入，不写入文档、日志或测试。
 - 新环境变量必须在读取点提供明确默认值或启动失败信息。
 - 管理员列表使用 `ADMINS`，权限仍由每个管理命令在处理器内校验。
+- `sandbox` 不读取 `.env`，只注入 `SANDBOX_TOKEN`；禁止挂载 Mimi 数据卷、
+  Docker Socket 或宿主目录。
+- Sandbox 与 Mimi 只共享内部控制网络。任务 UID 的出口只能到 Squid，代理拒绝回环、
+  RFC1918、链路本地、CGNAT、云元数据和非 80/443 端口。
 
 ## 2. 构建
 
 - `.dockerignore` 排除 `data/`、插件数据、`.git/`、虚拟环境和工具缓存。
 - QIMEI 保持独立多阶段 Maven/JRE 镜像。
 - Mimi 镜像必须同步每个插件的独立依赖。
+- Sandbox 使用只读根文件系统和 tmpfs 工作区；Squid 是唯一公网出口。
 - 只有排查缓存问题时使用 `--no-cache`。
 - 构建前后关注上下文大小和镜像体积，禁止把数据库、图片缓存或 APK 放入 Mimi 镜像。
 
@@ -124,14 +127,15 @@ Token，默认请求地址已写入 `MUSIC_SIGN_API`。
 ## 4. 发布
 
 ```bash
-docker compose build mimi qimei
+docker compose build mimi qimei sandbox
 docker compose up -d
 docker compose ps
 docker compose logs --tail=200 mimi qimei
 ```
 
-只修改 Python 业务时可单独重建 `mimi`；修改 QIMEI 协议、原生库或 Java 代码时同时重建
-`qimei`。重建后至少验证帮助命令、一个文本命令和一个图片命令。
+只修改插件 Python 业务时可单独重建 `mimi`；修改 Code Tool、Sandbox 或代理策略时同时
+重建 `mimi sandbox` 并重启 `sandbox-egress-proxy`；修改 QIMEI 协议、原生库或
+Java 代码时同时重建 `qimei`。重建后至少验证帮助命令、一个文本命令和一个图片命令。
 
 ## 5. 回滚
 

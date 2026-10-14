@@ -15,5 +15,6 @@
 | [英雄联盟手游战绩适配](20260920-lol-mobile-game/design.md) | - | - | shipped |
 | [群撤回消息查询](20261012-recalled-message-query/design.md) | - | - | implemented |
 | [Niu 轻量 Agent Loop](20261013-niu-agent-loop/design.md) | - | - | shipped |
+| [Niu Sandbox](20261014-niu-sandbox/design.md) | - | - | implemented |
 
 早期 Music 与 Niu 的接入属于插件运行时演进，在第一篇档案中说明，不额外拆文档。

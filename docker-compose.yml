@@ -32,12 +32,18 @@ services:
         container_name: mimi
         env_file:
             - .env
+        environment:
+            SANDBOX_TOKEN: ${SANDBOX_TOKEN:?SANDBOX_TOKEN is required}
+            SANDBOX_URL: http://sandbox:8080
         restart: unless-stopped
         volumes:
             - ./data/mini/plugins/apex/data:/app/plugins/apex/data
             - ./data/mini/plugins/yasuo/data:/app/plugins/yasuo/data
             - ./data/mini/plugins/lol/data:/app/plugins/lol/data
             - ./data/mini/plugins/niu/data:/app/plugins/niu/data
+        networks:
+            - default
+            - sandbox-control
         depends_on:
             napcat:
                 condition: service_started
@@ -45,3 +51,86 @@ services:
                 condition: service_started
             qimei:
                 condition: service_started
+            sandbox:
+                condition: service_healthy
+    sandbox-egress-proxy:
+        image: ubuntu/squid@sha256:6a097f68bae708cedbabd6188d68c7e2e7a38cedd05a176e1cc0ba29e3bbe029
+        container_name: sandbox-egress-proxy
+        entrypoint:
+            - /usr/sbin/squid
+        command:
+            - -N
+            - -f
+            - /etc/squid/squid.conf
+            - -YC
+        restart: unless-stopped
+        read_only: true
+        cap_drop:
+            - ALL
+        cap_add:
+            - CHOWN
+            - DAC_OVERRIDE
+            - SETGID
+            - SETUID
+        security_opt:
+            - no-new-privileges:true
+        pids_limit: 64
+        mem_limit: 128m
+        cpus: 0.5
+        volumes:
+            - ./sandbox/squid.conf:/etc/squid/squid.conf:ro
+        tmpfs:
+            - /tmp:size=16m,mode=1777
+            - /var/run:size=4m,mode=0755
+            - /var/log/squid:size=4m,mode=0750
+            - /var/spool/squid:size=16m,mode=0750
+        networks:
+            - sandbox-control
+            - sandbox-egress
+    sandbox:
+        build: ./sandbox
+        container_name: sandbox
+        restart: unless-stopped
+        read_only: true
+        environment:
+            SANDBOX_TOKEN: ${SANDBOX_TOKEN:?SANDBOX_TOKEN is required}
+        cap_drop:
+            - ALL
+        cap_add:
+            - CHOWN
+            - DAC_OVERRIDE
+            - KILL
+            - NET_ADMIN
+            - SETPCAP
+            - SETGID
+            - SETUID
+        security_opt:
+            - no-new-privileges:true
+        sysctls:
+            net.ipv6.conf.all.disable_ipv6: "1"
+        pids_limit: 160
+        mem_limit: 768m
+        cpus: 2
+        tmpfs:
+            - /tmp:size=16m,mode=1777
+            - /workspaces:size=128m,mode=0711
+        networks:
+            - sandbox-control
+        depends_on:
+            sandbox-egress-proxy:
+                condition: service_started
+        healthcheck:
+            test:
+                - CMD
+                - python
+                - -c
+                - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).read()"
+            interval: 10s
+            timeout: 3s
+            retries: 5
+            start_period: 10s
+
+networks:
+    sandbox-control:
+        internal: true
+    sandbox-egress:

@@ -23,7 +23,7 @@ Niu 在插件进程内实现小型 Agent 运行时，使用 MiniMax M3.1 完成�
 
 ### 不做
 
-- 不提供 SandboxRunner、Shell、完整 CPython、Node.js 或外部二进制执行。
+- 不提供 Sandbox、Shell、完整 CPython、Node.js 或外部二进制执行。
 - 不搜索、下载、安装或升级外部 Skill。
 - 不使用签名 Registry；静态 Skill 来自随 Niu 代码发布的 `plugins/niu/skills/`，启动时
   仅根据仓库内 `commands.toml` 生成受控的 `mimi` Skill。

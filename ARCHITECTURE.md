@@ -8,7 +8,7 @@
 
 Mimi 是基于 NapCat/OneBot 的插件化 QQ 机器人。仓库采用单仓库、多进程结构：
 
-- Docker Compose 提供 NapCat、网易云 API、QIMEI 和 Mimi 容器。
+- Docker Compose 提供 NapCat、网易云 API、QIMEI、Mimi、Sandbox 和受控出口代理。
 - Mimi 根进程扫描 `plugins/*`，校验命令清单并启动插件子进程。
 - 每个插件拥有独立 Python 环境、NapCat WebSocket、业务代码和运行数据。
 - 插件之间不直接导入；共享的是环境变量、NapCat 服务和明确的 HTTP 服务。
@@ -48,6 +48,9 @@ flowchart LR
     NIU --> LLM[MiniMax Anthropic 兼容 API]
     NIU --> MM[MiniMax 图片与音乐 API]
     NIU --> YAPI[Yasuo Agent 只读 API]
+    NIU --> SANDBOX[Sandbox]
+    SANDBOX --> PROXY[Squid 出口代理]
+    PROXY --> WEB[公网 80 / 443]
 ```
 
 ## 运行视图
@@ -58,6 +61,8 @@ flowchart LR
 | `ncm-api` | 网易云搜索、登录和账户接口 | 外部服务状态 |
 | `qimei` | 通过 Unidbg 与原生库注册 QIMEI36 | `data/qimei/` 仅缓存 APK |
 | `mimi` | 根进程与全部插件子进程 | 插件数据卷 |
+| `sandbox` | 在一次性工作区降权执行 Niu Code Tool | `/workspaces` tmpfs |
+| `sandbox-egress-proxy` | 代理 Sandbox 公网流量并拒绝私网目标 | 无持久状态 |
 
 `mimi/main.py` 创建 `PluginManager`。管理器扫描 `plugins/` 的直接子目录，读取
 `commands.toml` 并做全局、大小写不敏感的命令去重，然后在每个插件目录执行
@@ -82,6 +87,10 @@ plugins/
   yasuo/                  # 群消息归档、撤回海报与查询 API
 qimei/
   src/main/java/qimei/    # QIMEI HTTP、APK 校验、Unidbg 调用
+sandbox/
+  app.py                  # 执行 API、限额、降权与产物收集
+  entrypoint.sh           # 任务 UID 出口防火墙
+  squid.conf              # 公网代理目标与端口策略
 ```
 
 复杂插件采用以下依赖方向：
@@ -173,10 +182,15 @@ Skill 而否认点歌等已有插件能力。绑定、登录和管理类指令�
 反应图；被动图片由受每日额度约束的后台多模态分类器补充检索元数据，不阻塞群消息。库满
 后新表情随机替换一条旧记录并清理对应图片；照片、截图等普通群图片不被动保存。
 群历史只能通过 Yasuo 默认绑定在 `127.0.0.1:6273` 的 `/v1/agent/*` 只读接口访问，Niu
-不导入 Yasuo 代码或读取其数据库。受限 Python 由 Pydantic Monty Worker 执行，不提供
-Shell、外部 Skill 安装或动态代码注册。复杂回复通过结构化 Tool 输入和固定 HTML 模板，
-由 pytakumi 渲染为图片；模型不能注入 HTML、样式、脚本、外链或宿主文件。图片与音乐
-Provider 通过独立环境变量启用。
+不导入 Yasuo 代码或读取其数据库。Code Tool 通过 Bearer 认证调用独立
+`sandbox`：每次执行创建 tmpfs 工作区和独立数值 UID，可使用 Bash、Python、pip、
+curl 与 Git，并只回收 `output/` 下的常规文件。Sandbox 不读取 Mimi `.env`、不挂数据卷
+或 Docker Socket；任务 UID 在容器出口规则下只能连接 Squid，代理拒绝回环、私网、
+链路本地、CGNAT、元数据地址和非 80/443 端口。执行受超时、内存、进程、文件、输出和
+并发限额约束，结束后删除工作区。
+
+复杂回复通过结构化 Tool 输入和固定 HTML 模板，由 pytakumi 渲染为图片；模型不能注入
+HTML、样式、脚本、外链或宿主文件。图片与音乐 Provider 通过独立环境变量启用。
 
 ## 架构不变量
 
@@ -188,3 +202,4 @@ Provider 通过独立环境变量启用。
 6. QIMEI 服务保持无设备状态，并保留在仓库根目录。
 7. Cookie、Token、OAuth 回调、设备标识和数据库不进入日志、文档或 Git。
 8. `data/` 与插件数据目录不进入 Docker 构建上下文。
+9. Sandbox 不接收 Mimi 业务密钥或持久数据，任务网络只能经过受控出口代理。
