@@ -13,6 +13,7 @@ from core.prompts import PromptCatalog
 from core.skills import ReplyTools, SkillRegistry
 from core.tools import (
     AgentRuntimeTools,
+    Artifact,
     Tool,
     ToolContext,
     ToolImage,
@@ -810,3 +811,60 @@ async def test_repeated_tool_error_tells_model_to_change_approach(
     repeated = client.requests[2].messages[-1]["content"][0]
     assert json.loads(repeated["content"])["code"] == "REPEATED_TOOL_ERROR"
     assert response.text == "改用已有信息回答"
+
+
+async def test_final_reply_strips_all_urls(configured_env):
+    config = Config.from_env()
+    client = FakeProvider(
+        [
+            text_response(
+                "来源：[示例](https://example.com/page) "
+                "备用 https://cdn.example.com/a.png 和 www.example.org/x"
+            )
+        ]
+    )
+
+    response = await run(build_loop(config, client))
+
+    assert "http" not in response.text
+    assert "www." not in response.text
+    assert "示例" in response.text
+
+
+async def test_image_link_request_returns_only_image_artifact(configured_env):
+    config = Config.from_env()
+    registry = ToolRegistry()
+
+    async def deliver(context, arguments):
+        return ToolResult(
+            "IMAGE_ATTACHED",
+            artifacts=(
+                Artifact("image", b"image", "image/png", "result.png"),
+            ),
+        )
+
+    registry.register(
+        Tool(
+            "deliver",
+            "deliver image",
+            {"type": "object"},
+            deliver,
+        )
+    )
+    client = FakeProvider(
+        [
+            tool_response(name="deliver"),
+            text_response("图片：https://example.com/result.png"),
+        ]
+    )
+    loop = build_loop(config, client, registry)
+
+    response = await loop.run(
+        messages=[{"role": "user", "content": "给我一张图片的链接"}],
+        context=ToolContext(1, 2, 3, "tester"),
+        memory_context="none",
+        user_text="给我一张图片的链接",
+    )
+
+    assert response.text == ""
+    assert response.artifacts[0].kind == "image"

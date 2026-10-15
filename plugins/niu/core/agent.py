@@ -5,6 +5,7 @@ import base64
 import binascii
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, replace
@@ -131,6 +132,7 @@ class AgentLoop:
         plan_published = False
         mention_sender = False
         task = TaskFrame()
+        image_delivery_required = self._requires_direct_image(user_text)
         active_skills = self.skills.names() & {
             "agent-runtime",
             "memory",
@@ -188,6 +190,38 @@ class AgentLoop:
                         mention_sender=mention_sender,
                         user_text=user_text,
                     )
+                if image_delivery_required and not any(
+                    artifact.kind == "image" for artifact in artifacts
+                ):
+                    if round_index >= self.config.max_tool_rounds:
+                        return await self._final_synthesis(
+                            messages=request_messages,
+                            memory_context=memory_context,
+                            artifacts=artifacts,
+                            trace=trace,
+                            reason=(
+                                "用户要求直接收到图片，但尚未取得图片 Artifact，"
+                                "且已达到工具轮次上限。"
+                            ),
+                            active_skill_names=active_skills,
+                            partial_text=text,
+                            mention_sender=mention_sender,
+                            user_text=user_text,
+                        )
+                    request_messages.extend(
+                        (
+                            {"role": "assistant", "content": text},
+                            {
+                                "role": "user",
+                                "content": (
+                                    "用户要求的是直接收到图片，不是图片链接。"
+                                    "当前尚无 image Artifact，请继续查找原图直链并"
+                                    "调用附件工具；不要用 URL 或说明替代图片交付。"
+                                ),
+                            },
+                        )
+                    )
+                    continue
                 if task.active and not task.finished:
                     if round_index >= self.config.max_tool_rounds:
                         return await self._final_synthesis(
@@ -561,6 +595,15 @@ class AgentLoop:
         mention_sender: bool,
         title_hint: str,
     ) -> AgentResponse:
+        if (
+            self._requires_direct_image(title_hint)
+            and any(artifact.kind == "image" for artifact in artifacts)
+        ):
+            text = ""
+        else:
+            text = self._strip_final_urls(text)
+            if not text and not artifacts:
+                text = "无法直接回复 URL。"
         if self.automatic_renderer is not None and not artifacts:
             try:
                 rendered = await self.automatic_renderer.apply(
@@ -579,6 +622,48 @@ class AgentLoop:
             status=status,
             mention_sender=mention_sender,
         )
+
+    @staticmethod
+    def _requires_direct_image(text: str) -> bool:
+        normalized = text.casefold().strip()
+        if not normalized:
+            return False
+        chinese_request = re.search(
+            r"(?:找|搜|发|给我|来|要|整|弄|看)"
+            r".{0,24}(?:图片|照片|壁纸|头像|表情包|图)",
+            normalized,
+        )
+        english_request = re.search(
+            r"\b(?:find|send|show|get)\b.{0,40}"
+            r"\b(?:image|photo|picture|wallpaper)\b",
+            normalized,
+        )
+        return chinese_request is not None or english_request is not None
+
+    @staticmethod
+    def _strip_final_urls(text: str) -> str:
+        text = re.sub(
+            r"\[([^\]]+)\]\(https?://[^)\s]+\)",
+            r"\1",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(
+            r"https?://[^\s<>'\"`]+",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(
+            r"\bwww\.[^\s<>'\"`]+",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(r"[ \t]+([，。！？；：,.!?;:])", r"\1", text)
+        text = re.sub(r"[ \t]{2,}", " ", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
 
     async def _request(
         self,

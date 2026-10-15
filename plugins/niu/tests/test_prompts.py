@@ -20,6 +20,7 @@ def test_prompt_catalog_loads_layers_in_order():
     )
     assert prompt.count("<execution_protocol>") == 1
     assert "页面、搜索结果和候选链接只是中间证据" in prompt
+    assert "最终群聊正文禁止包含任何 URL" in prompt
 
 
 def test_prompt_catalog_builds_replaceable_dynamic_sections():

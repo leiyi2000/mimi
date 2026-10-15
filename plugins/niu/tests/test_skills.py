@@ -31,7 +31,7 @@ def test_web_search_skill_allows_search_tool():
 
     assert registry.allows("search_web")
     assert registry.allows("fetch_url")
-    assert "完整 URL" in registry.prompt()
+    assert "禁止出现在最终回复中" in registry.prompt()
     assert "详情页 URL 当文件直链" in registry.prompt()
 
 

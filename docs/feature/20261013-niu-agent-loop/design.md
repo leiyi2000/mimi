@@ -318,6 +318,9 @@ Base64 图片。
 需要生成 PDF、Office、压缩包或其他二进制时，模型使用 Code 或 Workspace Skill 创建并
 显式导出，发送层统一处理安全文件名。
 
+URL 只允许在 Tool 参数和结果中内部流转。`AgentLoop` 在最终发送前确定性移除 HTTP(S)、
+`www.` 和 Markdown 链接；即使用户明确索要图片链接，也以图片 Artifact 交付，不返回 URL。
+
 ### Rich Reply Rendering
 
 `render_rich_reply` 接收标题、摘要、分段、要点和可选二维表格。`RichReplyRenderer` 对
