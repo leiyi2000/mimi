@@ -15,6 +15,7 @@ def test_config_uses_new_model_and_prefix(configured_env):
     assert config.sandbox_url == "http://sandbox:8080"
     assert config.sandbox_token == "test-sandbox-token"
     assert config.sandbox_timeout == 30
+    assert config.auto_render_min_chars == 200
     assert not config.group_history_enabled
     assert config.image_enabled
     assert config.stickers_enabled

@@ -97,6 +97,7 @@ class NiuApplication:
                 max_bytes=config.input_image_max_bytes,
             ),
             max_images=config.max_input_images,
+            recent_image_ttl=config.message_cache_ttl,
         )
         image_provider = (
             ImageProvider(
@@ -135,6 +136,8 @@ class NiuApplication:
                     timeout=config.group_history_timeout,
                     max_items=config.group_history_max_items,
                     max_chars=config.group_history_max_chars,
+                    max_images=config.max_input_images,
+                    max_image_bytes=config.input_image_max_bytes,
                 )
             ).register(self.tools)
         self.sandbox = SandboxProvider(
@@ -178,7 +181,9 @@ class NiuApplication:
             skills=self.skills,
             tools=self.tools,
             model_semaphore=model_semaphore,
-            automatic_renderer=AutomaticReplyRenderer(),
+            automatic_renderer=AutomaticReplyRenderer(
+                min_chars=config.auto_render_min_chars
+            ),
         )
         self.conversations = ConversationStore(
             config=config,
@@ -222,6 +227,11 @@ class NiuApplication:
         if prompt is None and self.qq_messages.mentions(event.message, event.self_id):
             prompt = text.strip()
         if prompt is None:
+            self.qq_messages.remember_recent_images(
+                event.message,
+                group_id=int(event.group_id),
+                user_id=int(event.user_id),
+            )
             return
 
         async def send_text(
@@ -274,6 +284,7 @@ class NiuApplication:
                 trigger_prefix=self.config.trigger_prefix,
                 group_id=int(event.group_id),
                 bot_id=int(event.self_id),
+                user_id=int(event.user_id),
                 context=NapCatContextAdapter(client),
             )
         except InputMessageError as exc:

@@ -286,6 +286,50 @@ async def test_artifacts_are_sent_before_success_text(configured_env):
     await store.close()
 
 
+async def test_artifact_only_response_does_not_send_empty_text(configured_env):
+    class ArtifactAgent:
+        async def run(self, **kwargs):
+            return AgentResponse(
+                "",
+                artifacts=(
+                    Artifact("image", b"image", "image/png", "result"),
+                ),
+            )
+
+    config = Config.from_env()
+    store = ConversationStore(
+        config=config,
+        agent=ArtifactAgent(),
+        memory=MemoryStore(
+            config.data_dir,
+            max_items=1,
+            max_chars=10,
+            notes_max_chars=10,
+        ),
+    )
+    sent = []
+
+    async def send_text(text, mention_sender):
+        sent.append(("text", text, mention_sender))
+
+    async def send_artifact(artifact):
+        sent.append(("artifact", artifact.kind))
+
+    await store.accept(
+        message_id=1,
+        group_id=1,
+        user_id=2,
+        nickname="u",
+        message=UserMessage("生成图片"),
+        send_text=send_text,
+        send_artifact=send_artifact,
+    )
+    await store._groups[1].queue.join()
+
+    assert sent == [("artifact", "image")]
+    await store.close()
+
+
 async def test_artifact_failure_does_not_send_success_text(configured_env):
     class ArtifactAgent:
         async def run(self, **kwargs):

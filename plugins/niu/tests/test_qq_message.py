@@ -84,6 +84,72 @@ async def test_parse_text_images_and_qq_emojis():
     assert downloader.validated == [downloader.media]
 
 
+async def test_parse_consumes_recent_image_from_same_group_sender_once():
+    downloader = FakeDownloader()
+    adapter = QQMessageAdapter(
+        downloader=downloader,
+        max_images=4,
+        recent_image_ttl=300,
+    )
+    adapter.remember_recent_images(
+        (Image(file="https://example.com/recent.png", summary="刚发的图"),),
+        group_id=456,
+        user_id=123,
+    )
+
+    first = await adapter.parse(
+        (Text(text="南瓜 看看刚才的图"),),
+        trigger_prefix="南瓜",
+        user_id=123,
+        **parse_context(),
+    )
+    second = await adapter.parse(
+        (Text(text="南瓜 再看看"),),
+        trigger_prefix="南瓜",
+        user_id=123,
+        **parse_context(),
+    )
+
+    assert first.images[0].label == "刚发的图"
+    assert first.images[0].source == "recent"
+    assert second.images == ()
+
+
+async def test_recent_images_are_isolated_and_expire(monkeypatch):
+    now = 1000.0
+    monkeypatch.setattr(
+        "adapters.qq_message.time.monotonic",
+        lambda: now,
+    )
+    adapter = QQMessageAdapter(
+        downloader=FakeDownloader(),
+        max_images=4,
+        recent_image_ttl=10,
+    )
+    adapter.remember_recent_images(
+        (Image(file="https://example.com/recent.png"),),
+        group_id=456,
+        user_id=123,
+    )
+
+    other_sender = await adapter.parse(
+        (Text(text="南瓜 看图"),),
+        trigger_prefix="南瓜",
+        user_id=789,
+        **parse_context(),
+    )
+    now += 11
+    expired = await adapter.parse(
+        (Text(text="南瓜 看图"),),
+        trigger_prefix="南瓜",
+        user_id=123,
+        **parse_context(),
+    )
+
+    assert other_sender.images == ()
+    assert expired.images == ()
+
+
 def test_detects_direct_bot_mention():
     segments = (At(qq="123"), Text(text="你好"))
 

@@ -14,6 +14,7 @@ from core.tools import (
     AgentRuntimeTools,
     Tool,
     ToolContext,
+    ToolImage,
     ToolRegistry,
     ToolResult,
 )
@@ -196,6 +197,42 @@ async def test_tool_result_is_sent_back(configured_env):
         "content": "hello",
         "is_error": False,
     }
+
+
+async def test_tool_image_result_is_sent_back_as_multimodal_content(
+    configured_env,
+):
+    config = Config.from_env()
+    registry = ToolRegistry()
+
+    async def image_result(context, arguments):
+        return ToolResult(
+            "history",
+            images=(ToolImage(b"png", "image/png", "历史图片"),),
+        )
+
+    registry.register(
+        Tool(
+            name="image_result",
+            description="image result",
+            input_schema={"type": "object"},
+            handler=image_result,
+        )
+    )
+    client = FakeProvider(
+        [
+            tool_response(name="image_result"),
+            text_response("完成"),
+        ]
+    )
+
+    response = await run(build_loop(config, client, registry))
+
+    assert response.text == "完成"
+    content = client.requests[1].messages[-1]["content"][0]["content"]
+    assert content[0] == {"type": "text", "text": "history"}
+    assert content[-1]["type"] == "image"
+    assert content[-1]["source"]["data"] == "cG5n"
 
 
 async def test_completion_required_tool_must_pass_finish_gate(

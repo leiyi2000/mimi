@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Protocol
 
 from napcat import At, Face, Image, MFace, Reply, Text
@@ -44,15 +46,26 @@ class Downloader(Protocol):
     def validate_image(self, media: DownloadedMedia) -> None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class _RecentImages:
+    segments: tuple[Image, ...]
+    stored_at: float
+
+
 class QQMessageAdapter:
     def __init__(
         self,
         *,
         downloader: Downloader,
         max_images: int,
+        recent_image_ttl: float = 300,
     ) -> None:
+        if recent_image_ttl <= 0:
+            raise ValueError("recent image ttl must be positive")
         self.downloader = downloader
         self.max_images = max_images
+        self.recent_image_ttl = recent_image_ttl
+        self._recent_images: dict[tuple[int, int], _RecentImages] = {}
 
     @staticmethod
     def text(segments: Sequence[MessageSegment | UnknownMessageSegment]) -> str:
@@ -92,6 +105,23 @@ class QQMessageAdapter:
             raise ValueError("image is not a passive sticker")
         return await self._download_image(segment, source="passive-sticker")
 
+    def remember_recent_images(
+        self,
+        segments: Sequence[MessageSegment | UnknownMessageSegment],
+        *,
+        group_id: int,
+        user_id: int,
+    ) -> None:
+        self._purge_recent_images()
+        images = tuple(
+            segment for segment in segments if isinstance(segment, Image)
+        )
+        if images:
+            self._recent_images[(group_id, user_id)] = _RecentImages(
+                segments=images[-self.max_images :],
+                stored_at=time.monotonic(),
+            )
+
     async def parse(
         self,
         segments: Sequence[MessageSegment | UnknownMessageSegment],
@@ -99,6 +129,7 @@ class QQMessageAdapter:
         trigger_prefix: str,
         group_id: int,
         bot_id: int,
+        user_id: int | None = None,
         context: NapCatContextAdapter,
     ) -> UserMessage:
         replies = [segment for segment in segments if isinstance(segment, Reply)]
@@ -129,6 +160,18 @@ class QQMessageAdapter:
         current_image_segments = [
             segment for segment in segments if isinstance(segment, Image)
         ]
+        recent_key = (
+            (group_id, user_id)
+            if user_id is not None
+            and not current_image_segments
+            and quoted is None
+            else None
+        )
+        recent_image_segments = (
+            self._get_recent_images(recent_key) if recent_key is not None else ()
+        )
+        if recent_image_segments:
+            current_image_segments = list(recent_image_segments)
         quoted_image_segments = (
             [
                 segment
@@ -150,7 +193,10 @@ class QQMessageAdapter:
         try:
             current_images = await asyncio.gather(
                 *(
-                    self._download_image(segment, source="current")
+                    self._download_image(
+                        segment,
+                        source="recent" if recent_image_segments else "current",
+                    )
                     for segment in current_image_segments
                 )
             )
@@ -167,6 +213,8 @@ class QQMessageAdapter:
             raise InputMessageError(
                 "图片读取失败，请发送 HTTPS 图片，并确认格式和大小符合限制。"
             ) from None
+        if recent_image_segments and recent_key is not None:
+            self._recent_images.pop(recent_key, None)
         return UserMessage(
             text=text,
             emojis=emojis,
@@ -174,6 +222,22 @@ class QQMessageAdapter:
             mentions=mentions,
             quoted=quoted_message,
         )
+
+    def _get_recent_images(
+        self,
+        key: tuple[int, int],
+    ) -> tuple[Image, ...]:
+        self._purge_recent_images()
+        batch = self._recent_images.get(key)
+        return batch.segments if batch is not None else ()
+
+    def _purge_recent_images(self) -> None:
+        cutoff = time.monotonic() - self.recent_image_ttl
+        self._recent_images = {
+            key: batch
+            for key, batch in self._recent_images.items()
+            if batch.stored_at >= cutoff
+        }
 
     async def _ordered_text(
         self,

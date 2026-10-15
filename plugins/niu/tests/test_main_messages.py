@@ -14,11 +14,12 @@ class FakeQQMessages:
         return "南瓜 生成报告"
 
     async def parse(
-        self, segments, *, trigger_prefix, group_id, bot_id, context
+        self, segments, *, trigger_prefix, group_id, bot_id, user_id, context
     ):
         assert trigger_prefix == "南瓜"
         assert group_id == 2
         assert bot_id == 456
+        assert user_id == 123
         return UserMessage("生成报告")
 
 
@@ -211,6 +212,9 @@ async def test_collect_mfaces_from_ordinary_group_messages():
 
 async def test_handle_collects_mface_without_triggering_conversation():
     class OrdinaryMessages:
+        def __init__(self):
+            self.remembered = []
+
         @staticmethod
         def text(segments):
             return "路过"
@@ -218,6 +222,9 @@ async def test_handle_collects_mface_without_triggering_conversation():
         @staticmethod
         def mentions(segments, user_id):
             return False
+
+        def remember_recent_images(self, segments, **kwargs):
+            self.remembered.append((segments, kwargs))
 
     class OrdinaryConversations:
         accepted = False
@@ -259,10 +266,14 @@ async def test_handle_collects_mface_without_triggering_conversation():
 
     assert len(application.stickers.calls) == 1
     assert not application.conversations.accepted
+    assert application.qq_messages.remembered
 
 
 async def test_handle_collects_sticker_image_without_triggering_conversation():
     class OrdinaryMessages:
+        def __init__(self):
+            self.remembered = []
+
         @staticmethod
         def text(segments):
             return ""
@@ -281,6 +292,9 @@ async def test_handle_collects_sticker_image_without_triggering_conversation():
                 "image/gif",
                 segment.summary or "QQ 表情",
             )
+
+        def remember_recent_images(self, segments, **kwargs):
+            self.remembered.append((segments, kwargs))
 
     class OrdinaryConversations:
         accepted = False
@@ -325,6 +339,7 @@ async def test_handle_collects_sticker_image_without_triggering_conversation():
     assert call["user_id"] == 123
     assert call["image"].data == b"sticker"
     assert not application.conversations.accepted
+    assert application.qq_messages.remembered
 
 
 async def test_passive_sticker_classification_updates_metadata():

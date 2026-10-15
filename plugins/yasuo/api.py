@@ -1,11 +1,12 @@
-import os
 import base64
-import re
+import os
 from datetime import datetime
+from io import BytesIO
 
 import aiofiles
 from pydantic import BaseModel, ConfigDict, Field
 from fastapi import APIRouter, HTTPException, Query
+from PIL import Image, UnidentifiedImageError
 from tortoise.expressions import Q
 
 from models import GroupMessage, GroupRecall
@@ -41,6 +42,7 @@ class MessageResponse(BaseModel):
     self_id: int
     created_at: datetime
 
+
 class MessageListResponse(BaseModel):
     total: int
     data: list[MessageResponse]
@@ -55,6 +57,23 @@ class AgentMessageSearchRequest(BaseModel):
     limit: int = Field(default=30, ge=1, le=50)
     cursor: str | None = None
     max_chars: int = Field(default=8000, ge=100, le=30000)
+    max_images: int = Field(default=4, ge=0, le=10)
+    max_image_bytes: int = Field(
+        default=5 * 1024 * 1024,
+        ge=1024,
+        le=20 * 1024 * 1024,
+    )
+    max_total_image_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        ge=1024,
+        le=20 * 1024 * 1024,
+    )
+
+
+class AgentImage(BaseModel):
+    mime_type: str
+    data_base64: str
+    byte_size: int
 
 
 class AgentMessage(BaseModel):
@@ -63,6 +82,8 @@ class AgentMessage(BaseModel):
     display_name: str
     time: int
     text: str
+    images: list[AgentImage] = Field(default_factory=list)
+    omitted_image_count: int = 0
 
 
 class AgentMessageSearchResponse(BaseModel):
@@ -85,16 +106,41 @@ class AgentMemberResolveResponse(BaseModel):
     matches: list[AgentMember]
 
 
-def _clean_text(raw_message: str | None) -> str:
-    if not raw_message:
-        return ""
-    text = re.sub(r"\[CQ:[^\]]+\]", "", raw_message)
-    text = " ".join(text.split()).strip()
-    if text.startswith(("南瓜", "温蒂", "群撤回", "原始消息")):
-        return ""
-    if "http://" in text or "https://" in text:
-        return ""
-    return text[:2000]
+def _message_text(raw_message: str | None) -> str:
+    return raw_message or ""
+
+
+async def _read_agent_image(
+    path: str,
+    *,
+    max_bytes: int,
+) -> AgentImage | None:
+    try:
+        size = os.path.getsize(path)
+        if size <= 0 or size > max_bytes:
+            return None
+        async with aiofiles.open(path, "rb") as file:
+            content = await file.read(max_bytes + 1)
+        if len(content) != size or len(content) > max_bytes:
+            return None
+        with Image.open(BytesIO(content)) as image:
+            image_format = str(image.format or "").upper()
+            image.verify()
+    except (OSError, UnidentifiedImageError, Image.DecompressionBombError):
+        return None
+    mime_type = {
+        "GIF": "image/gif",
+        "JPEG": "image/jpeg",
+        "PNG": "image/png",
+        "WEBP": "image/webp",
+    }.get(image_format)
+    if mime_type is None:
+        return None
+    return AgentImage(
+        mime_type=mime_type,
+        data_base64=base64.b64encode(content).decode("ascii"),
+        byte_size=len(content),
+    )
 
 
 @router.post("/", response_model=MessageListResponse)
@@ -161,15 +207,35 @@ async def search_agent_messages(
 
     data: list[AgentMessage] = []
     chars = 0
+    image_count = 0
+    image_bytes = 0
     last_row = None
     async for row in queryset.order_by("-time", "-id").limit(request.limit * 3):
         if row.user_id == row.self_id:
             continue
-        text = _clean_text(row.raw_message)
-        if not text:
+        text = _message_text(row.raw_message)
+        image_paths = list(row.local_image_paths or [])
+        if not text and not image_paths:
             continue
         if chars + len(text) > request.max_chars:
             break
+        images: list[AgentImage] = []
+        omitted_image_count = 0
+        for path in image_paths:
+            remaining_bytes = request.max_total_image_bytes - image_bytes
+            if not path or image_count >= request.max_images or remaining_bytes < 1:
+                omitted_image_count += 1
+                continue
+            image = await _read_agent_image(
+                str(path),
+                max_bytes=min(request.max_image_bytes, remaining_bytes),
+            )
+            if image is None:
+                omitted_image_count += 1
+                continue
+            images.append(image)
+            image_count += 1
+            image_bytes += image.byte_size
         data.append(
             AgentMessage(
                 message_id=row.message_id,
@@ -177,6 +243,8 @@ async def search_agent_messages(
                 display_name=row.card or row.nickname,
                 time=row.time,
                 text=text,
+                images=images,
+                omitted_image_count=omitted_image_count,
             )
         )
         chars += len(text)

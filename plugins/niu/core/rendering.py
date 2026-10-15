@@ -21,7 +21,7 @@ FONT_NAME = "NiuCJK"
 MAX_CONTENT_CHARS = 12_000
 MAX_RENDER_HEIGHT = 16_000
 MAX_RENDER_BYTES = 12 * 1024 * 1024
-AUTO_RENDER_MIN_CHARS = 40
+AUTO_RENDER_MIN_CHARS = 200
 FONT_PATH = (
     Path(__file__).resolve().parent.parent
     / "assets"
@@ -412,9 +412,9 @@ class AutomaticReplyRenderer:
             ):
                 copyable.append(item)
         if not copyable:
-            return "内容较长，已整理成图片。"
+            return ""
         values = "；".join(copyable[:6])
-        return f"内容较长，已整理成图片。可复制内容：{values}"
+        return f"可复制：{values}"
 
 
 class RenderTools:

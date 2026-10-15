@@ -140,6 +140,48 @@ def test_openai_provider_converts_tool_roundtrip_messages():
     }
 
 
+def test_openai_provider_places_tool_images_after_all_tool_results():
+    messages = OpenAIModelProvider._messages(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call-1",
+                        "content": [
+                            {"type": "text", "text": '{"data": []}'},
+                            {"type": "text", "text": "[工具图片：历史图片]"},
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": "cG5n",
+                                },
+                            },
+                        ],
+                        "is_error": False,
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call-2",
+                        "content": "done",
+                        "is_error": False,
+                    },
+                ],
+            }
+        ]
+    )
+
+    assert [message["role"] for message in messages] == ["tool", "tool", "user"]
+    assert messages[0]["content"].startswith('{"data": []}')
+    assert messages[1]["content"] == "done"
+    assert messages[2]["content"][-1]["image_url"]["url"] == (
+        "data:image/png;base64,cG5n"
+    )
+
+
 async def test_factory_creates_supported_providers():
     providers = [
         create_model_provider(

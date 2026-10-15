@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -44,11 +45,29 @@ class ToolResult:
     content: str
     is_error: bool = False
     artifacts: tuple[Artifact, ...] = ()
+    images: tuple[ToolImage, ...] = ()
     error_code: str | None = None
     mention_sender: bool | None = None
 
-    def as_api_content(self) -> str:
-        return self.content
+    def as_api_content(self) -> str | list[dict[str, Any]]:
+        if not self.images:
+            return self.content
+        content: list[dict[str, Any]] = [{"type": "text", "text": self.content}]
+        for image in self.images:
+            content.extend(
+                (
+                    {"type": "text", "text": f"[工具图片：{image.label}]"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": image.mime_type,
+                            "data": base64.b64encode(image.data).decode("ascii"),
+                        },
+                    },
+                )
+            )
+        return content
 
     @classmethod
     def error(

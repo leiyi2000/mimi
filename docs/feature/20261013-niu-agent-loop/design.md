@@ -278,8 +278,14 @@ POST /v1/agent/messages/search
 
 两个插件在同一 Mimi 容器中运行，Yasuo 默认只绑定 `127.0.0.1:6273`，因此不再使用内部
 Token。请求中的 `group_id` 只能由 Niu 的 `ToolContext` 注入。目标成员必须是当前发言者
-或先由当前群唯一解析得到。接口排除机器人、撤回、空文本、媒体占位、链接和机器人命令，
-并限制游标、数量和总字符。
+或先由当前群唯一解析得到。接口只排除机器人自身消息与撤回消息，群成员的原始消息文本
+完整保留，包括 CQ 协议段、机器人触发文本、插件命令和 URL。接口同时限制游标、数量和
+总字符。已归档的 JPEG、PNG、GIF 和 WebP 按图片数量、单图字节和总字节上限返回；纯图片
+消息不会丢失，缺失、损坏、不支持或超限图片通过
+`omitted_image_count` 明示。Niu 校验 MIME、Base64、单图大小与响应总量后，将图片作为
+模型原生多模态 Tool Result 发送，JSON 文本只保留消息关联索引，不携带 Base64。OpenAI
+协议会先连续提交所有 Tool 消息，再追加一条带标签的用户图片内容，保持 Chat Completions
+的工具调用顺序。
 
 ### Image
 
@@ -377,8 +383,8 @@ Agent 指令都必须通过正常代码评审、测试和部署。
 | `NIU_HISTORY_TURNS` | `8` | 短期完整轮次 |
 | `NIU_HISTORY_MAX_CHARS` | `16000` | 短期历史字符预算 |
 | `NIU_GROUP_QUEUE_SIZE` | `20` | 单群队列容量 |
-| `NIU_MAX_INPUT_IMAGES` | `4` | 单条触发消息的图片上限 |
-| `NIU_INPUT_IMAGE_MAX_BYTES` | `5242880` | 单张输入图片字节上限 |
+| `NIU_MAX_INPUT_IMAGES` | `4` | 单轮触发消息及群历史的图片上限 |
+| `NIU_INPUT_IMAGE_MAX_BYTES` | `5242880` | 单张消息或群历史图片字节上限 |
 | `ANYSEARCH_API_KEY` | 无 | AnySearch API Key |
 | `MINIMAX_API_BASE_URL` | `https://api.minimaxi.com/v1` | 媒体端点 |
 | `MINIMAX_API_KEY` | 无 | MiniMax 图片和音乐 Token |
@@ -528,7 +534,8 @@ QuotedMessage(
 - 同群 FIFO、跨群隔离、去重、背压、完整轮次截断和低信任只读边界。
 - 性格和记忆权限、模型侧内容判断、原子落盘、压缩和损坏隔离。
 - 表情包按群隔离、商城表情去重、图片标注收藏、整理、删除、发送、容量与每日变更限额。
-- 群历史当前群绑定、成员解析、撤回与机器人消息排除。
+- 群历史当前群绑定、成员解析、撤回与机器人消息排除，以及纯图片消息、图片省略计数和
+  多模态 Tool Result。
 - Monty 纯计算、只读 Tool 回调、类型检查、文件/网络/环境/子进程隔离、时间和输出限制。
 - Skill 格式、专用 Skill 两阶段激活、默认 `mimi` 指令注入、完整提示词和 Tool Schema
   过滤。

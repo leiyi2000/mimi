@@ -111,6 +111,16 @@ async def test_automatic_renderer_only_keeps_short_responses_as_text():
     assert "print('x')" in renderer.replies[0].sections[0].body
 
 
+async def test_automatic_renderer_does_not_add_status_companion():
+    automatic = AutomaticReplyRenderer(StubRenderer(), min_chars=10)
+
+    result = await automatic.apply("这是一段足够长的普通回复内容", title_hint="问题")
+
+    assert result is not None
+    companion, _ = result
+    assert companion == ""
+
+
 async def test_render_tool_returns_real_png():
     registry = ToolRegistry()
     RenderTools().register(registry)

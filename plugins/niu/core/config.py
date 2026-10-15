@@ -55,6 +55,7 @@ class Config:
     max_input_chars: int
     max_input_images: int
     input_image_max_bytes: int
+    auto_render_min_chars: int
     request_timeout: int
     minimax_api_base_url: str
     minimax_api_key: str
@@ -156,6 +157,9 @@ class Config:
                 5 * 1024 * 1024,
                 1024,
                 20 * 1024 * 1024,
+            ),
+            auto_render_min_chars=_integer(
+                "NIU_AUTO_RENDER_MIN_CHARS", 200, 40, 2000
             ),
             request_timeout=_integer("NIU_REQUEST_TIMEOUT", 60, 5, 300),
             minimax_api_base_url=_required(

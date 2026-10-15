@@ -227,14 +227,50 @@ class OpenAIModelProvider(ModelProvider):
                 and isinstance(content, list)
                 and all(block.get("type") == "tool_result" for block in content)
             ):
-                converted.extend(
-                    {
-                        "role": "tool",
-                        "tool_call_id": str(block["tool_use_id"]),
-                        "content": str(block.get("content") or ""),
-                    }
-                    for block in content
-                )
+                tool_messages = []
+                tool_images = []
+                for block in content:
+                    result_content = block.get("content") or ""
+                    if isinstance(result_content, list):
+                        text_parts = [
+                            str(part.get("text") or "")
+                            for part in result_content
+                            if part.get("type") == "text"
+                        ]
+                        result_text = "\n".join(part for part in text_parts if part)
+                        tool_images.extend(
+                            part
+                            for part in result_content[1:]
+                            if part.get("type") in {"text", "image"}
+                        )
+                    else:
+                        result_text = str(result_content)
+                    tool_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": str(block["tool_use_id"]),
+                            "content": result_text,
+                        }
+                    )
+                converted.extend(tool_messages)
+                if tool_images:
+                    converted.append(
+                        {
+                            "role": "user",
+                            "content": cls._content(
+                                [
+                                    {
+                                        "type": "text",
+                                        "text": (
+                                            "以下图片来自上方工具结果，"
+                                            "按工具图片标签与消息对应。"
+                                        ),
+                                    },
+                                    *tool_images,
+                                ]
+                            ),
+                        }
+                    )
                 continue
             converted.append(
                 {

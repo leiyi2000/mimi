@@ -242,7 +242,8 @@ class ConversationStore:
                     True,
                 )
                 return
-        await turn.send_text(response.text, response.mention_sender)
+        if response.text.strip():
+            await turn.send_text(response.text, response.mention_sender)
         if self.config.history_turns:
             state.history.append(
                 CompletedTurn(
