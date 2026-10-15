@@ -22,9 +22,10 @@
   音乐因当前账号无 API 权限保持关闭。
 - Skill 只随仓库代码发布，不支持搜索、下载或运行时安装。
 - 普通回复保持口语化，闲聊和简单问答优先一句、40 字以内，默认不 @；模型只在确实需要
-  提醒时自主选择 @ 当前发言者。生成结果可发送文本、图片、语音，以及 TXT、Markdown、
-  JSON 或 CSV 文件。多分段、对比或长步骤等复杂回答优先通过 pytakumi 渲染成中文长图；
-  自动渲染默认从 200 字开始，纯图片回复不再附加状态说明。
+  提醒时自主选择 @ 当前发言者。生成结果可发送文本、图片、语音和任意类型文件；公网
+  HTTPS 文件直链可下载原始字节，图片默认直接作为 QQ 图片发送，其他内容作为文件附件；
+  PDF、Office、压缩包等生成文件可由 Sandbox 导出。多分段、对比或长步骤等复杂回答优先
+  通过 pytakumi 渲染成中文长图；自动渲染默认从 200 字开始，纯图片回复不再附加状态说明。
 - 所有群消息中的 `MFace`，以及 NapCat 以 `Image(sub_type=1)` 或
   `Image(file=marketface)` 上报的自定义表情，都会按群去重收集，不要求先 @ 机器人或
   命中文本前缀；每群每天最多后台调用模型分类 5 张，且不阻塞消息处理。模型也可识别
@@ -69,6 +70,7 @@
 | `NIU_MODEL` | 随 Provider 变化 | 文本模型名称 |
 | `NIU_MODEL_BASE_URL` | 随 Provider 变化 | 文本模型 API 地址 |
 | `NIU_MODEL_API_KEY` | 无 | 文本模型 Token，必需 |
+| `DEBUG` | `false` | 开启 DEBUG 日志，包括每轮模型输入和输出 |
 | `ANYSEARCH_API_KEY` | 无 | AnySearch API Key，必需 |
 | `MINIMAX_API_KEY` | 兼容读取 `ANTHROPIC_API_KEY` | MiniMax 图片和音乐 Token |
 | `MINIMAX_API_BASE_URL` | `https://api.minimaxi.com/v1` | MiniMax 图片和音乐端点 |
@@ -76,6 +78,7 @@
 | `NIU_MAX_INPUT_IMAGES` | `4` | 单轮消息及群历史最多输入图片数 |
 | `NIU_INPUT_IMAGE_MAX_BYTES` | `5242880` | 单张消息或群历史图片最大字节数 |
 | `NIU_AUTO_RENDER_MIN_CHARS` | `200` | 最终正文自动渲染为图片的最少字符数 |
+| `NIU_MEDIA_MAX_BYTES` | `20971520` | 生成媒体的下载上限；Sandbox 文件另受其附件上限约束 |
 | `NIU_GROUP_HISTORY_ENABLED` | `true` | 启用群历史 Skill |
 | `YASUO_API_URL` | `http://127.0.0.1:6273` | Yasuo API 地址 |
 | `SANDBOX_TOKEN` | 无 | Mimi 与 Sandbox 间的 Bearer Token，必需 |
@@ -91,6 +94,14 @@
 `NIU_MODEL_API_KEY`；切换 Claude 时设置 `NIU_MODEL_PROVIDER=anthropic`。OpenAI 兼容
 服务可通过 `NIU_MODEL_BASE_URL` 指向自定义端点。旧的 `MINIMAX_MODEL`、
 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_API_KEY` 在 MiniMax 默认模式下继续兼容。
+
+排查 Agent 时可临时设置 `DEBUG=true`。DEBUG 日志按 `run_id`、`round_index` 和
+`exchange_id` 串联完整过程，包括每轮提示词、消息、工具定义、Provider 原始响应、
+标准化模型输出、工具参数与结果、停止原因、耗时和 Token 用量。Provider 原始响应会保留
+模型实际返回的 thinking 等扩展字段。详细事件使用单行 JSON，按 `event=model.input`、
+`event=model.provider_response`、`event=model.output`、`event=tool.input` 和
+`event=tool.output` 筛选。图片 Base64 只记录媒体字节数，常见凭据字段会脱敏。日志仍可能
+包含群聊、记忆和工具结果正文，只应在受控环境临时开启，排查结束后关闭。
 
 其他限额见 [部署规范](../../docs/spec/deploy-spec.md)。运行状态写入 `data/`，不会持久化
 完整群聊上下文。

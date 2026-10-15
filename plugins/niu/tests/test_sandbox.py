@@ -3,8 +3,15 @@ import json
 
 import httpx
 
-from core.tools import ToolContext
-from providers.sandbox import SandboxProvider, SandboxTools, WorkspaceTools
+from core.tools import ToolContext, ToolRegistry
+from providers.sandbox import (
+    RemoteFileTools,
+    SandboxFile,
+    SandboxProvider,
+    SandboxResult,
+    SandboxTools,
+    WorkspaceTools,
+)
 
 
 def provider(response):
@@ -230,3 +237,114 @@ async def test_workspace_exports_artifacts():
     assert not result.is_error
     assert result.artifacts[0].data == b"done"
     assert result.artifacts[0].title == "result.txt"
+
+
+async def test_remote_file_tool_attaches_arbitrary_binary_file():
+    class FakeProvider:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, **kwargs):
+            self.calls.append(kwargs)
+            return SandboxResult(
+                exit_code=0,
+                stdout="",
+                stderr="",
+                timed_out=False,
+                truncated=False,
+                files=(
+                    SandboxFile(
+                        "download",
+                        "application/octet-stream",
+                        b"PK\x03\x04archive",
+                    ),
+                ),
+            )
+
+    fake_provider = FakeProvider()
+    tools = RemoteFileTools(fake_provider, max_timeout=30)
+
+    result = await tools.attach_remote_file(
+        ToolContext(1, 2, 3, "tester"),
+        {
+            "url": "https://downloads.example.com/build?id=1",
+            "filename": "release.zip",
+        },
+    )
+
+    assert result.content == "FILE_ATTACHED"
+    assert result.artifacts[0].kind == "file"
+    assert result.artifacts[0].title == "release.zip"
+    assert result.artifacts[0].mime_type == "application/zip"
+    assert result.artifacts[0].data == b"PK\x03\x04archive"
+    assert fake_provider.calls[0]["files"] == {}
+    assert fake_provider.calls[0]["timeout"] == 30
+    assert "--proto '=https'" in fake_provider.calls[0]["script"]
+
+
+async def test_remote_file_tool_sends_images_directly_or_as_files():
+    class FakeProvider:
+        async def execute(self, **kwargs):
+            return SandboxResult(
+                exit_code=0,
+                stdout="",
+                stderr="",
+                timed_out=False,
+                truncated=False,
+                files=(
+                    SandboxFile(
+                        "download",
+                        "application/octet-stream",
+                        b"original-webp-bytes",
+                    ),
+                ),
+            )
+
+    tools = RemoteFileTools(FakeProvider(), max_timeout=30)
+    context = ToolContext(1, 2, 3, "tester")
+
+    image_result = await tools.attach_remote_file(
+        context,
+        {
+            "url": "https://cdn.example.com/render.webp",
+            "filename": "render.webp",
+        },
+    )
+    file_result = await tools.attach_remote_file(
+        context,
+        {
+            "url": "https://cdn.example.com/render.webp",
+            "filename": "render.webp",
+            "send_as": "file",
+        },
+    )
+
+    assert image_result.content == "IMAGE_ATTACHED"
+    assert image_result.artifacts[0].kind == "image"
+    assert image_result.artifacts[0].mime_type == "image/webp"
+    assert image_result.artifacts[0].data == b"original-webp-bytes"
+    assert file_result.content == "FILE_ATTACHED"
+    assert file_result.artifacts[0].kind == "file"
+    assert file_result.artifacts[0].data == b"original-webp-bytes"
+
+
+async def test_remote_file_tool_rejects_non_https_url():
+    class FakeProvider:
+        async def execute(self, **kwargs):
+            raise AssertionError("invalid URL must not reach sandbox")
+
+    registry = ToolRegistry()
+    RemoteFileTools(FakeProvider(), max_timeout=30).register(registry)
+
+    result = await registry.execute(
+        tool_use_id="file-1",
+        name="attach_remote_file",
+        arguments={
+            "url": "http://127.0.0.1/private.zip",
+            "filename": "private.zip",
+        },
+        context=ToolContext(1, 2, 3, "tester"),
+    )
+
+    assert result.is_error
+    assert result.error_code == "INVALID_TOOL_INPUT"

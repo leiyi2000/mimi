@@ -30,7 +30,12 @@ from providers.image import ImageProvider
 from providers.media import MediaDownloader, MediaError
 from providers.music import MusicProvider
 from providers.model import create_model_provider
-from providers.sandbox import SandboxProvider, SandboxTools, WorkspaceTools
+from providers.sandbox import (
+    RemoteFileTools,
+    SandboxProvider,
+    SandboxTools,
+    WorkspaceTools,
+)
 from providers.sticker_classifier import (
     StickerClassificationError,
     StickerClassifier,
@@ -146,6 +151,10 @@ class NiuApplication:
             request_timeout=config.sandbox_timeout,
         )
         SandboxTools(
+            self.sandbox,
+            max_timeout=config.sandbox_timeout,
+        ).register(self.tools)
+        RemoteFileTools(
             self.sandbox,
             max_timeout=config.sandbox_timeout,
         ).register(self.tools)

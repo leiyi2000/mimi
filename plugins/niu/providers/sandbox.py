@@ -3,9 +3,12 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import mimetypes
+import shlex
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 import httpx
 
@@ -406,6 +409,170 @@ class SandboxTools:
         if mime_type.startswith("audio/"):
             return "audio"
         return "file"
+
+
+class RemoteFileTools:
+    def __init__(
+        self, provider: SandboxProvider, *, max_timeout: int
+    ) -> None:
+        self.provider = provider
+        self.max_timeout = max_timeout
+
+    def register(self, registry: ToolRegistry) -> None:
+        registry.register(
+            Tool(
+                name="attach_remote_file",
+                description=(
+                    "Download any public HTTPS file and attach its original "
+                    "binary content to the current QQ group. Images are sent "
+                    "as QQ images by default; other content is sent as a file."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2048,
+                            "description": "Direct public HTTPS file URL.",
+                        },
+                        "filename": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 100,
+                            "description": (
+                                "Optional display filename without directories."
+                            ),
+                        },
+                        "send_as": {
+                            "type": "string",
+                            "enum": ["auto", "file", "image"],
+                            "description": (
+                                "Use auto to send common image types as QQ "
+                                "images and everything else as files."
+                            ),
+                        },
+                    },
+                    "required": ["url"],
+                    "additionalProperties": False,
+                },
+                handler=self.attach_remote_file,
+                timeout=self.max_timeout + 10,
+                read_only=False,
+                skill_name="reply",
+                completion_required=True,
+            )
+        )
+
+    async def attach_remote_file(
+        self, context: ToolContext, arguments: dict[str, Any]
+    ) -> ToolResult:
+        del context
+        url = arguments["url"]
+        requested_filename = arguments.get("filename")
+        send_as = arguments.get("send_as", "auto")
+        if not isinstance(url, str):
+            raise TypeError("url must be a string")
+        if send_as not in {"auto", "file", "image"}:
+            raise ValueError("invalid remote file send mode")
+        filename = self._filename(url, requested_filename)
+        self._validate_url(url)
+        script = (
+            "set -eu\n"
+            "mkdir -p output\n"
+            "curl --fail --silent --show-error --location "
+            "--proto '=https' --proto-redir '=https' "
+            f"--output output/download -- {shlex.quote(url)}\n"
+            "test -s output/download\n"
+        )
+        try:
+            result = await self.provider.execute(
+                script=script,
+                files={},
+                timeout=self.max_timeout,
+            )
+        except SandboxProviderError as exc:
+            return ToolResult.error(
+                exc.code,
+                exc.message,
+                retryable=exc.retryable,
+            )
+        if result.timed_out:
+            return ToolResult.error(
+                "REMOTE_FILE_TIMEOUT",
+                "文件下载超时，请换一个直链或稍后重试。",
+                retryable=True,
+            )
+        if result.exit_code != 0:
+            return ToolResult.error(
+                "REMOTE_FILE_DOWNLOAD_FAILED",
+                (
+                    "文件下载失败。该地址可能是详情页而非文件直链；"
+                    "请读取页面资源链接、重新搜索直链或更换公开来源后重试。"
+                ),
+                retryable=True,
+            )
+        if result.truncated or len(result.files) != 1:
+            return ToolResult.error(
+                "REMOTE_FILE_NOT_EXPORTED",
+                "文件未能完整导出，可能超过附件大小限制。",
+                retryable=False,
+            )
+        downloaded = result.files[0]
+        mime_type = (
+            mimetypes.guess_type(filename)[0]
+            or downloaded.mime_type
+            or "application/octet-stream"
+        )
+        artifact_kind = (
+            "image"
+            if send_as == "image"
+            or (send_as == "auto" and mime_type.startswith("image/"))
+            else "file"
+        )
+        return ToolResult(
+            "IMAGE_ATTACHED" if artifact_kind == "image" else "FILE_ATTACHED",
+            artifacts=(
+                Artifact(
+                    kind=artifact_kind,
+                    data=downloaded.data,
+                    mime_type=mime_type,
+                    title=filename,
+                ),
+            ),
+        )
+
+    @staticmethod
+    def _validate_url(url: str) -> None:
+        parsed = urlsplit(url)
+        if (
+            len(url) > 2048
+            or parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or any(character in url for character in "\r\n\x00")
+        ):
+            raise ValueError("invalid remote file URL")
+
+    @staticmethod
+    def _filename(url: str, requested: Any) -> str:
+        if requested is None:
+            requested = PurePosixPath(
+                unquote(urlsplit(url).path)
+            ).name or "attachment.bin"
+        if not isinstance(requested, str):
+            raise TypeError("filename must be a string")
+        filename = requested.strip()
+        if (
+            not 1 <= len(filename) <= 100
+            or filename in {".", ".."}
+            or "/" in filename
+            or "\\" in filename
+            or any(character in filename for character in "\r\n\x00")
+        ):
+            raise ValueError("invalid remote file name")
+        return filename
 
 
 class WorkspaceTools:

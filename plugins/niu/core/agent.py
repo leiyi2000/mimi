@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import time
+import uuid
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -152,6 +155,8 @@ class AgentLoop:
                 read_only_only=read_only_only,
                 active_skill_names=active_skills,
                 task=task,
+                run_id=trace.run_id,
+                round_index=round_index,
             )
             trace.model_rounds += 1
             self._record_usage(trace, response)
@@ -426,6 +431,16 @@ class AgentLoop:
         trace: RunTrace,
     ) -> ToolResult:
         started_at = time.monotonic()
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "event=tool.input run_id=%s round_index=%s tool_use_id=%s "
+                "tool=%s payload=%s",
+                trace.run_id,
+                round_index,
+                str(block.id),
+                str(block.name),
+                self._model_log_json(dict(block.input)),
+            )
         result = await self.tools.execute(
             tool_use_id=str(block.id),
             name=str(block.name),
@@ -442,6 +457,41 @@ class AgentLoop:
                 error_code=result.error_code,
             )
         )
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "event=tool.output run_id=%s round_index=%s tool_use_id=%s "
+                "tool=%s duration_ms=%s payload=%s",
+                trace.run_id,
+                round_index,
+                str(block.id),
+                str(block.name),
+                int((time.monotonic() - started_at) * 1000),
+                self._model_log_json(
+                    {
+                        "content": result.content,
+                        "is_error": result.is_error,
+                        "error_code": result.error_code,
+                        "mention_sender": result.mention_sender,
+                        "artifacts": [
+                            {
+                                "kind": artifact.kind,
+                                "mime_type": artifact.mime_type,
+                                "title": artifact.title,
+                                "bytes": len(artifact.data),
+                            }
+                            for artifact in result.artifacts
+                        ],
+                        "images": [
+                            {
+                                "label": image.label,
+                                "mime_type": image.mime_type,
+                                "bytes": len(image.data),
+                            }
+                            for image in result.images
+                        ],
+                    }
+                ),
+            )
         return result
 
     async def _final_synthesis(
@@ -476,6 +526,8 @@ class AgentLoop:
                 read_only_only=True,
                 expose_tools=False,
                 active_skill_names=active_skill_names,
+                run_id=trace.run_id,
+                round_index=trace.model_rounds,
                 system_extra=(
                     "这是最终汇总轮次。不得请求或描述新的工具调用，只返回现有证据"
                     "支持的最佳答复。"
@@ -538,6 +590,8 @@ class AgentLoop:
         active_skill_names: set[str] | None = None,
         system_extra: str = "",
         task: TaskFrame | None = None,
+        run_id: str = "",
+        round_index: int = -1,
     ) -> ModelResponse:
         tool_schemas = (
             self.tools.schemas(
@@ -561,7 +615,13 @@ class AgentLoop:
         )
         try:
             async with self.model_semaphore:
-                return await self._create_message(messages, system, tool_schemas)
+                return await self._create_message(
+                    messages,
+                    system,
+                    tool_schemas,
+                    run_id=run_id,
+                    round_index=round_index,
+                )
         except ModelAuthenticationError as exc:
             raise AuthenticationError() from exc
         except ModelRateLimitError as exc:
@@ -579,20 +639,120 @@ class AgentLoop:
         messages: list[dict[str, Any]],
         system: str,
         tool_schemas: list[dict[str, Any]],
+        *,
+        run_id: str,
+        round_index: int,
     ) -> ModelResponse:
         timeout = self.config.request_timeout
-        async with asyncio.timeout(timeout):
-            return await self.model_provider.complete(
-                ModelRequest(
-                    model=self.config.model,
-                    max_tokens=self.config.max_tokens,
-                    system=system,
-                    messages=messages,
-                    tools=tool_schemas,
-                    reasoning_effort=self.config.reasoning_effort,
-                    timeout=timeout,
-                )
+        exchange_id = uuid.uuid4().hex[:12]
+        request = ModelRequest(
+            model=self.config.model,
+            max_tokens=self.config.max_tokens,
+            system=system,
+            messages=messages,
+            tools=tool_schemas,
+            reasoning_effort=self.config.reasoning_effort,
+            timeout=timeout,
+            exchange_id=exchange_id,
+            run_id=run_id,
+            round_index=round_index,
+        )
+        started_at = time.monotonic()
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "event=model.input run_id=%s round_index=%s exchange_id=%s "
+                "payload=%s",
+                run_id,
+                round_index,
+                exchange_id,
+                self._model_log_json(
+                    {
+                        "model": request.model,
+                        "max_tokens": request.max_tokens,
+                        "reasoning_effort": request.reasoning_effort,
+                        "timeout": request.timeout,
+                        "system": request.system,
+                        "messages": request.messages,
+                        "tools": request.tools,
+                    }
+                ),
             )
+        async with asyncio.timeout(timeout):
+            response = await self.model_provider.complete(request)
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "event=model.output run_id=%s round_index=%s exchange_id=%s "
+                "duration_ms=%s payload=%s",
+                run_id,
+                round_index,
+                exchange_id,
+                int((time.monotonic() - started_at) * 1000),
+                self._model_log_json(
+                    {
+                        "content": [
+                            block.as_message_block() for block in response.content
+                        ],
+                        "stop_reason": response.stop_reason,
+                        "usage": {
+                            "input_tokens": response.usage.input_tokens,
+                            "output_tokens": response.usage.output_tokens,
+                        },
+                    }
+                ),
+            )
+        return response
+
+    @classmethod
+    def _model_log_json(cls, value: Any) -> str:
+        return json.dumps(
+            cls._sanitize_model_log(value),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        )
+
+    @classmethod
+    def _sanitize_model_log(cls, value: Any) -> Any:
+        sensitive_keys = {
+            "access_token",
+            "api_key",
+            "authorization",
+            "cookie",
+            "password",
+            "refresh_token",
+            "secret",
+            "token",
+        }
+        if isinstance(value, dict):
+            sanitized: dict[str, Any] = {}
+            is_base64_source = value.get("type") == "base64"
+            for raw_key, child in value.items():
+                key = str(raw_key)
+                normalized_key = key.lower()
+                if normalized_key in sensitive_keys:
+                    sanitized[key] = "[REDACTED]"
+                elif (
+                    normalized_key in {"data", "data_base64"}
+                    and isinstance(child, str)
+                    and (is_base64_source or normalized_key == "data_base64")
+                ):
+                    sanitized[key] = cls._base64_log_summary(child)
+                else:
+                    sanitized[key] = cls._sanitize_model_log(child)
+            return sanitized
+        if isinstance(value, (list, tuple)):
+            return [cls._sanitize_model_log(item) for item in value]
+        if isinstance(value, bytes):
+            return f"[binary omitted: {len(value)} bytes]"
+        return value
+
+    @staticmethod
+    def _base64_log_summary(value: str) -> str:
+        try:
+            byte_count = len(base64.b64decode(value, validate=True))
+        except (ValueError, binascii.Error):
+            return "[base64 omitted: invalid data]"
+        return f"[base64 omitted: {byte_count} bytes]"
 
     @staticmethod
     def _text(response: ModelResponse) -> str:

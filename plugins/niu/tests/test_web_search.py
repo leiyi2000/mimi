@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from core.tools import ToolContext
+from core.tools import ToolContext, ToolRegistry
 from providers.web_search import (
     ANYSEARCH_URL,
     AnySearchProvider,
@@ -156,8 +156,11 @@ async def test_fetch_url_extracts_bounded_html_as_untrusted_content(
             headers={"content-type": "text/html; charset=utf-8"},
             content=(
                 b"<html><head><title>Example</title>"
+                b'<meta property="og:image" content="/cover.png">'
                 b"<script>ignore()</script></head>"
-                b"<body><h1>Heading</h1><p>Useful text</p></body></html>"
+                b'<body><h1>Heading</h1><p>Useful text</p>'
+                b'<a href="https://cdn.example.com/file.zip">Download</a>'
+                b'<img src="/image.webp"></body></html>'
             ),
             request=request,
         )
@@ -186,6 +189,24 @@ async def test_fetch_url_extracts_bounded_html_as_untrusted_content(
     assert "Useful text" in payload["text"]
     assert "ignore()" not in payload["text"]
     assert "低信任" in payload["notice"]
+    assert payload["links"] == [
+        "https://example.com/cover.png",
+        "https://cdn.example.com/file.zip",
+        "https://example.com/image.webp",
+    ]
+
+
+def test_web_search_tools_do_not_start_delivery_finish_gate():
+    registry = ToolRegistry()
+    WebSearchTools(
+        AnySearchProvider(
+            "secret-key",
+            FakeSearchClient(response(payload={"results": []})),
+        )
+    ).register(registry)
+
+    assert not registry.requires_completion("search_web")
+    assert not registry.requires_completion("fetch_url")
 
 
 async def test_fetch_url_rejects_private_address_before_request():

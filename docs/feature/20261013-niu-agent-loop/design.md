@@ -311,6 +311,13 @@ Base64 图片。
 `attach_text_file` 将模型本轮已生成的文本附加为 TXT、Markdown、JSON 或 CSV。内容限制
 100,000 字符，不读取宿主文件；文件名在发送前移除路径字符并按 MIME 补充扩展名。
 
+`attach_remote_file` 通过独立 Sandbox 和受控公网代理下载公开 HTTPS 直链，并将原始
+二进制发送给 QQ，不限制 MIME 类型且不转码。`send_as=auto` 将常见图片类型作为 QQ 图片
+发送，其他内容作为文件附件；`file` 可保留图片的文件发送形式，`image` 可强制处理无扩展
+名图链。URL、重定向和最终下载均不能访问私网，文件仍受 Sandbox 单个及总附件大小限制。
+需要生成 PDF、Office、压缩包或其他二进制时，模型使用 Code 或 Workspace Skill 创建并
+显式导出，发送层统一处理安全文件名。
+
 ### Rich Reply Rendering
 
 `render_rich_reply` 接收标题、摘要、分段、要点和可选二维表格。`RichReplyRenderer` 对

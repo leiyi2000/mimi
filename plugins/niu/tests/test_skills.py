@@ -32,6 +32,7 @@ def test_web_search_skill_allows_search_tool():
     assert registry.allows("search_web")
     assert registry.allows("fetch_url")
     assert "完整 URL" in registry.prompt()
+    assert "详情页 URL 当文件直链" in registry.prompt()
 
 
 def test_skill_route_metadata_matches_explicit_intent_by_priority():
@@ -99,6 +100,16 @@ def test_render_skill_guides_complex_image_replies():
     assert registry.allows("render_rich_reply")
     assert "表格最多 6 列" in registry.prompt()
     assert "简单问答" in registry.prompt()
+
+
+def test_reply_skill_supports_arbitrary_remote_files():
+    registry = SkillRegistry(SKILLS)
+    registry.load(enabled={"reply"})
+
+    assert registry.allows("attach_text_file")
+    assert registry.allows("attach_remote_file")
+    assert "任意文件" in registry.catalog()
+    assert "不要声称附件工具只支持文本" in registry.prompt()
 
 
 def test_invalid_skill_name_is_rejected(tmp_path):

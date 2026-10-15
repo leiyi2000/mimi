@@ -1,4 +1,5 @@
 import json
+import logging
 
 import httpx
 
@@ -18,7 +19,7 @@ def request(messages, tools=None):
     )
 
 
-async def test_openai_provider_converts_tools_images_and_usage():
+async def test_openai_provider_converts_tools_images_and_usage(caplog):
     captured = {}
 
     async def handler(http_request):
@@ -60,33 +61,34 @@ async def test_openai_provider_converts_tools_images_and_usage():
         base_url="https://api.openai.com/v1/",
         transport=httpx.MockTransport(handler),
     )
-    response = await provider.complete(
-        request(
-            [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/png",
-                                "data": "aW1hZ2U=",
+    with caplog.at_level(logging.DEBUG, logger="providers.model"):
+        response = await provider.complete(
+            request(
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": "aW1hZ2U=",
+                                },
                             },
-                        },
-                        {"type": "text", "text": "这是什么"},
-                    ],
-                }
-            ],
-            [
-                {
-                    "name": "search",
-                    "description": "search",
-                    "input_schema": {"type": "object"},
-                }
-            ],
+                            {"type": "text", "text": "这是什么"},
+                        ],
+                    }
+                ],
+                [
+                    {
+                        "name": "search",
+                        "description": "search",
+                        "input_schema": {"type": "object"},
+                    }
+                ],
+            )
         )
-    )
     await provider.close()
 
     assert response.content == (
@@ -101,6 +103,10 @@ async def test_openai_provider_converts_tools_images_and_usage():
     assert captured["max_completion_tokens"] == 512
     assert "max_tokens" not in captured
     assert captured["reasoning_effort"] == "low"
+    assert "event=model.provider_response protocol=openai" in caplog.text
+    assert '"finish_reason":"tool_calls"' in caplog.text
+    assert '"arguments":"{\\"query\\":\\"Niu\\"}"' in caplog.text
+    assert all("\n" not in record.getMessage() for record in caplog.records)
 
 
 def test_openai_provider_converts_tool_roundtrip_messages():

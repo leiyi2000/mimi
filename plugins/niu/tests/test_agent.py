@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -86,6 +87,69 @@ async def test_plain_text_response(configured_env):
     assert "<memory_context>" in system
     assert "答案长度服从任务本身" in system
     assert "较长且适合视觉阅读" in system
+
+
+async def test_debug_log_records_model_input_and_output_without_image_data(
+    configured_env,
+    caplog,
+):
+    config = Config.from_env()
+    client = FakeProvider([text_response("你好")])
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "看图"},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "aW1hZ2U=",
+                    },
+                },
+            ],
+        }
+    ]
+
+    with caplog.at_level(logging.DEBUG, logger="core.agent"):
+        response = await build_loop(config, client).run(
+            messages=messages,
+            context=ToolContext(1, 2, 3, "tester"),
+            memory_context="none",
+        )
+
+    assert response.text == "你好"
+    assert "event=model.input run_id=" in caplog.text
+    assert "event=model.output run_id=" in caplog.text
+    assert "round_index=0 exchange_id=" in caplog.text
+    assert '"text":"看图"' in caplog.text
+    assert '"text":"你好"' in caplog.text
+    assert "[base64 omitted: 5 bytes]" in caplog.text
+    assert "aW1hZ2U=" not in caplog.text
+    assert all("\n" not in record.getMessage() for record in caplog.records)
+
+
+async def test_debug_log_records_tool_input_and_output(configured_env, caplog):
+    config = Config.from_env()
+    registry = ToolRegistry()
+
+    async def echo(context, arguments):
+        return ToolResult(f"echo:{arguments['value']}")
+
+    registry.register(Tool("echo", "echo", {"type": "object"}, echo))
+    client = FakeProvider([tool_response(), text_response("完成")])
+
+    with caplog.at_level(logging.DEBUG, logger="core.agent"):
+        response = await run(build_loop(config, client, registry))
+
+    assert response.text == "完成"
+    assert "event=tool.input run_id=" in caplog.text
+    assert "event=tool.output run_id=" in caplog.text
+    assert "tool_use_id=tool-1 tool=echo" in caplog.text
+    assert '"value":"hello"' in caplog.text
+    assert '"content":"echo:hello"' in caplog.text
+    assert all("\n" not in record.getMessage() for record in caplog.records)
 
 
 async def test_web_search_tool_is_available_on_first_round(configured_env):

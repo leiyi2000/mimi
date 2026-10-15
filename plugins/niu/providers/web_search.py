@@ -24,6 +24,7 @@ MAX_SNIPPET_CHARS = 1200
 FETCH_TIMEOUT = 20.0
 FETCH_MAX_BYTES = 1_048_576
 FETCH_MAX_CHARS = 30_000
+FETCH_MAX_LINKS = 100
 FETCH_MAX_REDIRECTS = 3
 FETCH_CONTENT_TYPES = {
     "application/json",
@@ -59,6 +60,7 @@ class FetchedPage:
     content_type: str
     title: str
     text: str
+    links: tuple[str, ...]
     truncated: bool
 
 
@@ -69,15 +71,28 @@ class _HtmlTextExtractor(HTMLParser):
         self._in_title = False
         self.title_parts: list[str] = []
         self.text_parts: list[str] = []
+        self.links: list[str] = []
 
     def handle_starttag(
         self, tag: str, attrs: list[tuple[str, str | None]]
     ) -> None:
-        del attrs
         if tag in {"script", "style", "noscript", "template"}:
             self._ignored_depth += 1
         if tag == "title":
             self._in_title = True
+        attributes = dict(attrs)
+        candidate = None
+        if tag in {"a", "link"}:
+            candidate = attributes.get("href")
+        elif tag in {"img", "source", "video", "audio"}:
+            candidate = attributes.get("src")
+        elif tag == "meta" and attributes.get("property") in {
+            "og:image",
+            "og:image:secure_url",
+        }:
+            candidate = attributes.get("content")
+        if candidate and len(self.links) < FETCH_MAX_LINKS:
+            self.links.append(candidate)
 
     def handle_endtag(self, tag: str) -> None:
         if tag in {"script", "style", "noscript", "template"}:
@@ -307,13 +322,30 @@ class UrlFetchProvider:
         content: str,
     ) -> FetchedPage:
         title = ""
+        raw_links: list[str] = []
         if content_type in {"text/html", "application/xhtml+xml"}:
             parser = _HtmlTextExtractor()
             parser.feed(content)
             title = " ".join(parser.title_parts)[:MAX_TITLE_CHARS]
             text = "\n".join(parser.text_parts)
+            raw_links = parser.links
         else:
             text = content
+        links: list[str] = []
+        seen_links: set[str] = set()
+        for raw_link in raw_links:
+            link = urljoin(url, raw_link)
+            parsed = urlsplit(link)
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.netloc
+                or link in seen_links
+            ):
+                continue
+            seen_links.add(link)
+            links.append(link[:2048])
+            if len(links) >= FETCH_MAX_LINKS:
+                break
         text = re.sub(r"[ \t]+", " ", text)
         text = re.sub(r"\n{3,}", "\n\n", text).strip()
         truncated = len(text) > FETCH_MAX_CHARS
@@ -322,6 +354,7 @@ class UrlFetchProvider:
             content_type=content_type,
             title=title,
             text=text[:FETCH_MAX_CHARS],
+            links=tuple(links),
             truncated=truncated,
         )
 
@@ -358,7 +391,6 @@ class WebSearchTools:
                 handler=self.search_web,
                 timeout=SEARCH_TIMEOUT + 2,
                 skill_name="web-search",
-                completion_required=True,
             )
         )
         registry.register(
@@ -384,7 +416,6 @@ class WebSearchTools:
                 handler=self.fetch_url,
                 timeout=FETCH_TIMEOUT + 2,
                 skill_name="web-search",
-                completion_required=True,
             )
         )
 
@@ -447,6 +478,7 @@ class WebSearchTools:
             "content_type": page.content_type,
             "title": page.title,
             "text": page.text,
+            "links": list(page.links),
             "truncated": page.truncated,
         }
         return ToolResult(

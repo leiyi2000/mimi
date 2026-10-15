@@ -33,6 +33,7 @@ services:
         env_file:
             - .env
         environment:
+            DEBUG: ${DEBUG:-false}
             SANDBOX_TOKEN: ${SANDBOX_TOKEN:?SANDBOX_TOKEN is required}
             SANDBOX_URL: http://sandbox:8080
         restart: unless-stopped

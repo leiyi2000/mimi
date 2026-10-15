@@ -18,11 +18,14 @@ class TaskFrame:
         return bool(self.required_tools)
 
     def require(self, tool_name: str) -> None:
-        self.required_tools.setdefault(tool_name, False)
+        if self.finished:
+            self.finished = False
+            self.outcome = "completed"
+        self.required_tools[tool_name] = False
 
     def record(self, tool_name: str, result: ToolResult) -> None:
-        if tool_name in self.required_tools and not result.is_error:
-            self.required_tools[tool_name] = True
+        if tool_name in self.required_tools:
+            self.required_tools[tool_name] = not result.is_error
 
     def complete(self, arguments: dict[str, Any]) -> ToolResult | None:
         if not self.active:

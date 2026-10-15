@@ -54,6 +54,9 @@ class ModelRequest:
     max_tokens: int
     reasoning_effort: str
     timeout: float
+    exchange_id: str = ""
+    run_id: str = ""
+    round_index: int = -1
 
 
 class ModelProviderError(RuntimeError):

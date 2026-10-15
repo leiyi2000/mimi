@@ -41,6 +41,14 @@ class FakeConversations:
         )
         await kwargs["send_artifact"](
             Artifact(
+                "file",
+                b"PK\x03\x04archive",
+                "application/zip",
+                "release.zip",
+            )
+        )
+        await kwargs["send_artifact"](
+            Artifact(
                 "mface",
                 json.dumps(
                     {
@@ -96,7 +104,11 @@ async def test_handle_sends_mention_text_image_and_file():
         file="base64://cmVwb3J0",
         name="结果报告.txt",
     )
-    assert event.sent[3] == MFace(
+    assert event.sent[3] == File(
+        file="base64://UEsDBGFyY2hpdmU=",
+        name="release.zip",
+    )
+    assert event.sent[4] == MFace(
         emoji_package_id=1,
         emoji_id="cat",
         key="key",

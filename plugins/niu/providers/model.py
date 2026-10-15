@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import anthropic
@@ -18,6 +19,9 @@ from core.model import (
     TextBlock,
     ToolUseBlock,
 )
+
+
+log = logging.getLogger(__name__)
 
 
 class AnthropicModelProvider(ModelProvider):
@@ -62,6 +66,26 @@ class AnthropicModelProvider(ModelProvider):
             raise ModelProviderError(
                 f"model API returned status {exc.status_code}"
             ) from exc
+
+        if log.isEnabledFor(logging.DEBUG):
+            raw_response = (
+                response.model_dump(mode="json")
+                if hasattr(response, "model_dump")
+                else response
+            )
+            log.debug(
+                "event=model.provider_response protocol=anthropic run_id=%s "
+                "round_index=%s exchange_id=%s payload=%s",
+                request.run_id,
+                request.round_index,
+                request.exchange_id,
+                json.dumps(
+                    raw_response,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    default=str,
+                ),
+            )
 
         blocks = []
         for block in response.content:
@@ -143,6 +167,21 @@ class OpenAIModelProvider(ModelProvider):
             )
         try:
             data = response.json()
+            if log.isEnabledFor(logging.DEBUG):
+                log.debug(
+                    "event=model.provider_response protocol=openai run_id=%s "
+                    "round_index=%s exchange_id=%s status_code=%s payload=%s",
+                    request.run_id,
+                    request.round_index,
+                    request.exchange_id,
+                    response.status_code,
+                    json.dumps(
+                        data,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        default=str,
+                    ),
+                )
             choice = data["choices"][0]
             message = choice["message"]
             blocks = []
