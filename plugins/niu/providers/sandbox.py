@@ -540,6 +540,7 @@ class RemoteFileTools:
                     title=filename,
                 ),
             ),
+            suppress_final_text=artifact_kind == "image",
         )
 
     @staticmethod

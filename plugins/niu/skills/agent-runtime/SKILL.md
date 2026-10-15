@@ -2,6 +2,7 @@
 name: agent-runtime
 description: 为耗时任务发布计划，并在证据型工具执行后显式通过任务完成门。
 allowed-tools: publish_plan complete_task
+default-active: true
 ---
 
 # Agent Runtime
@@ -13,5 +14,5 @@ allowed-tools: publish_plan complete_task
 简单问答、单次查询和单工具即可完成的请求不要发布计划。同一次运行不得重复发布计划。
 
 当系统提示已进入任务完成门时，最终回答前必须调用 `complete_task`。只有真实成功的工具结果
-可以支持 `completed`；工具失败、轮次耗尽或仍有步骤未做时使用 `partially_completed`，
-并在 `remaining` 中列出未完成事项。
+可以支持 `completed`；工具失败且没有替代路径，或仍有步骤无法完成时使用
+`partially_completed`，并在 `remaining` 中列出未完成事项。

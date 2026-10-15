@@ -514,4 +514,5 @@ class RenderTools:
                     title=reply.title,
                 ),
             ),
+            suppress_final_text=True,
         )

@@ -13,8 +13,8 @@ Niu 当前“不够有目的性”的主要原因不是系统提示词不够长�
 - 同轮工具全部并行，即使后一个调用依赖前一个结果。
 
 本设计参考 Pi 的结构化提示词、可替换运行时上下文、turn hooks、工具执行协议和结构化压缩，
-但不复制它的编程 Agent 产品形态。Niu 保留 QQ 群聊的短回复、按群 FIFO、有限轮次、Skill
-按需激活和 Artifact 发送语义，并新增两个核心机制：
+但不复制它的编程 Agent 产品形态。Niu 保留 QQ 群聊的短回复、按群 FIFO、Skill 按需激活
+和 Artifact 发送语义，并新增两个核心机制：
 
 1. **TaskFrame**：复杂任务的内部目标契约，记录目标、完成标准、约束、证据缺口和下一动作。
 2. **Finish Gate**：模型不再以“输出了一段文本”自动代表完成；运行时根据 TaskFrame 和工具
@@ -33,6 +33,14 @@ Niu 当前“不够有目的性”的主要原因不是系统提示词不够长�
   并独立注入能力目录、记忆、激活 Skill、任务状态和运行指令；
 - Skill 路由卡、动态激活枚举、显式意图预激活和 Tool 绑定校验；
 - `TaskFrame`、`complete_task` 与基于真实 Tool Result 的 Finish Gate；
+- `RunState` 与 `RunController` 的 `prepare_request`、`finish_turn`、
+  `prepare_next_turn` 生命周期边界；
+- 默认 Skill、控制 Tool、执行方式和低信任只读降级的声明式元数据；
+- 回复终结器与 Tool Result 显式附件交付语义，不通过自然语言关键词推断图片意图；
+- Skill 与 Tool 协议模块不再承载媒体 Provider 实现：运行时控制 Tool、回复 Tool 和媒体
+  Tool 分别归属 runtime、reply 和 provider 边界；
+- 对齐 Pi 的自然终止循环，删除固定 Tool 轮次上限；循环由模型自然停止、Finish Gate、
+  中止或错误结束；
 - `fetch_url` 的重定向、DNS/IP、MIME、响应大小和文本长度限制；
 - 只读工具并行，以及包含副作用时按模型源顺序串行；
 - 单次 Run 隔离工作区的列举、文本读写、Shell、文件导出和统一清理。
@@ -79,8 +87,9 @@ Pi 默认身份说明很短。完整系统提示词由独立 section 组成，�
 - Skill 首先以目录形式暴露，匹配任务后再加载详细正文；
 - 当前真实工具集合和提示词描述保持一致。
 
-Niu 已有固定 prompt、Skill catalog 和激活后的 Skill 正文，但目前仍把它们简单拼接成一个
-system 字符串，缺少“当前任务状态”这一动态 section。
+Niu 已将固定 prompt、Skill catalog、低优先级记忆、激活后的 Skill 正文和当前任务状态
+拆成独立 XML section。模型 Provider 仍接收兼容的完整 system 字符串，但各 section 在每轮
+都由当前状态重建，不累积旧任务状态。
 
 ### 3.2 Agent Loop 提供明确的 turn 边界
 
@@ -156,7 +165,7 @@ Goal 或 Plan。它依赖 coding-agent 的系统提示词、上下文文件、�
 - 仍需继续搜索的阶段性总结；
 - 应向用户澄清的阻塞状态。
 
-已有 final synthesis 解决了轮次耗尽时丢结果的问题，但不能阻止正常轮次中的过早结束。
+已有 final synthesis 解决了非正常终止时丢结果的问题，但不能阻止正常轮次中的过早结束。
 
 ### 4.3 每轮重新推断目标
 
@@ -255,21 +264,17 @@ Tool Schema 继续描述参数结构；Tool/Skill 指令额外统一说明：
 
 ### 5.5 Skill 命中优化
 
-当前 Skill catalog 每项只有名称和一句描述，`activate_skill.skills[]` 只是任意字符串，不包含
-当前可选 Skill 的动态枚举。模型需要先从自然语言目录记住精确名称，再构造激活调用；名称
-错误、能力重叠或描述未覆盖用户措辞时，就会直接跳过能力。
-
-现有默认激活集合还会掩盖路由问题。`agent-runtime`、`memory`、`mimi`、`reply` 和
-`web-search` 首轮已经注入；真正依赖模型激活的是 `code`、`group-history`、`image`、
-`music`、`render` 和 `stickers`。因此不能只用搜索或记忆场景验证 Skill 路由。
+Skill catalog 使用结构化路由卡，`activate_skill.skills[]` 由当前启用 Skill 动态生成枚举。
+只有 `agent-runtime` 和动态 `mimi` Skill 默认激活；搜索、记忆、回复附件、渲染、代码、
+群历史、媒体和表情能力都按显式触发词或目录语义加载，避免默认集合掩盖路由问题。
 
 Skill catalog 应改为结构化路由卡：
 
 ```text
 <skill>
   <name>code</name>
-  <summary>在隔离工作区执行程序和处理文件</summary>
   <use_when>计算、数据转换、运行 Bash/Python、下载并处理文件、生成非纯文本产物</use_when>
+  <explicit_triggers>运行代码；执行 Python；跑脚本</explicit_triggers>
   <examples>运行这段代码；把 JSON 转 CSV；下载这些数据并画图；生成 zip</examples>
   <do_not_use_when>只需搜索网页；只需直接回答；需要读取 Mimi 或宿主机文件</do_not_use_when>
   <tools>run_shell, read_workspace_file, write_workspace_file</tools>
@@ -278,8 +283,9 @@ Skill catalog 应改为结构化路由卡：
 
 具体改造：
 
-1. YAML 元数据增加 `triggers`、`examples`、`anti-triggers` 和可选 `priority`，启动时校验类型与
-   长度。
+1. YAML 元数据包含 `triggers`、`examples`、`anti-triggers`、可选 `priority` 和
+   `default-active`；启动时校验字段、类型、长度、重复值、正文和启用目录，目录内容进入
+   system prompt 前统一 XML 转义。
 2. `activate_skill` 的 Schema 根据当前启用 Skill 动态生成 `enum`，并在每个名称旁保留简短
    路由说明，拒绝模型臆造名称。
 3. system prompt 明确“用户意图与目录任一示例语义相近时先激活；不确定时最多选择三个”，
@@ -292,8 +298,8 @@ Skill catalog 应改为结构化路由卡：
 6. RunTrace 记录候选 Skill、激活来源（默认、规则、模型）、首次激活轮次和
    `SKILL_NOT_ACTIVE`，不记录用户原文。
 
-不建议把所有 Skill 默认激活。完整 Skill 正文和 Tool Schema 会增加 Token、误调用和副作用
-风险；`code`、记忆写入、媒体生成等能力尤其应保持按需暴露。
+不把所有 Skill 默认激活。完整 Skill 正文和 Tool Schema 会增加 Token、误调用和副作用
+风险；搜索、附件、渲染、`code`、记忆写入和媒体生成等能力都保持按需暴露。
 
 ### 5.6 最终答复协议
 
@@ -620,7 +626,7 @@ TaskFrame、Evidence、Finish Gate 和 `complete_task` 都是内部协议。群�
 - `complete_task` 与外部 Tool 同轮出现时被拒绝；
 - 相同错误两次后下一动作不能重复原调用；
 - 有依赖或副作用工具串行，只读独立工具并行；
-- 轮次耗尽仍保留 Artifact 并返回部分完成；
+- 输出截断仍保留 Artifact 并返回部分完成；
 - TaskFrame section 每轮替换，旧状态不残留。
 - `activate_skill` 只接受当前目录中的动态枚举值；
 - 显式代码、绘图和群历史请求能预激活对应 Skill；

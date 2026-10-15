@@ -2,6 +2,19 @@
 name: memory
 description: 管理当前群的共享事实、当前成员偏好和结构化对话风格；用户要求记住、忘记或调整回答风格时使用。
 allowed-tools: remember list_memories forget_memory update_personality reset_personality
+triggers:
+  - 记住
+  - 忘记
+  - 列出记忆
+  - 回答风格
+  - 重置性格
+examples:
+  - 记住我更喜欢简短回答
+  - 忘掉刚才保存的偏好
+  - 以后说话更口语一点
+anti-triggers:
+  - 只需在当前对话临时遵循要求
+priority: 90
 ---
 
 # Memory

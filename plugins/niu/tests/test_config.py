@@ -81,10 +81,3 @@ def test_group_history_does_not_require_internal_token(configured_env, monkeypat
     monkeypatch.setenv("NIU_GROUP_HISTORY_ENABLED", "true")
 
     assert Config.from_env().group_history_enabled
-
-
-def test_invalid_number_names_variable(configured_env, monkeypatch):
-    monkeypatch.setenv("NIU_MAX_TOOL_ROUNDS", "zero")
-
-    with pytest.raises(ConfigError, match="NIU_MAX_TOOL_ROUNDS"):
-        Config.from_env()

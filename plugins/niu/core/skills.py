@@ -1,19 +1,63 @@
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 import yaml
 
-from providers.image import ImageProvider
-from providers.media import MediaError
-from providers.music import MusicProvider
-from core.tools import Artifact, Tool, ToolContext, ToolRegistry, ToolResult
-
-
 NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+TOOL_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
+FRONTMATTER_FIELDS = {
+    "name",
+    "description",
+    "allowed-tools",
+    "triggers",
+    "examples",
+    "anti-triggers",
+    "priority",
+    "default-active",
+}
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    pass
+
+
+def _construct_unique_mapping(
+    loader: _UniqueKeyLoader,
+    node: yaml.MappingNode,
+    deep: bool = False,
+) -> dict[Any, Any]:
+    mapping: dict[Any, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError as exc:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "found an unhashable key",
+                key_node.start_mark,
+            ) from exc
+        if duplicate:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key: {key}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +70,7 @@ class Skill:
     examples: tuple[str, ...] = ()
     anti_triggers: tuple[str, ...] = ()
     priority: int = 0
+    default_active: bool = False
 
 
 class SkillRegistry:
@@ -39,10 +84,19 @@ class SkillRegistry:
         enabled: set[str],
     ) -> None:
         self._skills.clear()
+        if not self.skill_root.is_dir():
+            raise ValueError(f"skill root does not exist: {self.skill_root}")
+        discovered: set[str] = set()
         for directory in sorted(self.skill_root.iterdir()):
-            if not directory.is_dir() or directory.name not in enabled:
+            if not directory.is_dir():
+                continue
+            discovered.add(directory.name)
+            if directory.name not in enabled:
                 continue
             self._skills[directory.name] = self._parse(directory)
+        missing = enabled - discovered
+        if missing:
+            raise ValueError(f"enabled skills not found: {sorted(missing)}")
 
     def register(self, skill: Skill) -> None:
         if skill.name in self._skills:
@@ -62,26 +116,32 @@ class SkillRegistry:
             lines.extend(
                 (
                     "  <skill>",
-                    f"    <name>{skill.name}</name>",
-                    f"    <summary>{skill.description}</summary>",
+                    f"    <name>{self._xml(skill.name)}</name>",
+                    f"    <use_when>{self._xml(skill.description)}</use_when>",
                 )
             )
+            if skill.triggers:
+                lines.append(
+                    "    <explicit_triggers>"
+                    + self._xml("；".join(skill.triggers))
+                    + "</explicit_triggers>"
+                )
             if skill.examples:
                 lines.append(
                     "    <examples>"
-                    + "；".join(skill.examples)
+                    + self._xml("；".join(skill.examples))
                     + "</examples>"
                 )
             if skill.anti_triggers:
                 lines.append(
                     "    <do_not_use_when>"
-                    + "；".join(skill.anti_triggers)
+                    + self._xml("；".join(skill.anti_triggers))
                     + "</do_not_use_when>"
                 )
             lines.extend(
                 (
                     "    <tools>"
-                    + ", ".join(skill.allowed_tools)
+                    + self._xml(", ".join(skill.allowed_tools))
                     + "</tools>",
                     "  </skill>",
                 )
@@ -97,6 +157,13 @@ class SkillRegistry:
 
     def activation_names(self) -> tuple[str, ...]:
         return tuple(sorted(self._skills))
+
+    def default_names(self) -> set[str]:
+        return {
+            skill.name
+            for skill in self._skills.values()
+            if skill.default_active
+        }
 
     def match_explicit(self, text: str, *, limit: int = 3) -> set[str]:
         folded = text.casefold()
@@ -129,38 +196,76 @@ class SkillRegistry:
 
     def _parse(self, directory: Path) -> Skill:
         path = directory / "SKILL.md"
-        content = path.read_text(encoding="utf-8")
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(f"{path}: failed to read skill") from exc
         if not content.startswith("---\n"):
             raise ValueError(f"{path}: missing YAML frontmatter")
-        _, frontmatter, body = content.split("---", 2)
-        metadata = yaml.safe_load(frontmatter)
+        parts = content.split("---", 2)
+        if len(parts) != 3:
+            raise ValueError(f"{path}: unclosed YAML frontmatter")
+        _, frontmatter, body = parts
+        try:
+            metadata = yaml.load(frontmatter, Loader=_UniqueKeyLoader)
+        except yaml.YAMLError as exc:
+            raise ValueError(f"{path}: invalid YAML frontmatter") from exc
         if not isinstance(metadata, dict):
             raise TypeError(f"{path}: invalid YAML frontmatter")
-        name = str(metadata.get("name", ""))
-        description = str(metadata.get("description", ""))
+        if any(not isinstance(key, str) for key in metadata):
+            raise TypeError(f"{path}: frontmatter keys must be strings")
+        unknown = set(metadata) - FRONTMATTER_FIELDS
+        if unknown:
+            raise ValueError(
+                f"{path}: unknown frontmatter fields: {sorted(unknown)}"
+            )
+        name = metadata.get("name")
+        description = metadata.get("description")
         if (
-            name != directory.name
+            not isinstance(name, str)
+            or name != directory.name
             or not NAME_PATTERN.fullmatch(name)
             or not 1 <= len(name) <= 64
         ):
             raise ValueError(f"{path}: invalid skill name")
-        if not 1 <= len(description) <= 1024:
+        if (
+            not isinstance(description, str)
+            or description != description.strip()
+            or not 1 <= len(description) <= 1024
+        ):
             raise ValueError(f"{path}: invalid description")
         allowed = metadata.get("allowed-tools", "")
         if not isinstance(allowed, str):
             raise TypeError(f"{path}: allowed-tools must be a string")
+        allowed_tools = tuple(allowed.split())
+        if (
+            not allowed_tools
+            or len(set(allowed_tools)) != len(allowed_tools)
+            or any(
+                not TOOL_NAME_PATTERN.fullmatch(tool)
+                for tool in allowed_tools
+            )
+        ):
+            raise ValueError(f"{path}: invalid allowed-tools")
         priority = metadata.get("priority", 0)
         if not isinstance(priority, int) or isinstance(priority, bool):
             raise TypeError(f"{path}: priority must be an integer")
+        default_active = metadata.get("default-active", False)
+        if not isinstance(default_active, bool):
+            raise TypeError(f"{path}: default-active must be a boolean")
+        instructions = body.strip()
+        if not instructions:
+            raise ValueError(f"{path}: skill instructions must not be empty")
         return Skill(
             name,
             description,
-            body.strip(),
-            tuple(allowed.split()),
+            instructions,
+            allowed_tools,
             self._string_list(path, metadata, "triggers"),
             self._string_list(path, metadata, "examples"),
             self._string_list(path, metadata, "anti-triggers"),
             priority,
+            default_active,
         )
 
     @staticmethod
@@ -171,202 +276,16 @@ class SkillRegistry:
     ) -> tuple[str, ...]:
         value = metadata.get(key, [])
         if not isinstance(value, list) or any(
-            not isinstance(item, str) or not item.strip()
+            not isinstance(item, str)
+            or item != item.strip()
+            or not 1 <= len(item) <= 200
             for item in value
         ):
             raise TypeError(f"{path}: {key} must be a string list")
-        return tuple(item.strip() for item in value)
+        if len(value) > 20 or len(set(value)) != len(value):
+            raise ValueError(f"{path}: invalid {key}")
+        return tuple(value)
 
-
-class MediaTools:
-    def __init__(
-        self,
-        image_provider: ImageProvider | None,
-        music_provider: MusicProvider | None,
-    ) -> None:
-        self.image_provider = image_provider
-        self.music_provider = music_provider
-
-    def register(self, registry: ToolRegistry) -> None:
-        if self.image_provider is not None:
-            registry.register(
-                Tool(
-                    name="generate_image",
-                    description=(
-                        "Generate one image from a detailed prompt, optionally "
-                        "preserving a person from one input image."
-                    ),
-                    input_schema={
-                        "type": "object",
-                        "properties": {
-                            "prompt": {"type": "string"},
-                            "aspect_ratio": {
-                                "enum": ["1:1", "16:9", "4:3", "3:4", "9:16"]
-                            },
-                            "reference_image_index": {
-                                "type": "integer",
-                                "minimum": 0,
-                                "description": (
-                                    "Optional image index from the current and "
-                                    "quoted message, in displayed order."
-                                ),
-                            },
-                        },
-                        "required": ["prompt"],
-                    },
-                    handler=self.generate_image,
-                    timeout=120,
-                    read_only=False,
-                    skill_name="image",
-                    completion_required=True,
-                )
-            )
-        if self.music_provider is not None:
-            registry.register(
-                Tool(
-                    name="generate_music",
-                    description="Generate one song or instrumental audio.",
-                    input_schema={
-                        "type": "object",
-                        "properties": {
-                            "prompt": {"type": "string"},
-                            "lyrics": {"type": "string"},
-                            "is_instrumental": {"type": "boolean"},
-                        },
-                        "required": ["prompt"],
-                    },
-                    handler=self.generate_music,
-                    timeout=180,
-                    read_only=False,
-                    skill_name="music",
-                    completion_required=True,
-                )
-            )
-
-    async def generate_image(
-        self, context: ToolContext, arguments: dict[str, Any]
-    ) -> ToolResult:
-        assert self.image_provider is not None
-        reference_image = None
-        raw_index = arguments.get("reference_image_index")
-        if raw_index is not None:
-            if not isinstance(raw_index, int) or isinstance(raw_index, bool):
-                raise ValueError("invalid reference image index")
-            available_images = context.images + context.quoted_images
-            if not 0 <= raw_index < len(available_images):
-                return ToolResult.error(
-                    "REFERENCE_IMAGE_NOT_FOUND",
-                    "指定的参考图片不存在，请使用消息中显示的图片序号。",
-                    retryable=True,
-                    safe_details={
-                        "available_image_count": str(len(available_images))
-                    },
-                )
-            reference_image = available_images[raw_index]
-        try:
-            artifact = await self.image_provider.generate(
-                str(arguments["prompt"]),
-                str(arguments.get("aspect_ratio", "1:1")),
-                reference_image,
-            )
-        except MediaError as exc:
-            return ToolResult(str(exc), is_error=True)
-        return ToolResult("IMAGE_GENERATED", artifacts=(artifact,))
-
-    async def generate_music(
-        self, context: ToolContext, arguments: dict[str, Any]
-    ) -> ToolResult:
-        assert self.music_provider is not None
-        try:
-            artifact = await self.music_provider.generate(
-                str(arguments["prompt"]),
-                str(arguments.get("lyrics", "")),
-                bool(arguments.get("is_instrumental", False)),
-            )
-        except MediaError as exc:
-            return ToolResult(str(exc), is_error=True)
-        return ToolResult("MUSIC_GENERATED", artifacts=(artifact,))
-
-
-class ReplyTools:
-    _MIME_TYPES: ClassVar[dict[str, str]] = {
-        "txt": "text/plain",
-        "md": "text/markdown",
-        "json": "application/json",
-        "csv": "text/csv",
-    }
-
-    def register(self, registry: ToolRegistry) -> None:
-        registry.register(
-            Tool(
-                name="mention_current_sender",
-                description=(
-                    "Explicitly mention the current sender in the final QQ text "
-                    "reply when their attention is genuinely needed."
-                ),
-                input_schema={"type": "object", "properties": {}},
-                handler=self.mention_current_sender,
-                skill_name="reply",
-            )
-        )
-        registry.register(
-            Tool(
-                name="attach_text_file",
-                description=(
-                    "Attach generated text as a TXT, Markdown, JSON, or CSV file."
-                ),
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "filename": {
-                            "type": "string",
-                            "description": "Display filename without directories.",
-                        },
-                        "format": {
-                            "type": "string",
-                            "enum": sorted(self._MIME_TYPES),
-                        },
-                        "content": {"type": "string"},
-                    },
-                    "required": ["filename", "format", "content"],
-                },
-                handler=self.attach_text_file,
-                read_only=False,
-                skill_name="reply",
-                completion_required=True,
-            )
-        )
-
-    async def mention_current_sender(
-        self,
-        context: ToolContext,
-        arguments: dict[str, Any],
-    ) -> ToolResult:
-        return ToolResult(
-            "FINAL_REPLY_WILL_MENTION_CURRENT_SENDER",
-            mention_sender=True,
-        )
-
-    async def attach_text_file(
-        self, context: ToolContext, arguments: dict[str, Any]
-    ) -> ToolResult:
-        filename = str(arguments["filename"]).strip()
-        file_format = str(arguments["format"])
-        content = str(arguments["content"])
-        if (
-            not 1 <= len(filename) <= 100
-            or file_format not in self._MIME_TYPES
-            or not 1 <= len(content) <= 100_000
-        ):
-            raise ValueError("invalid text file")
-        return ToolResult(
-            "FILE_ATTACHED",
-            artifacts=(
-                Artifact(
-                    kind="file",
-                    data=content.encode("utf-8"),
-                    mime_type=self._MIME_TYPES[file_format],
-                    title=filename,
-                ),
-            ),
-        )
+    @staticmethod
+    def _xml(value: str) -> str:
+        return html.escape(value, quote=True)

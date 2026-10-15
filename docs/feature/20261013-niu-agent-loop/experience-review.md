@@ -7,7 +7,8 @@ Niu 没有改造成 smolagents，也没有引入该框架。现有 QQ 群聊适�
 
 1. 复杂任务通过 `publish_plan` 在其他 Tool 前发送一次用户可见计划。
 2. Web Search 固定由本地 `search_web` 调用 AnySearch，向模型返回标题、完整 URL 和摘要。
-3. 工具轮次耗尽或输出截断时执行无 Tool 的最终总结，保留已有 Artifact。
+3. 输出截断时执行无 Tool 的最终总结，保留已有 Artifact；后续 Pi 对齐改造已删除固定
+   Tool 轮次上限。
 4. 工具错误包含稳定错误码、安全说明和重试标记；重复错误会要求模型切换方法。
 5. `AgentResponse.status`、`RunTrace` 和附件优先发送建立了明确的完成语义。
 6. 专用 Skill 通过 `activate_skill` 激活后才注入完整指令和 Tool Schema。
@@ -133,6 +134,9 @@ Niu 的核心方向是正确的：它是 QQ 群聊运行时，不是通用自主
 
 ### P0：轮次耗尽会丢弃已有成果（已完成）
 
+本节记录旧实现及当时的上限兜底；当前 Agent Loop 已对齐 Pi 改为自然终止，不再设置固定
+Tool 轮次上限，final synthesis 仅处理输出截断等非正常终止。
+
 评审时，[`AgentLoop.run()`](../../../plugins/niu/core/agent.py) 在最后一轮再次收到 Tool Use
 时直接抛出 `ToolRoundsExceeded`。此前已产生的文本、Artifact 和成功工具结果不会发给用户。
 smolagents 在达到上限后会基于已有步骤调用一次最终总结。[S1](#source-1)
@@ -175,7 +179,7 @@ smolagents 在达到上限后会基于已有步骤调用一次最终总结。[S1
 
 - `AgentResponse` 增加 `status` 和脱敏 `trace`，区分 `completed` 与
   `partially_completed`。
-- 检查模型 `stop_reason`；`max_tokens` 和工具轮次耗尽都执行一次无 Tool 的压缩总结。
+- 检查模型 `stop_reason`；`max_tokens` 执行一次无 Tool 的压缩总结。
 - 最终总结失败时使用确定性部分完成文案，并保留已经成功生成的 Artifact。
 - 简单纯文本问题保留“无 Tool 文本即完成”的快速路径，不增加模型调用。
 

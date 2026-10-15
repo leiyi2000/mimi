@@ -10,9 +10,10 @@ from core.config import Config
 from core.model import ModelResponse, TextBlock, ToolUseBlock
 from core.mimi import MimiCommandCatalog, MimiCommandTools
 from core.prompts import PromptCatalog
-from core.skills import ReplyTools, SkillRegistry
+from core.reply import ReplyTools
+from core.runtime import AgentRuntimeTools
+from core.skills import SkillRegistry
 from core.tools import (
-    AgentRuntimeTools,
     Artifact,
     Tool,
     ToolContext,
@@ -65,11 +66,12 @@ def build_loop(config, model_provider, tool_registry=None):
     )
 
 
-async def run(loop, context=None):
+async def run(loop, context=None, user_text=""):
     return await loop.run(
-        messages=[{"role": "user", "content": "hello"}],
+        messages=[{"role": "user", "content": user_text or "hello"}],
         context=context or ToolContext(1, 2, 3, "tester"),
         memory_context="none",
+        user_text=user_text,
     )
 
 
@@ -182,7 +184,7 @@ async def test_web_search_tool_is_available_on_first_round(configured_env):
         model_semaphore=asyncio.Semaphore(1),
     )
 
-    await run(loop)
+    await run(loop, user_text="搜索网页并告诉我结果")
 
     assert [tool["name"] for tool in client.requests[0].tools] == [
         "activate_skill",
@@ -223,10 +225,10 @@ async def test_render_tool_is_available_for_summary_on_first_round(configured_en
     )
 
     await loop.run(
-        messages=[{"role": "user", "content": "总结下这个项目"}],
+        messages=[{"role": "user", "content": "把项目总结做成图片"}],
         context=ToolContext(1, 2, 3, "tester"),
         memory_context="none",
-        user_text="总结下这个项目",
+        user_text="把项目总结做成图片",
     )
 
     assert "## Skill: render" in client.requests[0].system
@@ -486,11 +488,12 @@ async def test_history_result_keeps_followup_tools_read_only(configured_env):
 
     registry.register(
         Tool(
-            "search_group_messages",
+            "read_untrusted_context",
             "search",
             {"type": "object"},
             result,
             read_only=True,
+            restricts_followup_to_read_only=True,
         )
     )
     registry.register(
@@ -504,7 +507,7 @@ async def test_history_result_keeps_followup_tools_read_only(configured_env):
     )
     client = FakeProvider(
         [
-            tool_response(name="search_group_messages"),
+            tool_response(name="read_untrusted_context"),
             text_response("summary"),
         ]
     )
@@ -512,7 +515,7 @@ async def test_history_result_keeps_followup_tools_read_only(configured_env):
     await run(build_loop(config, client, registry))
 
     assert [tool["name"] for tool in client.requests[1].tools] == [
-        "search_group_messages"
+        "read_untrusted_context"
     ]
 
 
@@ -524,22 +527,22 @@ async def test_empty_response_fails_explicitly(configured_env):
         await run(build_loop(config, client))
 
 
-async def test_tool_round_limit_uses_final_synthesis(configured_env, monkeypatch):
-    monkeypatch.setenv("NIU_MAX_TOOL_ROUNDS", "1")
+async def test_tool_calls_continue_without_a_round_limit(configured_env):
     config = Config.from_env()
     client = FakeProvider(
         [
             tool_response("a"),
             tool_response("b"),
-            text_response("完成了已有部分，后续步骤未执行。"),
+            tool_response("c"),
+            text_response("完成"),
         ]
     )
 
     response = await run(build_loop(config, client))
 
-    assert response.status == "partially_completed"
-    assert response.text == "完成了已有部分，后续步骤未执行。"
-    assert client.requests[2].tools == []
+    assert response.status == "completed"
+    assert response.text == "完成"
+    assert len(client.requests) == 4
 
 
 async def test_plan_is_published_before_other_tools(configured_env):
@@ -789,7 +792,7 @@ async def test_model_can_choose_to_mention_current_sender(configured_env):
         model_semaphore=asyncio.Semaphore(1),
     )
 
-    response = await run(loop)
+    response = await run(loop, user_text="回复时提醒我查看")
 
     assert response.mention_sender
 
@@ -841,6 +844,7 @@ async def test_image_link_request_returns_only_image_artifact(configured_env):
             artifacts=(
                 Artifact("image", b"image", "image/png", "result.png"),
             ),
+            suppress_final_text=True,
         )
 
     registry.register(
@@ -868,3 +872,19 @@ async def test_image_link_request_returns_only_image_artifact(configured_env):
 
     assert response.text == ""
     assert response.artifacts[0].kind == "image"
+
+
+async def test_image_analysis_does_not_trigger_delivery_inference(configured_env):
+    config = Config.from_env()
+    client = FakeProvider([text_response("图片里是一段报错堆栈。")])
+    loop = build_loop(config, client)
+
+    response = await loop.run(
+        messages=[{"role": "user", "content": "看看这张图片里是什么"}],
+        context=ToolContext(1, 2, 3, "tester"),
+        memory_context="none",
+        user_text="看看这张图片里是什么",
+    )
+
+    assert response.text == "图片里是一段报错堆栈。"
+    assert len(client.requests) == 1

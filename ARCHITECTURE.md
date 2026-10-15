@@ -164,6 +164,12 @@ Completions 协议。模型请求只在调用期间占用全局并发槽位，�
 
 插件内部按职责分为 `adapters/` QQ 协议适配、`core/` Agent 编排与工具协议、
 `domain/` 领域模型和持久化，以及 `providers/` 外部服务适配；入口只负责装配这些边界。
+`core/skills.py` 只负责 Skill 元数据、加载、路由和 Tool 绑定校验；缺失 Skill、未知或
+非法 frontmatter、空正文及 Tool 声明不一致都会使启动失败。能力目录仅暴露经过 XML
+转义的适用场景、显式触发词、示例、排除项和 Tool 名称。`core/tools.py` 只定义 Tool
+协议、注册表和执行边界。Agent 控制 Tool 与回复 Tool 分别和对应的
+`core/runtime.py`、`core/reply.py` 放在一起；图片和音乐 Tool 跟随外部媒体 Provider
+放在 `providers/media_tools.py`，因此 core 不反向导入 providers。
 `PromptCatalog` 严格加载安全、任务执行、群聊表达和 NapCat 协议四层固定提示词，并以
 独立 XML section 组装能力目录、低优先级记忆、激活 Skill、任务状态和当前运行指令；每轮
 只注入最新状态，记忆内容在进入 section 前转义。QQ 适配层通过当前 NapCat 连接解析成员 At
@@ -171,12 +177,19 @@ Completions 协议。模型请求只在调用期间占用全局并发槽位，�
 共用输入图片限额。成员先单独发送普通图片、随后发送无图触发消息时，适配层按群和成员
 暂存并单次消费最近图片；过期图片不会进入模型。短期历史仍只保存摘要。
 
-Agent 首轮只注入 Skill Catalog、基础 Skill、动态 `mimi` Skill 和对应 Tool；其他专用
-Skill 经 `activate_skill` 后才注入完整指令与 Schema。Web Search 默认通过本地
+`AgentLoop` 只驱动模型轮次；`RunController` 在请求前准备动态上下文，在模型和工具结果
+写回后执行 finish-turn 判断，并在继续时注入下一轮指令。Skill 激活、计划和完成门通过
+Tool 的 control 元数据形成串行屏障；工具执行方式、低信任结果触发的只读降级和默认激活
+Skill 同样由 Tool/Skill 元数据声明，不在循环中匹配具体名称。
+
+Agent 首轮只注入 Skill Catalog、基础 `agent-runtime` Skill、动态 `mimi` Skill 和对应
+Tool；其他 Skill 由元数据中的高置信显式触发词预激活，或经 `activate_skill` 语义路由后
+再注入完整指令与 Schema。Web Search 通过本地
 `search_web` Tool 调用 AnySearch，并向模型保留结构化标题、完整 URL 和摘要。长任务可通过
-`publish_plan` 在其他 Tool 前发送一次用户可见计划。轮次耗尽或输出截断时执行无 Tool
-的最终总结；`RunTrace` 只记录运行 ID、阶段、耗时、Token 和错误码，不记录群聊原文或
-图片。包含附件的结果先发送附件，全部成功后才发送完成文本。
+`publish_plan` 在其他 Tool 前发送一次用户可见计划。Agent Loop 不限制 Tool Use 次数，
+按模型自然停止或 Finish Gate 明确结束；输出截断时执行无 Tool 的最终总结。`RunTrace`
+只记录运行 ID、阶段、耗时、Token 和错误码，不记录群聊原文或图片。包含附件的结果先发送
+附件，全部成功后才发送完成文本。
 最终文本默认不 At；模型只有调用 `mention_current_sender` 后，发送层才 At 当前发言者。
 
 启动时 `MimiCommandCatalog` 扫描 `plugins/*/commands.toml`，把显式设置
@@ -203,6 +216,8 @@ MIME 类型的 QQ 文件附件发送；常见图片类型默认直接作为 QQ �
 
 复杂回复通过结构化 Tool 输入和固定 HTML 模板，由 pytakumi 渲染为图片；模型不能注入
 HTML、样式、脚本、外链或宿主文件。自动渲染阈值可配置，纯图片回复不额外发送状态说明。
+图片交付意图由 `reply` Skill 和 NapCat 提示词约束；成功图片产物通过 Tool Result 显式
+声明隐藏最终正文，运行时不使用自然语言关键词推断用户意图。
 图片与音乐 Provider 通过独立环境变量启用。
 
 ## 架构不变量

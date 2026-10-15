@@ -9,6 +9,9 @@ triggers:
   - 查最新
   - 最新消息
   - 查找网页
+  - 今天天气
+  - 当前价格
+  - 最新版本
 examples:
   - 搜索最新新闻并给出来源
   - 找到指定网页并核验内容
@@ -16,6 +19,7 @@ examples:
 anti-triggers:
   - 查询当前群聊天记录
   - 执行有副作用的网页操作
+priority: 80
 ---
 
 # Web Search

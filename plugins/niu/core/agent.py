@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import itertools
 import json
 import logging
-import re
 import time
 import uuid
 from dataclasses import dataclass, replace
@@ -22,8 +22,10 @@ from core.model import (
     ModelResponse,
 )
 from core.prompts import PromptCatalog
+from core.reply import ReplyPolicy
 from core.rendering import AutomaticReplyRenderer
 from core.run import RunEvent, RunStatus, RunTrace
+from core.runtime import RunController, RunState
 from core.skills import SkillRegistry
 from core.task import TaskFrame
 from core.tools import Artifact, ToolContext, ToolRegistry, ToolResult
@@ -75,7 +77,8 @@ class AgentLoop:
         self.skills = skills
         self.tools = tools
         self.model_semaphore = model_semaphore
-        self.automatic_renderer = automatic_renderer
+        self.controller = RunController(skills, tools)
+        self.reply_policy = ReplyPolicy(automatic_renderer)
 
     async def run(
         self,
@@ -127,38 +130,18 @@ class AgentLoop:
         user_text: str,
         trace: RunTrace,
     ) -> AgentResponse:
-        request_messages = list(messages)
-        read_only_only = False
-        plan_published = False
-        mention_sender = False
-        task = TaskFrame()
-        image_delivery_required = self._requires_direct_image(user_text)
-        active_skills = self.skills.names() & {
-            "agent-runtime",
-            "memory",
-            "mimi",
-            "render",
-            "reply",
-            "web-search",
-        }
-        preactivated_skills = self.skills.match_explicit(user_text)
-        active_skills.update(preactivated_skills)
+        state, preactivated_skills = self.controller.start(messages, user_text)
         trace.events.extend(
             RunEvent(kind="skill_preactivated", tool_name=name)
             for name in sorted(preactivated_skills)
         )
-        artifacts: list[Artifact] = []
-        error_counts: dict[tuple[str, str], int] = {}
-        for round_index in range(self.config.max_tool_rounds + 1):
+        for round_index in itertools.count():
             started_at = time.monotonic()
             response = await self._request(
-                messages=request_messages,
                 memory_context=memory_context,
-                read_only_only=read_only_only,
-                active_skill_names=active_skills,
-                task=task,
                 run_id=trace.run_id,
                 round_index=round_index,
+                **self.controller.prepare_request(state),
             )
             trace.model_rounds += 1
             self._record_usage(trace, response)
@@ -178,273 +161,54 @@ class AgentLoop:
             if not tool_uses:
                 if not text:
                     raise EmptyResponse()
-                if getattr(response, "stop_reason", None) == "max_tokens":
+                decision = self.controller.finish_turn(
+                    state,
+                    stop_reason=getattr(response, "stop_reason", None),
+                )
+                if decision.action == "synthesize":
                     return await self._final_synthesis(
-                        messages=request_messages,
+                        state=state,
                         memory_context=memory_context,
-                        artifacts=artifacts,
                         trace=trace,
-                        reason="上一轮回答达到输出上限。",
-                        active_skill_names=active_skills,
+                        reason=decision.reason,
                         partial_text=text,
-                        mention_sender=mention_sender,
                         user_text=user_text,
                     )
-                if image_delivery_required and not any(
-                    artifact.kind == "image" for artifact in artifacts
-                ):
-                    if round_index >= self.config.max_tool_rounds:
-                        return await self._final_synthesis(
-                            messages=request_messages,
-                            memory_context=memory_context,
-                            artifacts=artifacts,
-                            trace=trace,
-                            reason=(
-                                "用户要求直接收到图片，但尚未取得图片 Artifact，"
-                                "且已达到工具轮次上限。"
-                            ),
-                            active_skill_names=active_skills,
-                            partial_text=text,
-                            mention_sender=mention_sender,
-                            user_text=user_text,
-                        )
-                    request_messages.extend(
-                        (
-                            {"role": "assistant", "content": text},
-                            {
-                                "role": "user",
-                                "content": (
-                                    "用户要求的是直接收到图片，不是图片链接。"
-                                    "当前尚无 image Artifact，请继续查找原图直链并"
-                                    "调用附件工具；不要用 URL 或说明替代图片交付。"
-                                ),
-                            },
-                        )
-                    )
-                    continue
-                if task.active and not task.finished:
-                    if round_index >= self.config.max_tool_rounds:
-                        return await self._final_synthesis(
-                            messages=request_messages,
-                            memory_context=memory_context,
-                            artifacts=artifacts,
-                            trace=trace,
-                            reason="任务完成门尚未通过，且已达到工具轮次上限。",
-                            active_skill_names=active_skills,
-                            partial_text=text,
-                            mention_sender=mention_sender,
-                            user_text=user_text,
-                        )
-                    request_messages.extend(
-                        (
-                            {"role": "assistant", "content": text},
-                            {
-                                "role": "user",
-                                "content": (
-                                    "任务完成门尚未通过。请根据真实工具结果调用 "
-                                    "complete_task，不要直接给出最终答复。"
-                                ),
-                            },
-                        )
+                if decision.action == "continue":
+                    self.controller.prepare_next_turn(
+                        state,
+                        assistant_content=text,
+                        continuation=decision.directive,
                     )
                     continue
                 return await self._response(
                     text=text,
-                    artifacts=tuple(artifacts),
-                    status=task.outcome,
-                    mention_sender=mention_sender,
+                    artifacts=tuple(state.artifacts),
+                    status=state.task.outcome,
+                    mention_sender=state.mention_sender,
                     title_hint=user_text,
+                    suppress_text=state.suppress_final_text,
                 )
-            if round_index >= self.config.max_tool_rounds:
-                return await self._final_synthesis(
-                    messages=request_messages,
-                    memory_context=memory_context,
-                    artifacts=artifacts,
-                    trace=trace,
-                    reason="已达到工具轮次上限，不能继续执行新工具。",
-                    active_skill_names=active_skills,
-                    partial_text=text,
-                    mention_sender=mention_sender,
-                    user_text=user_text,
-                )
-
-            request_messages.append(
+            state.messages.append(
                 {
                     "role": "assistant",
                     "content": [block.as_message_block() for block in response.content],
                 }
             )
-            results: dict[str, ToolResult] = {}
-            activation_blocks = [
-                block for block in tool_uses if str(block.name) == "activate_skill"
-            ]
-            for block in activation_blocks:
-                block_id = str(block.id)
-                requested = {
-                    str(name).strip()
-                    for name in dict(block.input).get("skills", [])
-                    if str(name).strip()
-                }
-                unavailable = requested - self.skills.names()
-                if unavailable or not 1 <= len(requested) <= 3:
-                    results[block_id] = ToolResult.error(
-                        "SKILL_NOT_AVAILABLE",
-                        "请求的 Skill 未启用，请从当前目录中选择一到三个。",
-                        retryable=True,
-                    )
-                    continue
-                result = await self._execute_tool(
-                    block=block,
-                    context=context,
-                    round_index=round_index,
-                    trace=trace,
-                )
-                results[block_id] = result
-                if not result.is_error:
-                    active_skills.update(requested)
-
-            plan_blocks = [
-                block for block in tool_uses if str(block.name) == "publish_plan"
-            ]
-            for block in plan_blocks:
-                block_id = str(block.id)
-                if plan_published:
-                    results[block_id] = ToolResult.error(
-                        "PLAN_ALREADY_PUBLISHED",
-                        "本次运行已经发布过计划，请继续执行任务。",
-                        retryable=False,
-                    )
-                    continue
-                result = await self._execute_tool(
-                    block=block,
-                    context=context,
-                    round_index=round_index,
-                    trace=trace,
-                )
-                results[block_id] = result
-                if not result.is_error:
-                    plan_published = True
-                    trace.plan_sent = True
-
-            other_blocks = [
-                block
-                for block in tool_uses
-                if str(block.name)
-                not in {"activate_skill", "publish_plan", "complete_task"}
-            ]
-            executable_blocks = []
-            for block in other_blocks:
-                skill_name = self.tools.skill_name(str(block.name))
-                if skill_name and skill_name not in active_skills:
-                    results[str(block.id)] = ToolResult.error(
-                        "SKILL_NOT_ACTIVE",
-                        "请先激活该工具所属的 Skill。",
-                        retryable=True,
-                        safe_details={"skill": skill_name},
-                    )
-                else:
-                    if self.tools.requires_completion(str(block.name)):
-                        was_active = task.active
-                        task.require(str(block.name))
-                        if not was_active:
-                            trace.events.append(
-                                RunEvent(
-                                    kind="task_started",
-                                    round_index=round_index,
-                                    tool_name=str(block.name),
-                                )
-                            )
-                    executable_blocks.append(block)
-            if all(
-                self.tools.is_read_only(str(block.name)) for block in executable_blocks
-            ):
-                other_results = await asyncio.gather(
-                    *(
-                        self._execute_tool(
-                            block=block,
-                            context=context,
-                            round_index=round_index,
-                            trace=trace,
-                        )
-                        for block in executable_blocks
-                    )
-                )
-            else:
-                other_results = []
-                for block in executable_blocks:
-                    other_results.append(
-                        await self._execute_tool(
-                            block=block,
-                            context=context,
-                            round_index=round_index,
-                            trace=trace,
-                        )
-                    )
-            results.update(
-                (str(block.id), result)
-                for block, result in zip(
-                    executable_blocks,
-                    other_results,
-                    strict=True,
-                )
+            results = await self._execute_tool_batch(
+                state=state,
+                tool_uses=tool_uses,
+                context=context,
+                round_index=round_index,
+                trace=trace,
             )
-            for block in executable_blocks:
-                task.record(str(block.name), results[str(block.id)])
-
-            completion_blocks = [
-                block for block in tool_uses if str(block.name) == "complete_task"
-            ]
-            for block in completion_blocks:
-                block_id = str(block.id)
-                if len(tool_uses) != len(completion_blocks):
-                    results[block_id] = ToolResult.error(
-                        "COMPLETION_MUST_BE_SEPARATE",
-                        "完成声明必须在观察全部工具结果后的下一轮单独提交。",
-                        retryable=True,
-                    )
-                    continue
-                gate_error = task.complete(dict(block.input))
-                if gate_error is not None:
-                    results[block_id] = gate_error
-                    continue
-                result = await self._execute_tool(
-                    block=block,
-                    context=context,
-                    round_index=round_index,
-                    trace=trace,
-                )
-                results[block_id] = result
-                if not result.is_error:
-                    trace.events.append(
-                        RunEvent(
-                            kind="task_completed",
-                            round_index=round_index,
-                        )
-                    )
-            tool_results = []
+            tool_results: list[dict[str, Any]] = []
             for block in tool_uses:
-                result = results[str(block.id)]
-                if result.is_error:
-                    signature = (
-                        str(block.name),
-                        result.error_code or result.content,
-                    )
-                    error_counts[signature] = error_counts.get(signature, 0) + 1
-                    if error_counts[signature] > 1:
-                        result = ToolResult.error(
-                            "REPEATED_TOOL_ERROR",
-                            "相同工具错误已经重复，请改用其他方法或尽力回答。",
-                            retryable=False,
-                            safe_details={"tool": str(block.name)},
-                        )
-                artifacts.extend(result.artifacts)
-                if result.mention_sender is not None:
-                    mention_sender = result.mention_sender
-                if str(block.name) in {
-                    "resolve_group_member",
-                    "search_group_messages",
-                }:
-                    read_only_only = True
+                result = self.controller.observe_result(
+                    state,
+                    block,
+                    results[str(block.id)],
+                )
                 tool_results.append(
                     {
                         "type": "tool_result",
@@ -453,8 +217,132 @@ class AgentLoop:
                         "is_error": result.is_error,
                     }
                 )
-            request_messages.append({"role": "user", "content": tool_results})
+            state.messages.append({"role": "user", "content": tool_results})
         raise AssertionError("agent loop exhausted without a terminal response")
+
+    async def _execute_tool_batch(
+        self,
+        *,
+        state: RunState,
+        tool_uses: list[Any],
+        context: ToolContext,
+        round_index: int,
+        trace: RunTrace,
+    ) -> dict[str, ToolResult]:
+        batch = self.controller.group_calls(tool_uses)
+        results: dict[str, ToolResult] = {}
+
+        for block in batch.activations:
+            requested = {
+                str(name).strip()
+                for name in dict(block.input).get("skills", [])
+                if str(name).strip()
+            }
+            if requested - self.skills.names() or not 1 <= len(requested) <= 3:
+                results[str(block.id)] = ToolResult.error(
+                    "SKILL_NOT_AVAILABLE",
+                    "请求的 Skill 未启用，请从当前目录中选择一到三个。",
+                    retryable=True,
+                )
+                continue
+            result = await self._execute_tool(
+                block=block,
+                context=context,
+                round_index=round_index,
+                trace=trace,
+            )
+            results[str(block.id)] = result
+            if not result.is_error:
+                state.active_skills.update(requested)
+
+        for block in batch.plans:
+            if state.plan_published:
+                results[str(block.id)] = ToolResult.error(
+                    "PLAN_ALREADY_PUBLISHED",
+                    "本次运行已经发布过计划，请继续执行任务。",
+                    retryable=False,
+                )
+                continue
+            result = await self._execute_tool(
+                block=block,
+                context=context,
+                round_index=round_index,
+                trace=trace,
+            )
+            results[str(block.id)] = result
+            if not result.is_error:
+                state.plan_published = True
+                trace.plan_sent = True
+
+        executable: list[Any] = []
+        for block in batch.regular:
+            was_active = state.task.active
+            error = self.controller.validate_regular_call(state, block)
+            if error is not None:
+                results[str(block.id)] = error
+                continue
+            if not was_active and state.task.active:
+                trace.events.append(
+                    RunEvent(
+                        kind="task_started",
+                        round_index=round_index,
+                        tool_name=str(block.name),
+                    )
+                )
+            executable.append(block)
+        if executable and all(
+            self.controller.execution_mode(block) == "parallel"
+            for block in executable
+        ):
+            executed = await asyncio.gather(
+                *(
+                    self._execute_tool(
+                        block=block,
+                        context=context,
+                        round_index=round_index,
+                        trace=trace,
+                    )
+                    for block in executable
+                )
+            )
+        else:
+            executed = []
+            for block in executable:
+                executed.append(
+                    await self._execute_tool(
+                        block=block,
+                        context=context,
+                        round_index=round_index,
+                        trace=trace,
+                    )
+                )
+        for block, result in zip(executable, executed, strict=True):
+            results[str(block.id)] = result
+
+        for block in batch.completions:
+            if len(tool_uses) != len(batch.completions):
+                results[str(block.id)] = ToolResult.error(
+                    "COMPLETION_MUST_BE_SEPARATE",
+                    "完成声明必须在观察全部工具结果后的下一轮单独提交。",
+                    retryable=True,
+                )
+                continue
+            gate_error = state.task.complete(dict(block.input))
+            if gate_error is not None:
+                results[str(block.id)] = gate_error
+                continue
+            result = await self._execute_tool(
+                block=block,
+                context=context,
+                round_index=round_index,
+                trace=trace,
+            )
+            results[str(block.id)] = result
+            if not result.is_error:
+                trace.events.append(
+                    RunEvent(kind="task_completed", round_index=round_index)
+                )
+        return results
 
     async def _execute_tool(
         self,
@@ -531,17 +419,14 @@ class AgentLoop:
     async def _final_synthesis(
         self,
         *,
-        messages: list[dict[str, Any]],
+        state: RunState,
         memory_context: str,
-        artifacts: list[Artifact],
         trace: RunTrace,
         reason: str,
-        active_skill_names: set[str],
         partial_text: str = "",
-        mention_sender: bool = False,
         user_text: str = "",
     ) -> AgentResponse:
-        synthesis_messages = list(messages)
+        synthesis_messages = list(state.messages)
         if partial_text:
             synthesis_messages.append({"role": "assistant", "content": partial_text})
         synthesis_messages.append(
@@ -559,7 +444,7 @@ class AgentLoop:
                 memory_context=memory_context,
                 read_only_only=True,
                 expose_tools=False,
-                active_skill_names=active_skill_names,
+                active_skill_names=state.active_skills,
                 run_id=trace.run_id,
                 round_index=trace.model_rounds,
                 system_extra=(
@@ -575,15 +460,16 @@ class AgentLoop:
         if not text:
             text = (
                 "已保留完成的结果，但部分步骤未完成。"
-                if artifacts
+                if state.artifacts
                 else "这次未能在限制内完成，请缩小范围后重试。"
             )
         return await self._response(
             text=text,
-            artifacts=tuple(artifacts),
+            artifacts=tuple(state.artifacts),
             status="partially_completed",
-            mention_sender=mention_sender,
+            mention_sender=state.mention_sender,
             title_hint=user_text,
+            suppress_text=state.suppress_final_text,
         )
 
     async def _response(
@@ -594,76 +480,20 @@ class AgentLoop:
         status: RunStatus,
         mention_sender: bool,
         title_hint: str,
+        suppress_text: bool,
     ) -> AgentResponse:
-        if (
-            self._requires_direct_image(title_hint)
-            and any(artifact.kind == "image" for artifact in artifacts)
-        ):
-            text = ""
-        else:
-            text = self._strip_final_urls(text)
-            if not text and not artifacts:
-                text = "无法直接回复 URL。"
-        if self.automatic_renderer is not None and not artifacts:
-            try:
-                rendered = await self.automatic_renderer.apply(
-                    text,
-                    title_hint=title_hint,
-                )
-            except Exception:
-                log.exception("automatic rich reply rendering failed")
-            else:
-                if rendered is not None:
-                    text, artifact = rendered
-                    artifacts = (artifact,)
-        return AgentResponse(
+        finalized = await self.reply_policy.finalize(
             text=text,
             artifacts=artifacts,
+            title_hint=title_hint,
+            suppress_text=suppress_text,
+        )
+        return AgentResponse(
+            text=finalized.text,
+            artifacts=finalized.artifacts,
             status=status,
             mention_sender=mention_sender,
         )
-
-    @staticmethod
-    def _requires_direct_image(text: str) -> bool:
-        normalized = text.casefold().strip()
-        if not normalized:
-            return False
-        chinese_request = re.search(
-            r"(?:找|搜|发|给我|来|要|整|弄|看)"
-            r".{0,24}(?:图片|照片|壁纸|头像|表情包|图)",
-            normalized,
-        )
-        english_request = re.search(
-            r"\b(?:find|send|show|get)\b.{0,40}"
-            r"\b(?:image|photo|picture|wallpaper)\b",
-            normalized,
-        )
-        return chinese_request is not None or english_request is not None
-
-    @staticmethod
-    def _strip_final_urls(text: str) -> str:
-        text = re.sub(
-            r"\[([^\]]+)\]\(https?://[^)\s]+\)",
-            r"\1",
-            text,
-            flags=re.IGNORECASE,
-        )
-        text = re.sub(
-            r"https?://[^\s<>'\"`]+",
-            "",
-            text,
-            flags=re.IGNORECASE,
-        )
-        text = re.sub(
-            r"\bwww\.[^\s<>'\"`]+",
-            "",
-            text,
-            flags=re.IGNORECASE,
-        )
-        text = re.sub(r"[ \t]+([，。！？；：,.!?;:])", r"\1", text)
-        text = re.sub(r"[ \t]{2,}", " ", text)
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        return text.strip()
 
     async def _request(
         self,

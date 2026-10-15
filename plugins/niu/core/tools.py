@@ -6,7 +6,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 
 log = logging.getLogger(__name__)
@@ -48,6 +48,7 @@ class ToolResult:
     images: tuple[ToolImage, ...] = ()
     error_code: str | None = None
     mention_sender: bool | None = None
+    suppress_final_text: bool = False
 
     def as_api_content(self) -> str | list[dict[str, Any]]:
         if not self.images:
@@ -94,6 +95,8 @@ class ToolResult:
 
 ToolHandler = Callable[[ToolContext, dict[str, Any]], Awaitable[ToolResult]]
 RunCleanupHandler = Callable[[ToolContext], Awaitable[None]]
+ToolControl = Literal["", "activate_skills", "publish_plan", "complete_task"]
+ToolExecution = Literal["auto", "parallel", "sequential", "barrier"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +110,9 @@ class Tool:
     skill_name: str = ""
     completion_required: bool = False
     task_only: bool = False
+    control: ToolControl = ""
+    execution: ToolExecution = "auto"
+    restricts_followup_to_read_only: bool = False
 
     def api_schema(self) -> dict[str, Any]:
         return {
@@ -114,6 +120,12 @@ class Tool:
             "description": self.description,
             "input_schema": self.input_schema,
         }
+
+    @property
+    def execution_mode(self) -> ToolExecution:
+        if self.execution != "auto":
+            return self.execution
+        return "parallel" if self.read_only else "sequential"
 
 
 @dataclass(slots=True)
@@ -159,6 +171,9 @@ class ToolRegistry:
     def skill_name(self, tool_name: str) -> str | None:
         tool = self._tools.get(tool_name)
         return tool.skill_name if tool is not None else None
+
+    def get(self, tool_name: str) -> Tool | None:
+        return self._tools.get(tool_name)
 
     def requires_completion(self, tool_name: str) -> bool:
         tool = self._tools.get(tool_name)
@@ -247,151 +262,3 @@ class ToolRegistry:
             raise RuntimeError(
                 f"{len(errors)} run cleanup handler(s) failed"
             ) from errors[0]
-
-
-class AgentRuntimeTools:
-    def __init__(self, skill_names: tuple[str, ...] = ()) -> None:
-        self.skill_names = skill_names
-
-    def register(self, registry: ToolRegistry) -> None:
-        skill_items: dict[str, Any] = {"type": "string"}
-        if self.skill_names:
-            skill_items["enum"] = list(self.skill_names)
-        registry.register(
-            Tool(
-                name="activate_skill",
-                description=(
-                    "Activate one to three relevant skills from the enabled skill "
-                    "catalog before using their specialized tools."
-                ),
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "skills": {
-                            "type": "array",
-                            "minItems": 1,
-                            "maxItems": 3,
-                            "items": skill_items,
-                        }
-                    },
-                    "required": ["skills"],
-                },
-                handler=self.activate_skill,
-            )
-        )
-        registry.register(
-            Tool(
-                name="publish_plan",
-                description=(
-                    "Publish one short user-visible plan before a genuinely long "
-                    "or multi-step task. Do not use for simple questions."
-                ),
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "goal": {"type": "string", "maxLength": 200},
-                        "steps": {
-                            "type": "array",
-                            "minItems": 2,
-                            "maxItems": 4,
-                            "items": {"type": "string", "maxLength": 150},
-                        },
-                        "deliverable": {"type": "string", "maxLength": 200},
-                    },
-                    "required": ["goal", "steps", "deliverable"],
-                },
-                handler=self.publish_plan,
-                read_only=False,
-                skill_name="agent-runtime",
-            )
-        )
-        registry.register(
-            Tool(
-                name="complete_task",
-                description=(
-                    "Pass the task finish gate before the final answer after a "
-                    "tool requiring completion evidence has run. Report partial "
-                    "completion honestly when blocked."
-                ),
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "status": {
-                            "enum": ["completed", "partially_completed"]
-                        },
-                        "summary": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 500,
-                        },
-                        "remaining": {
-                            "type": "array",
-                            "maxItems": 5,
-                            "items": {
-                                "type": "string",
-                                "minLength": 1,
-                                "maxLength": 200,
-                            },
-                        },
-                    },
-                    "required": ["status", "summary"],
-                },
-                handler=self.complete_task,
-                read_only=True,
-                skill_name="agent-runtime",
-                task_only=True,
-            )
-        )
-
-    async def activate_skill(
-        self,
-        context: ToolContext,
-        arguments: dict[str, Any],
-    ) -> ToolResult:
-        raw_skills = arguments["skills"]
-        if (
-            not isinstance(raw_skills, list)
-            or not 1 <= len(raw_skills) <= 3
-            or any(
-                not isinstance(skill, str) or not skill.strip()
-                for skill in raw_skills
-            )
-        ):
-            raise ValueError("invalid skills")
-        return ToolResult("SKILLS_ACTIVATED")
-
-    async def publish_plan(
-        self,
-        context: ToolContext,
-        arguments: dict[str, Any],
-    ) -> ToolResult:
-        goal = str(arguments["goal"]).strip()
-        deliverable = str(arguments["deliverable"]).strip()
-        raw_steps = arguments["steps"]
-        if not isinstance(raw_steps, list):
-            raise TypeError("steps must be a list")
-        steps = [str(step).strip() for step in raw_steps]
-        if (
-            context.send_group_text is None
-            or not 1 <= len(goal) <= 200
-            or not 2 <= len(steps) <= 4
-            or any(not step or len(step) > 150 for step in steps)
-            or not 1 <= len(deliverable) <= 200
-        ):
-            raise ValueError("invalid plan")
-        text = "\n".join(
-            (
-                f"计划：{goal}",
-                *(f"{index}. {step}" for index, step in enumerate(steps, 1)),
-                f"产出：{deliverable}",
-            )
-        )
-        await context.send_group_text(text)
-        return ToolResult("PLAN_PUBLISHED")
-
-    async def complete_task(
-        self,
-        context: ToolContext,
-        arguments: dict[str, Any],
-    ) -> ToolResult:
-        return ToolResult("TASK_COMPLETION_RECORDED")

@@ -45,7 +45,6 @@ class Config:
     model_api_key: str
     reasoning_effort: str
     max_tokens: int
-    max_tool_rounds: int
     max_concurrency: int
     history_turns: int
     history_max_chars: int
@@ -143,7 +142,6 @@ class Config:
             model_api_key=model_api_key,
             reasoning_effort=effort,
             max_tokens=_integer("NIU_MAX_TOKENS", 1024, 64, 8192),
-            max_tool_rounds=_integer("NIU_MAX_TOOL_ROUNDS", 4, 1, 12),
             max_concurrency=_integer("NIU_MAX_CONCURRENCY", 4, 1, 32),
             history_turns=_integer("NIU_HISTORY_TURNS", 8, 0, 50),
             history_max_chars=_integer("NIU_HISTORY_MAX_CHARS", 16000, 1000, 200000),

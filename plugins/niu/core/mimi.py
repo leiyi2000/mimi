@@ -92,6 +92,7 @@ class MimiCommandCatalog:
             ),
             instructions="\n".join(lines).strip(),
             allowed_tools=("run_mimi_command",),
+            default_active=True,
         )
 
 

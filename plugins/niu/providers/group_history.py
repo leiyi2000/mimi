@@ -92,6 +92,7 @@ class GroupHistoryTools:
                 },
                 handler=self.resolve,
                 skill_name="group-history",
+                restricts_followup_to_read_only=True,
             )
         )
         registry.register(
@@ -118,6 +119,7 @@ class GroupHistoryTools:
                 handler=self.search,
                 skill_name="group-history",
                 completion_required=True,
+                restricts_followup_to_read_only=True,
             )
         )
 

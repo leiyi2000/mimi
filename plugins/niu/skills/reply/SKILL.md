@@ -2,6 +2,19 @@
 name: reply
 description: 将生成的文本或公网 HTTPS 直链中的任意文件作为附件发送给当前群聊。
 allowed-tools: mention_current_sender attach_text_file attach_remote_file
+triggers:
+  - 发文件
+  - 作为附件
+  - 下载给我
+  - At 我
+  - 提醒我
+examples:
+  - 把结果作为文件发出来
+  - 下载原图并发到群里
+  - 回复时提醒我查看
+anti-triggers:
+  - 只需普通文字回答
+priority: 80
 ---
 
 # Reply Attachment

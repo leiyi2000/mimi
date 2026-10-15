@@ -388,7 +388,6 @@ Agent 指令都必须通过正常代码评审、测试和部署。
 | `NIU_MODEL_API_KEY` | 无 | 文本模型 Token |
 | `NIU_REASONING_EFFORT` | `low` | 思考深度 |
 | `NIU_MAX_TOKENS` | `1024` | 单轮输出限制 |
-| `NIU_MAX_TOOL_ROUNDS` | `4` | 工具轮数 |
 | `NIU_MAX_CONCURRENCY` | `4` | 模型并发 |
 | `NIU_HISTORY_TURNS` | `8` | 短期完整轮次 |
 | `NIU_HISTORY_MAX_CHARS` | `16000` | 短期历史字符预算 |

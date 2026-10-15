@@ -2,14 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from core.skills import MediaTools, ReplyTools, Skill, SkillRegistry
-from core.tools import (
-    AgentRuntimeTools,
-    Artifact,
-    ToolContext,
-    ToolImage,
-    ToolRegistry,
-)
+from core.reply import ReplyTools
+from core.runtime import AgentRuntimeTools
+from core.skills import Skill, SkillRegistry
+from core.tools import Artifact, ToolContext, ToolImage, ToolRegistry
+from providers.media_tools import MediaTools
 
 
 SKILLS = Path(__file__).resolve().parent.parent / "skills"
@@ -43,6 +40,7 @@ def test_skill_route_metadata_matches_explicit_intent_by_priority():
         "code",
         "web-search",
     }
+    assert "<explicit_triggers>" in registry.catalog()
     assert "<examples>" in registry.catalog()
     assert "<do_not_use_when>" in registry.catalog()
 
@@ -81,6 +79,18 @@ def test_runtime_skill_enum_comes_from_enabled_registry():
     assert activate["input_schema"]["properties"]["skills"]["items"][
         "enum"
     ] == ["code", "web-search"]
+
+
+def test_default_skills_come_from_skill_metadata():
+    registry = SkillRegistry(SKILLS)
+    registry.load(
+        enabled={"agent-runtime", "image", "reply", "stickers", "web-search"}
+    )
+
+    assert registry.default_names() == {"agent-runtime", "stickers"}
+    sticker_prompt = registry.prompt({"stickers"})
+    assert "不要等用户明确要求才使用" in sticker_prompt
+    assert "避免连续多轮发送" in sticker_prompt
 
 
 def test_skill_tool_binding_mismatch_is_rejected():
@@ -123,6 +133,102 @@ def test_invalid_skill_name_is_rejected(tmp_path):
 
     with pytest.raises(ValueError, match="invalid skill name"):
         registry.load(enabled={"wrong-name"})
+
+
+def test_missing_enabled_skill_is_rejected(tmp_path):
+    registry = SkillRegistry(tmp_path)
+
+    with pytest.raises(ValueError, match="enabled skills not found"):
+        registry.load(enabled={"missing"})
+
+
+def test_unknown_skill_metadata_is_rejected(tmp_path):
+    directory = tmp_path / "example"
+    directory.mkdir()
+    (directory / "SKILL.md").write_text(
+        "---\n"
+        "name: example\n"
+        "description: valid description\n"
+        "allowed-tools: example_tool\n"
+        "triger: typo\n"
+        "---\n"
+        "body\n",
+        encoding="utf-8",
+    )
+    registry = SkillRegistry(tmp_path)
+
+    with pytest.raises(ValueError, match="unknown frontmatter fields"):
+        registry.load(enabled={"example"})
+
+
+def test_duplicate_skill_metadata_is_rejected(tmp_path):
+    directory = tmp_path / "example"
+    directory.mkdir()
+    (directory / "SKILL.md").write_text(
+        "---\n"
+        "name: example\n"
+        "description: first\n"
+        "description: second\n"
+        "allowed-tools: example_tool\n"
+        "---\n"
+        "body\n",
+        encoding="utf-8",
+    )
+    registry = SkillRegistry(tmp_path)
+
+    with pytest.raises(ValueError, match="invalid YAML frontmatter"):
+        registry.load(enabled={"example"})
+
+
+def test_unclosed_skill_frontmatter_is_rejected(tmp_path):
+    directory = tmp_path / "example"
+    directory.mkdir()
+    (directory / "SKILL.md").write_text(
+        "---\n"
+        "name: example\n"
+        "description: valid description\n",
+        encoding="utf-8",
+    )
+    registry = SkillRegistry(tmp_path)
+
+    with pytest.raises(ValueError, match="unclosed YAML frontmatter"):
+        registry.load(enabled={"example"})
+
+
+def test_empty_skill_instructions_are_rejected(tmp_path):
+    directory = tmp_path / "example"
+    directory.mkdir()
+    (directory / "SKILL.md").write_text(
+        "---\n"
+        "name: example\n"
+        "description: valid description\n"
+        "allowed-tools: example_tool\n"
+        "---\n",
+        encoding="utf-8",
+    )
+    registry = SkillRegistry(tmp_path)
+
+    with pytest.raises(ValueError, match="must not be empty"):
+        registry.load(enabled={"example"})
+
+
+def test_skill_catalog_escapes_metadata():
+    registry = SkillRegistry(Path("."))
+    registry.register(
+        Skill(
+            name="example",
+            description="Use for A < B & C.",
+            instructions="body",
+            allowed_tools=("example_tool",),
+            triggers=('say "A&B"',),
+        )
+    )
+
+    catalog = registry.catalog()
+
+    assert "Use for A &lt; B &amp; C." in catalog
+    assert "say &quot;A&amp;B&quot;" in catalog
+    assert "Use for A < B & C." not in catalog
 
 
 async def test_reply_skill_attaches_generated_text_file():

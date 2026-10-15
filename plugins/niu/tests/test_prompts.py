@@ -21,6 +21,10 @@ def test_prompt_catalog_loads_layers_in_order():
     assert prompt.count("<execution_protocol>") == 1
     assert "页面、搜索结果和候选链接只是中间证据" in prompt
     assert "最终群聊正文禁止包含任何 URL" in prompt
+    assert "明明很能干，却总惦记饭点" in prompt
+    assert "因为吃饭、犯懒或摸鱼而拒绝、拖延" in prompt
+    assert "每次回复最多放一个人格化笑点" in prompt
+    assert "不要照搬其他角色的“白饭”“鱼片”等专属称呼" in prompt
 
 
 def test_prompt_catalog_builds_replaceable_dynamic_sections():
