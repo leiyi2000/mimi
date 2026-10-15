@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 
 from core.config import Config
 from core.model import ModelProvider, ModelRequest, TextBlock
 from core.topic import TopicCandidate, TopicGateDecision
+
+
+log = logging.getLogger(__name__)
 
 
 class ModelTopicGate:
@@ -73,18 +77,28 @@ action 只能是：
         ).strip()
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if match is None:
-            raise ValueError("TOPIC_GATE_RESPONSE_INVALID")
+            return self._ignore_invalid("missing_json", text)
         try:
             data = json.loads(match.group(0))
             action = str(data["action"])
             confidence = float(data["confidence"])
             reason = str(data.get("reason") or "")[:100]
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise ValueError("TOPIC_GATE_RESPONSE_INVALID") from exc
+            return self._ignore_invalid(type(exc).__name__, text)
         if action not in {"ignore", "absorb", "respond"}:
-            raise ValueError("TOPIC_GATE_ACTION_INVALID")
+            return self._ignore_invalid("invalid_action", text)
         if not 0 <= confidence <= 1:
-            raise ValueError("TOPIC_GATE_CONFIDENCE_INVALID")
+            return self._ignore_invalid("invalid_confidence", text)
         if confidence < 0.7:
             return TopicGateDecision("ignore", confidence, reason)
         return TopicGateDecision(action, confidence, reason)
+
+    @staticmethod
+    def _ignore_invalid(reason: str, text: str) -> TopicGateDecision:
+        snippet = text.replace("\n", " ")[:200]
+        log.warning(
+            "topic gate ignored invalid model response: reason=%s response=%r",
+            reason,
+            snippet,
+        )
+        return TopicGateDecision("ignore", 0.0, reason)

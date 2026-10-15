@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import io
 import json
 import mimetypes
 import shlex
@@ -11,6 +12,7 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 import httpx
+from PIL import Image
 
 from core.tools import Artifact, Tool, ToolContext, ToolRegistry, ToolResult
 
@@ -20,6 +22,30 @@ class SandboxFile:
     path: str
     mime_type: str
     data: bytes
+
+    def artifact(
+        self, *, title: str | None = None, send_as: str | None = None
+    ) -> Artifact:
+        title = title or self.path
+        mime_type = self.mime_type
+        try:
+            with Image.open(io.BytesIO(self.data)) as image:
+                mime_type = Image.MIME.get(image.format, mime_type)
+        except (OSError, ValueError):
+            if not mime_type or mime_type == "application/octet-stream":
+                mime_type = (
+                    mimetypes.guess_type(title)[0]
+                    or "application/octet-stream"
+                )
+        if send_as == "file":
+            kind = "file"
+        elif send_as == "image" or mime_type.startswith("image/"):
+            kind = "image"
+        elif send_as is None and mime_type.startswith("audio/"):
+            kind = "audio"
+        else:
+            kind = "file"
+        return Artifact(kind, self.data, mime_type, title)
 
 
 @dataclass(frozen=True, slots=True)
@@ -364,15 +390,7 @@ class SandboxTools:
                 retryable=exc.retryable,
             )
 
-        artifacts = tuple(
-            Artifact(
-                kind=self._artifact_kind(file.mime_type),
-                data=file.data,
-                mime_type=file.mime_type,
-                title=file.path,
-            )
-            for file in result.files
-        )
+        artifacts = tuple(file.artifact() for file in result.files)
         content = json.dumps(
             {
                 "exit_code": result.exit_code,
@@ -400,15 +418,12 @@ class SandboxTools:
             error_code="CODE_TIMEOUT" if result.timed_out else (
                 "CODE_EXIT_NONZERO" if failed else None
             ),
+            suppress_final_text=(
+                not failed
+                and bool(artifacts)
+                and all(artifact.kind == "image" for artifact in artifacts)
+            ),
         )
-
-    @staticmethod
-    def _artifact_kind(mime_type: str) -> str:
-        if mime_type.startswith("image/"):
-            return "image"
-        if mime_type.startswith("audio/"):
-            return "audio"
-        return "file"
 
 
 class RemoteFileTools:
@@ -518,29 +533,13 @@ class RemoteFileTools:
                 "文件未能完整导出，可能超过附件大小限制。",
                 retryable=False,
             )
-        downloaded = result.files[0]
-        mime_type = (
-            mimetypes.guess_type(filename)[0]
-            or downloaded.mime_type
-            or "application/octet-stream"
-        )
-        artifact_kind = (
-            "image"
-            if send_as == "image"
-            or (send_as == "auto" and mime_type.startswith("image/"))
-            else "file"
+        artifact = result.files[0].artifact(
+            title=filename, send_as=send_as
         )
         return ToolResult(
-            "IMAGE_ATTACHED" if artifact_kind == "image" else "FILE_ATTACHED",
-            artifacts=(
-                Artifact(
-                    kind=artifact_kind,
-                    data=downloaded.data,
-                    mime_type=mime_type,
-                    title=filename,
-                ),
-            ),
-            suppress_final_text=artifact_kind == "image",
+            "IMAGE_ATTACHED" if artifact.kind == "image" else "FILE_ATTACHED",
+            artifacts=(artifact,),
+            suppress_final_text=artifact.kind == "image",
         )
 
     @staticmethod
@@ -858,15 +857,7 @@ class WorkspaceTools:
             )
         except SandboxProviderError as exc:
             return self._provider_error(exc)
-        artifacts = tuple(
-            Artifact(
-                kind=SandboxTools._artifact_kind(file.mime_type),
-                data=file.data,
-                mime_type=file.mime_type,
-                title=file.path,
-            )
-            for file in files
-        )
+        artifacts = tuple(file.artifact() for file in files)
         return ToolResult(
             json.dumps(
                 {
@@ -883,6 +874,10 @@ class WorkspaceTools:
                 separators=(",", ":"),
             ),
             artifacts=artifacts,
+            suppress_final_text=(
+                bool(artifacts)
+                and all(artifact.kind == "image" for artifact in artifacts)
+            ),
         )
 
     async def cleanup(self, context: ToolContext) -> None:

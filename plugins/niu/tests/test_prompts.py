@@ -23,6 +23,10 @@ def test_prompt_catalog_loads_layers_in_order():
     assert "未激活不等于不可用" in prompt
     assert "触发词和示例只帮助理解边界" in prompt
     assert "页面、搜索结果和候选链接通常只是中间证据" in prompt
+    assert "不要等待用户点名" in prompt
+    assert "继续激活并串联合适的只读、代码、工作区或交付能力" in prompt
+    assert "Artifact 的交付形态以内容类型和用户目标为准" in prompt
+    assert "清单、脚本、缓存和候选副本属于中间产物" in prompt
     assert "超过配置阈值（默认 200 字）的最终正文自动渲染为图片" in prompt
     assert "最终群聊正文禁止包含任何 URL" in prompt
     assert "是否 At 由 reply Skill 按需决定" in prompt

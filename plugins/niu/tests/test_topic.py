@@ -68,12 +68,34 @@ async def test_topic_gate_downgrades_low_confidence_to_ignore(configured_env):
     assert decision.action == "ignore"
 
 
-async def test_topic_gate_rejects_invalid_response(configured_env):
+async def test_topic_gate_ignores_invalid_response(configured_env):
     gate = ModelTopicGate(
         provider=FakeProvider("not json"),
         config=Config.from_env(),
         semaphore=asyncio.Semaphore(1),
     )
 
-    with pytest.raises(ValueError, match="TOPIC_GATE_RESPONSE_INVALID"):
-        await gate.classify(candidate())
+    decision = await gate.classify(candidate())
+
+    assert decision.action == "ignore"
+    assert decision.confidence == 0.0
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"action":"chat","confidence":0.9}',
+        '{"action":"respond","confidence":2}',
+        '{"confidence":0.9}',
+    ],
+)
+async def test_topic_gate_ignores_invalid_fields(configured_env, text):
+    gate = ModelTopicGate(
+        provider=FakeProvider(text),
+        config=Config.from_env(),
+        semaphore=asyncio.Semaphore(1),
+    )
+
+    decision = await gate.classify(candidate())
+
+    assert decision.action == "ignore"

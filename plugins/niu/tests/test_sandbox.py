@@ -1,7 +1,10 @@
 import base64
+import io
 import json
 
 import httpx
+import pytest
+from PIL import Image
 
 from core.tools import ToolContext, ToolRegistry
 from providers.sandbox import (
@@ -93,6 +96,52 @@ async def test_sandbox_marks_nonzero_exit_as_error():
 
     assert result.is_error
     assert result.error_code == "CODE_EXIT_NONZERO"
+
+
+@pytest.mark.parametrize("delivery", ["code", "workspace", "remote", "file"])
+@pytest.mark.parametrize("format", ["PNG", "JPEG", "GIF", "WEBP"])
+async def test_image_bytes_are_delivered_as_images_with_generic_metadata(
+    delivery, format
+):
+    buffer = io.BytesIO()
+    Image.new("RGB", (4, 4), "blue").save(buffer, format=format)
+    data = buffer.getvalue()
+    image_file = SandboxFile("download", "application/octet-stream", data)
+
+    class FakeProvider:
+        async def execute(self, **kwargs):
+            return SandboxResult(0, "", "", False, False, (image_file,))
+
+        async def export_workspace(self, **kwargs):
+            return (image_file,)
+
+    context = ToolContext(1, 2, 3, "tester", run_id="c" * 32)
+    if delivery == "code":
+        result = await SandboxTools(FakeProvider(), max_timeout=30).execute(
+            context, {"script": "download"}
+        )
+    elif delivery == "workspace":
+        result = await WorkspaceTools(
+            FakeProvider(), max_timeout=30
+        ).export_workspace(context, {"paths": ["download"]})
+    else:
+        result = await RemoteFileTools(
+            FakeProvider(), max_timeout=30
+        ).attach_remote_file(
+            context,
+            {
+                "url": "https://cdn.example.com/download?id=1",
+                "send_as": "file" if delivery == "file" else "auto",
+            },
+        )
+
+    assert not result.is_error
+    assert result.artifacts[0].kind == (
+        "file" if delivery == "file" else "image"
+    )
+    assert result.artifacts[0].mime_type == Image.MIME[format]
+    assert result.artifacts[0].data == data
+    assert result.suppress_final_text == (delivery != "file")
 
 
 async def test_sandbox_surfaces_runner_rejection():
