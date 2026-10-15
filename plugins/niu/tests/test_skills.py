@@ -28,8 +28,11 @@ def test_web_search_skill_allows_search_tool():
 
     assert registry.allows("search_web")
     assert registry.allows("fetch_url")
-    assert "禁止出现在最终回复中" in registry.prompt()
-    assert "详情页 URL 当文件直链" in registry.prompt()
+    assert "关键事实缺少可靠依据" in registry.catalog()
+    assert "陌生名称对应的公开资料" in registry.catalog()
+    assert "已有知识可能过时、不确定、需要来源核验" in registry.prompt()
+    assert "不出现在最终回复中" in registry.prompt()
+    assert "区分检索到的事实、推断和仍未确认的信息" in registry.prompt()
 
 
 def test_skill_route_metadata_matches_explicit_intent_by_priority():
@@ -76,6 +79,10 @@ def test_runtime_skill_enum_comes_from_enabled_registry():
         for schema in tools.schemas()
         if schema["name"] == "activate_skill"
     )
+    assert "match by intended outcome rather than exact wording" in activate[
+        "description"
+    ]
+    assert "inactive catalog skill as unavailable" in activate["description"]
     assert activate["input_schema"]["properties"]["skills"]["items"][
         "enum"
     ] == ["code", "web-search"]

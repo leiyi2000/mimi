@@ -5,11 +5,8 @@ allowed-tools: generate_image
 triggers:
   - 生成图片
   - 画一张
-  - 画张
   - 做一张图
-  - 生成一张图
   - 参考这张图
-  - 照着这张图
   - 图生图
 examples:
   - 画一张南瓜猫

@@ -4,13 +4,8 @@ description: 在当前 Agent 运行期间持续读写隔离工作区、执行多
 allowed-tools: list_workspace read_workspace_file write_workspace_file run_shell export_workspace
 triggers:
   - 工作区
-  - 读取文件
-  - 写入文件
-  - 修改文件
   - 多步脚本
-  - run shell
-  - read file
-  - write file
+  - 分步修改文件
 examples:
   - 创建一个文件，运行脚本修改后再把结果发给我
   - 先读取生成的数据，再调整格式并导出

@@ -185,8 +185,12 @@ class AgentRuntimeTools:
             Tool(
                 name="activate_skill",
                 description=(
-                    "Activate one to three relevant skills from the enabled skill "
-                    "catalog before using their specialized tools."
+                    "Load the instructions and expose the tools for one to three "
+                    "capabilities listed in the skill catalog. Use this when the "
+                    "user's goal requires a catalog capability that is not active "
+                    "yet; match by intended outcome rather than exact wording. Do "
+                    "not use it for skills already active, and do not treat an "
+                    "inactive catalog skill as unavailable."
                 ),
                 input_schema={
                     "type": "object",

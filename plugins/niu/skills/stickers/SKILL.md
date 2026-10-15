@@ -5,7 +5,6 @@ allowed-tools: collect_current_image_as_sticker find_group_stickers send_group_s
 default-active: true
 triggers:
   - 收藏表情
-  - 收集表情
   - 发个表情
   - 找个表情包
   - 整理表情包

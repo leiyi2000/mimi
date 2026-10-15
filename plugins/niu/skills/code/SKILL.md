@@ -4,11 +4,8 @@ description: 在隔离 Linux 工作区执行 Bash、Python、pip、curl 和 Git�
 allowed-tools: code
 triggers:
   - 运行代码
-  - 执行代码
   - 执行 Python
   - 跑脚本
-  - Bash
-  - Shell
 examples:
   - 运行这段 Python
   - 把 JSON 转成 CSV

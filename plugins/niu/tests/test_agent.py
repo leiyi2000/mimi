@@ -89,7 +89,7 @@ async def test_plain_text_response(configured_env):
     assert "<capability_catalog>" in system
     assert "<memory_context>" in system
     assert "答案长度服从任务本身" in system
-    assert "较长且适合视觉阅读" in system
+    assert "回复形态随长度递进" in system
 
 
 async def test_debug_log_records_model_input_and_output_without_image_data(
