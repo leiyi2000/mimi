@@ -86,6 +86,7 @@ class AgentLoop:
         messages: list[dict[str, Any]],
         context: ToolContext,
         memory_context: str,
+        conversation_context: str = "",
         user_text: str = "",
     ) -> AgentResponse:
         trace = RunTrace(
@@ -99,6 +100,7 @@ class AgentLoop:
                     messages=messages,
                     context=run_context,
                     memory_context=memory_context,
+                    conversation_context=conversation_context,
                     user_text=user_text,
                     trace=trace,
                 )
@@ -127,6 +129,7 @@ class AgentLoop:
         messages: list[dict[str, Any]],
         context: ToolContext,
         memory_context: str,
+        conversation_context: str,
         user_text: str,
         trace: RunTrace,
     ) -> AgentResponse:
@@ -139,6 +142,7 @@ class AgentLoop:
             started_at = time.monotonic()
             response = await self._request(
                 memory_context=memory_context,
+                conversation_context=conversation_context,
                 run_id=trace.run_id,
                 round_index=round_index,
                 **self.controller.prepare_request(state),
@@ -169,6 +173,7 @@ class AgentLoop:
                     return await self._final_synthesis(
                         state=state,
                         memory_context=memory_context,
+                        conversation_context=conversation_context,
                         trace=trace,
                         reason=decision.reason,
                         partial_text=text,
@@ -421,6 +426,7 @@ class AgentLoop:
         *,
         state: RunState,
         memory_context: str,
+        conversation_context: str,
         trace: RunTrace,
         reason: str,
         partial_text: str = "",
@@ -442,6 +448,7 @@ class AgentLoop:
             response = await self._request(
                 messages=synthesis_messages,
                 memory_context=memory_context,
+                conversation_context=conversation_context,
                 read_only_only=True,
                 expose_tools=False,
                 active_skill_names=state.active_skills,
@@ -500,6 +507,7 @@ class AgentLoop:
         *,
         messages: list[dict[str, Any]],
         memory_context: str,
+        conversation_context: str = "",
         read_only_only: bool,
         expose_tools: bool = True,
         active_skill_names: set[str] | None = None,
@@ -524,6 +532,7 @@ class AgentLoop:
         system = self.prompts.build(
             capability_catalog=self.skills.catalog(),
             memory_context=memory_context,
+            conversation_context=conversation_context,
             active_skills=self.skills.prompt(active_skill_names),
             task_state=task.prompt() if task is not None else "",
             run_directive=system_extra,

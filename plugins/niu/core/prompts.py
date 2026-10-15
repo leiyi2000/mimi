@@ -45,6 +45,7 @@ class PromptCatalog:
         capability_catalog: str,
         memory_context: str,
         active_skills: str,
+        conversation_context: str = "",
         task_state: str = "",
         run_directive: str = "",
     ) -> str:
@@ -56,6 +57,11 @@ class PromptCatalog:
                 self.section(
                     "memory_context",
                     memory_context,
+                    untrusted=True,
+                ),
+                self.section(
+                    "conversation_context",
+                    conversation_context,
                     untrusted=True,
                 ),
                 self.section("active_skills", active_skills),

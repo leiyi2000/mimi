@@ -84,6 +84,44 @@ class QQMessageAdapter:
         )
 
     @staticmethod
+    def has_reply(
+        segments: Sequence[MessageSegment | UnknownMessageSegment],
+    ) -> bool:
+        return any(isinstance(segment, Reply) for segment in segments)
+
+    @staticmethod
+    def has_images(
+        segments: Sequence[MessageSegment | UnknownMessageSegment],
+    ) -> bool:
+        return any(isinstance(segment, Image) for segment in segments)
+
+    @classmethod
+    def has_emojis(
+        cls,
+        segments: Sequence[MessageSegment | UnknownMessageSegment],
+    ) -> bool:
+        return any(cls._emoji_description(segment) is not None for segment in segments)
+
+    @staticmethod
+    def only_mentions_others(
+        segments: Sequence[MessageSegment | UnknownMessageSegment],
+        bot_id: int,
+    ) -> bool:
+        mentions_other = any(
+            isinstance(segment, At) and segment.qq != str(bot_id)
+            for segment in segments
+        )
+        if not mentions_other or any(isinstance(segment, Reply) for segment in segments):
+            return False
+        return not any(
+            (
+                isinstance(segment, Text) and bool(segment.text.strip())
+            )
+            or isinstance(segment, (Face, Image, MFace))
+            for segment in segments
+        )
+
+    @staticmethod
     def reply_text(content: str) -> str:
         text = content.strip()
         if "```" in text:

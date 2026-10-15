@@ -84,6 +84,19 @@ async def test_parse_text_images_and_qq_emojis():
     assert downloader.validated == [downloader.media]
 
 
+def test_protocol_features_for_continuous_chat_routing():
+    only_other = (At(qq="123"), Text(text=" "))
+    with_reply = (Reply(id="88"), Text(text="补充"))
+    with_image = (Image(file="https://example.com/a.png"),)
+    with_emoji = (Face(id="14"),)
+
+    assert QQMessageAdapter.only_mentions_others(only_other, bot_id=456)
+    assert not QQMessageAdapter.only_mentions_others(with_reply, bot_id=456)
+    assert QQMessageAdapter.has_reply(with_reply)
+    assert QQMessageAdapter.has_images(with_image)
+    assert QQMessageAdapter.has_emojis(with_emoji)
+
+
 async def test_parse_consumes_recent_image_from_same_group_sender_once():
     downloader = FakeDownloader()
     adapter = QQMessageAdapter(

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from napcat import At, File, Image, MFace, Text
 
 from main import NiuApplication
+from core.conversation import TopicRoute
 from domain.message_content import InputImage, UserMessage
 from core.tools import Artifact, ToolImage
 
@@ -12,6 +13,10 @@ class FakeQQMessages:
     @staticmethod
     def text(segments):
         return "南瓜 生成报告"
+
+    @staticmethod
+    def mentions(segments, user_id):
+        return False
 
     async def parse(
         self, segments, *, trigger_prefix, group_id, bot_id, user_id, context
@@ -29,9 +34,15 @@ class FakeConversations:
         assert text == "南瓜 生成报告"
         return "生成报告"
 
+    @staticmethod
+    async def route(**kwargs):
+        assert kwargs["explicit"]
+        return TopicRoute("respond", explicit=True)
+
     async def accept(self, **kwargs):
         assert kwargs["user_id"] == 123
         assert kwargs["nickname"] == "群名片"
+        assert kwargs["route"] == TopicRoute("respond", explicit=True)
         await kwargs["send_text"]("处理完成")
         await kwargs["send_artifact"](
             Artifact("image", b"image", "image/png", "图片")
@@ -168,6 +179,11 @@ async def test_handle_accepts_direct_bot_mention():
         def parse_trigger(text):
             return None
 
+        @staticmethod
+        async def route(**kwargs):
+            assert kwargs["explicit"]
+            return TopicRoute("respond", explicit=True)
+
         async def accept(self, **kwargs):
             assert kwargs["message"].text == "你好"
             self.accepted = True
@@ -185,6 +201,98 @@ async def test_handle_accepts_direct_bot_mention():
     await application.handle(event, SimpleNamespace())
 
     assert application.conversations.accepted
+
+
+async def test_handle_accepts_continuous_topic_message_without_prefix():
+    class ContinuationMessages:
+        @staticmethod
+        def text(segments):
+            return "我补充一下，只在生产环境出现"
+
+        @staticmethod
+        def mentions(segments, user_id):
+            return False
+
+        async def parse(self, segments, **kwargs):
+            return UserMessage("我补充一下，只在生产环境出现")
+
+    class ContinuationConversations:
+        accepted = False
+
+        @staticmethod
+        def parse_trigger(text):
+            return None
+
+        @staticmethod
+        async def route(**kwargs):
+            assert not kwargs["explicit"]
+            return TopicRoute("respond", topic_id="topic-1")
+
+        async def accept(self, **kwargs):
+            assert kwargs["route"] == TopicRoute(
+                "respond", topic_id="topic-1"
+            )
+            self.accepted = True
+            return True
+
+    application = NiuApplication.__new__(NiuApplication)
+    application.config = SimpleNamespace(
+        stickers_enabled=False,
+        trigger_prefix="南瓜",
+    )
+    application.qq_messages = ContinuationMessages()
+    application.conversations = ContinuationConversations()
+    application.other_command_names = ()
+    event = FakeEvent()
+
+    await application.handle(event, SimpleNamespace())
+
+    assert application.conversations.accepted
+
+
+async def test_handle_closes_topic_without_calling_agent():
+    class StopMessages:
+        @staticmethod
+        def text(segments):
+            return "南瓜 结束对话"
+
+        @staticmethod
+        def mentions(segments, user_id):
+            return False
+
+    class StopConversations:
+        ended = False
+
+        @staticmethod
+        def parse_trigger(text):
+            return "结束对话"
+
+        @staticmethod
+        async def route(**kwargs):
+            return TopicRoute("stop", explicit=True)
+
+        def end_topic(self, group_id):
+            assert group_id == 2
+            self.ended = True
+            return True
+
+        async def accept(self, **kwargs):
+            raise AssertionError("stop message must not enter the agent")
+
+    application = NiuApplication.__new__(NiuApplication)
+    application.config = SimpleNamespace(
+        stickers_enabled=False,
+        trigger_prefix="南瓜",
+    )
+    application.qq_messages = StopMessages()
+    application.conversations = StopConversations()
+    application.other_command_names = ()
+    event = FakeEvent()
+
+    await application.handle(event, SimpleNamespace())
+
+    assert application.conversations.ended
+    assert event.sent == [Text(text="好，这段先聊到这。")]
 
 
 async def test_collect_mfaces_from_ordinary_group_messages():
@@ -244,6 +352,10 @@ async def test_handle_collects_mface_without_triggering_conversation():
         @staticmethod
         def parse_trigger(text):
             return None
+
+        @staticmethod
+        async def route(**kwargs):
+            return TopicRoute("ignore")
 
         async def accept(self, **kwargs):
             self.accepted = True
@@ -314,6 +426,10 @@ async def test_handle_collects_sticker_image_without_triggering_conversation():
         @staticmethod
         def parse_trigger(text):
             return None
+
+        @staticmethod
+        async def route(**kwargs):
+            return TopicRoute("ignore")
 
         async def accept(self, **kwargs):
             self.accepted = True

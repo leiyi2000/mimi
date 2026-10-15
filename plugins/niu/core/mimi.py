@@ -66,6 +66,37 @@ class MimiCommandCatalog:
                 commands.append(command)
         return tuple(commands)
 
+    def command_names(self) -> tuple[str, ...]:
+        names: set[str] = set()
+        for path in sorted(self.plugins_root.glob("*/commands.toml")):
+            with path.open("rb") as file:
+                payload = tomllib.load(file)
+            plugin = payload.get("plugin")
+            entries = payload.get("commands")
+            if not isinstance(plugin, dict) or not isinstance(entries, list):
+                raise MimiCommandError(f"invalid command manifest: {path}")
+            if str(plugin.get("key", "")).strip() == "chat":
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                name = str(entry.get("name", "")).strip()
+                if name:
+                    names.add(name)
+        return tuple(sorted(names, key=len, reverse=True))
+
+    @staticmethod
+    def matches_command(text: str, names: tuple[str, ...]) -> bool:
+        stripped = text.strip()
+        folded = stripped.casefold()
+        for name in names:
+            prefix = name.casefold()
+            if folded == prefix:
+                return True
+            if folded.startswith(prefix) and stripped[len(name) : len(name) + 1].isspace():
+                return True
+        return False
+
     @staticmethod
     def skill(commands: tuple[MimiCommand, ...]) -> Skill:
         lines = [

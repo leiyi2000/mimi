@@ -45,6 +45,7 @@ from providers.sticker_classifier import (
     StickerClassificationError,
     StickerClassifier,
 )
+from providers.topic import ModelTopicGate
 from providers.web_search import AnySearchProvider, WebSearchTools
 from adapters.napcat_context import NapCatContextAdapter
 from adapters.qq_message import InputMessageError, QQMessageAdapter
@@ -79,7 +80,9 @@ class NiuApplication:
 
         self.skills = SkillRegistry(skill_root)
         self.skills.load(enabled=enabled)
-        mimi_commands = MimiCommandCatalog(skill_root.parent.parent).load()
+        mimi_catalog = MimiCommandCatalog(skill_root.parent.parent)
+        mimi_commands = mimi_catalog.load()
+        self.other_command_names = mimi_catalog.command_names()
         self.skills.register(MimiCommandCatalog.skill(mimi_commands))
         self.tools = ToolRegistry()
         AgentRuntimeTools(self.skills.activation_names()).register(self.tools)
@@ -201,6 +204,11 @@ class NiuApplication:
             config=config,
             agent=self.agent,
             memory=self.memory,
+            topic_gate=ModelTopicGate(
+                provider=self.model_provider,
+                config=config,
+                semaphore=model_semaphore,
+            ),
         )
 
     async def start(self) -> None:
@@ -235,15 +243,45 @@ class NiuApplication:
         if self.config.stickers_enabled:
             await self._collect_stickers(event)
         text = self.qq_messages.text(event.message)
-        prompt = self.conversations.parse_trigger(text)
-        if prompt is None and self.qq_messages.mentions(event.message, event.self_id):
-            prompt = text.strip()
-        if prompt is None:
+        mentioned_bot = self.qq_messages.mentions(
+            event.message, event.self_id
+        )
+        explicit = (
+            self.conversations.parse_trigger(text) is not None
+            or mentioned_bot
+        )
+        nickname = event.sender.card or event.sender.nickname
+        route = await self.conversations.route(
+            group_id=int(event.group_id),
+            user_id=int(event.user_id),
+            nickname=nickname,
+            text=text,
+            explicit=explicit,
+            has_reply=QQMessageAdapter.has_reply(event.message),
+            only_mentions_others=QQMessageAdapter.only_mentions_others(
+                event.message, event.self_id
+            ),
+            other_command=(
+                not explicit
+                and MimiCommandCatalog.matches_command(
+                    text, getattr(self, "other_command_names", ())
+                )
+            ),
+            has_images=QQMessageAdapter.has_images(event.message),
+            has_emojis=QQMessageAdapter.has_emojis(event.message),
+        )
+        if route.action == "ignore":
             self.qq_messages.remember_recent_images(
                 event.message,
                 group_id=int(event.group_id),
                 user_id=int(event.user_id),
             )
+            return
+        if route.action == "stop":
+            self.conversations.end_topic(int(event.group_id))
+            if text.strip().rstrip("。.!！").endswith("不用回复了"):
+                return
+            await event.send_msg(Text(text="好，这段先聊到这。"))
             return
 
         async def send_text(
@@ -307,10 +345,11 @@ class NiuApplication:
             message_id=event.message_id,
             group_id=event.group_id,
             user_id=int(event.user_id),
-            nickname=event.sender.card or event.sender.nickname,
+            nickname=nickname,
             message=message,
             send_text=send_text,
             send_artifact=send_artifact,
+            route=route,
             send_group_text=send_group_text,
             is_admin=event.sender.role in {"owner", "admin"},
         )

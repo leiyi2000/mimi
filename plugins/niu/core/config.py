@@ -49,6 +49,8 @@ class Config:
     history_turns: int
     history_max_chars: int
     history_idle_ttl: int
+    continuous_chat_idle_ttl: int
+    continuous_chat_max_ttl: int
     group_queue_size: int
     message_cache_ttl: int
     max_input_chars: int
@@ -123,6 +125,17 @@ class Config:
         effort = os.getenv("NIU_REASONING_EFFORT", "low").strip().lower()
         if effort not in {"low", "medium", "high"}:
             raise ConfigError("NIU_REASONING_EFFORT must be low, medium, or high")
+        continuous_chat_idle_ttl = _integer(
+            "NIU_CONTINUOUS_CHAT_IDLE_TTL", 120, 30, 600
+        )
+        continuous_chat_max_ttl = _integer(
+            "NIU_CONTINUOUS_CHAT_MAX_TTL", 900, 120, 3600
+        )
+        if continuous_chat_max_ttl < continuous_chat_idle_ttl:
+            raise ConfigError(
+                "NIU_CONTINUOUS_CHAT_MAX_TTL must be greater than or equal to "
+                "NIU_CONTINUOUS_CHAT_IDLE_TTL"
+            )
 
         history_enabled = _boolean("NIU_GROUP_HISTORY_ENABLED", True)
         image_enabled = _boolean("NIU_IMAGE_ENABLED", True)
@@ -146,6 +159,8 @@ class Config:
             history_turns=_integer("NIU_HISTORY_TURNS", 8, 0, 50),
             history_max_chars=_integer("NIU_HISTORY_MAX_CHARS", 16000, 1000, 200000),
             history_idle_ttl=_integer("NIU_HISTORY_IDLE_TTL", 1800, 60, 86400),
+            continuous_chat_idle_ttl=continuous_chat_idle_ttl,
+            continuous_chat_max_ttl=continuous_chat_max_ttl,
             group_queue_size=_integer("NIU_GROUP_QUEUE_SIZE", 20, 1, 100),
             message_cache_ttl=_integer("NIU_MESSAGE_CACHE_TTL", 300, 30, 3600),
             max_input_chars=_integer("NIU_MAX_INPUT_CHARS", 2000, 1, 20000),

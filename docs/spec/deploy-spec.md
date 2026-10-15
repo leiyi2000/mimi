@@ -48,6 +48,8 @@ chmod 600 .env
 | `MINIMAX_API_BASE_URL` | 南瓜媒体能力需要 | `https://api.minimaxi.com/v1` | 图片和音乐原生端点 |
 | `MINIMAX_API_KEY` | 南瓜媒体能力需要 | `replace-with-minimax-token` | MiniMax 图片和音乐 Token |
 | `NIU_TRIGGER_PREFIX` | 否 | `南瓜` | 群消息文本触发前缀 |
+| `NIU_CONTINUOUS_CHAT_IDLE_TTL` | 否 | `120` | 群级连续话题空闲超时秒数，范围 `30..600` |
+| `NIU_CONTINUOUS_CHAT_MAX_TTL` | 否 | `900` | 群级连续话题最长存活秒数，范围 `120..3600`，不得小于空闲超时 |
 | `NIU_MAX_INPUT_IMAGES` | 否 | `4` | 单轮南瓜消息及群历史的图片上限 |
 | `NIU_INPUT_IMAGE_MAX_BYTES` | 否 | `5242880` | 单张消息或群历史图片字节上限 |
 | `NIU_STICKERS_ENABLED` | 否 | `true` | 启用群表情包收集、整理和回复 |

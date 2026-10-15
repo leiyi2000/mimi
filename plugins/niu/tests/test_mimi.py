@@ -25,6 +25,19 @@ def test_catalog_builds_skill_from_explicit_agent_commands():
     assert "Agent 自身没有同类 Provider" in skill.instructions
 
 
+def test_catalog_exposes_all_non_niu_commands_for_routing():
+    catalog = MimiCommandCatalog(PLUGINS_ROOT)
+    names = catalog.command_names()
+
+    assert "点歌" in names
+    assert "APEX绑定" in names
+    assert "LOL登录" in names
+    assert "南瓜" not in names
+    assert catalog.matches_command("点歌 测试", names)
+    assert catalog.matches_command("LOL登录", names)
+    assert not catalog.matches_command("点歌单", names)
+
+
 async def test_command_tool_sends_only_catalog_commands_to_current_group():
     commands = MimiCommandCatalog(PLUGINS_ROOT).load()
     registry = ToolRegistry()

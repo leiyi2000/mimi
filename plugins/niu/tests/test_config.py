@@ -16,6 +16,8 @@ def test_config_uses_new_model_and_prefix(configured_env):
     assert config.sandbox_token == "test-sandbox-token"
     assert config.sandbox_timeout == 30
     assert config.auto_render_min_chars == 200
+    assert config.continuous_chat_idle_ttl == 120
+    assert config.continuous_chat_max_ttl == 900
     assert not config.group_history_enabled
     assert config.image_enabled
     assert config.stickers_enabled
@@ -60,6 +62,17 @@ def test_config_rejects_unknown_model_provider(configured_env, monkeypatch):
     monkeypatch.setenv("NIU_MODEL_PROVIDER", "unknown")
 
     with pytest.raises(ConfigError, match="NIU_MODEL_PROVIDER"):
+        Config.from_env()
+
+
+def test_config_rejects_continuous_chat_max_ttl_below_idle(
+    configured_env,
+    monkeypatch,
+):
+    monkeypatch.setenv("NIU_CONTINUOUS_CHAT_IDLE_TTL", "300")
+    monkeypatch.setenv("NIU_CONTINUOUS_CHAT_MAX_TTL", "120")
+
+    with pytest.raises(ConfigError, match="MAX_TTL"):
         Config.from_env()
 
 

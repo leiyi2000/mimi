@@ -152,8 +152,12 @@ LOL 插件以 profile digest 校验 QIMEI36 缓存，缓存未命中时才调用
 
 ## Niu Agent 链路
 
-Niu 使用文本前缀或直接 @ 接收群消息。`ConversationStore` 为每个群维护有界 FIFO 队列
-和短期完整轮次，`AgentLoop` 只依赖 `ModelProvider`，通过内部统一的请求、内容块、工具
+Niu 使用文本前缀或直接 @ 开启群级连续话题。话题按群保存在进程内，具有独立
+`topic_id`、120 秒默认空闲超时和 900 秒默认最长存活时间；相关群友消息可在窗口内直接
+追问或补充。普通消息先经过 `ModelTopicGate` 的受限分类，分为忽略、静默吸收和立即回复；
+只 @ 其他成员、其他插件命令、低置信消息及无关聊天不进入 Agent 历史，也不刷新超时。
+`ConversationStore` 为每个群维护有界 FIFO 队列和按 `topic_id` 隔离的短期完整轮次，
+`AgentLoop` 只依赖 `ModelProvider`，通过内部统一的请求、内容块、工具
 调用、停止原因、用量和错误模型调用 MiniMax、OpenAI 或 Anthropic。厂商协议转换留在
 `providers/model.py`；MiniMax 和 Claude 使用 Anthropic 消息协议，GPT 使用 OpenAI Chat
 Completions 协议。模型请求只在调用期间占用全局并发槽位，工具执行和媒体发送不占用模型
@@ -171,8 +175,11 @@ Completions 协议。模型请求只在调用期间占用全局并发槽位，�
 `core/runtime.py`、`core/reply.py` 放在一起；图片和音乐 Tool 跟随外部媒体 Provider
 放在 `providers/media_tools.py`，因此 core 不反向导入 providers。
 `PromptCatalog` 严格加载安全、任务执行、群聊表达和 NapCat 协议四层固定提示词，并以
-独立 XML section 组装能力目录、低优先级记忆、激活 Skill、任务状态和当前运行指令；每轮
-只注入最新状态，记忆内容在进入 section 前转义。QQ 适配层通过当前 NapCat 连接解析成员 At
+独立 XML section 组装能力目录、低优先级记忆、上一话题检查点、激活 Skill、任务状态和
+当前运行指令；每轮只注入最新状态，记忆与话题检查点在进入 section 前转义。每次显式唤醒
+创建新 `topic_id`，紧邻的上一话题由目标、已确认事实、最新结果、未完成项和状态组成有界
+检查点；新请求仅在相关时使用，不直接读取旧话题原文或继承上一成员权限。QQ 适配层通过
+当前 NapCat 连接解析成员 At
 和引用消息，向领域层提供带成员 ID、昵称快照、来源标记的文本与图片；当前消息和引用消息
 共用输入图片限额。成员先单独发送普通图片、随后发送无图触发消息时，适配层按群和成员
 暂存并单次消费最近图片；过期图片不会进入模型。短期历史仍只保存摘要。
@@ -195,7 +202,8 @@ Tool；其他 Skill 由元数据中的高置信显式触发词预激活，或经
 启动时 `MimiCommandCatalog` 扫描 `plugins/*/commands.toml`，把显式设置
 `agent = true` 的非 Niu 指令生成内存 `mimi` Skill。`run_mimi_command` 只允许发送该
 目录中的完整指令到当前群，由对应插件进程处理；该 Skill 默认激活，避免模型因未路由
-Skill 而否认点歌等已有插件能力。绑定、登录和管理类指令不开放。
+Skill 而否认点歌等已有插件能力。绑定、登录和管理类指令不开放。连续话题路由同时读取
+所有非 Niu 命令名，避免活跃窗口截获本应由其他插件处理的消息。
 群级性格和筛选后的长期记忆由 `MemoryStore` 原子写入 Niu 数据卷，完整群聊不持久化。
 `StickerStore` 按群保存商城表情元数据、`sub_type=1`/`marketface` 图片和模型确认收藏的
 反应图；被动图片由受每日额度约束的后台多模态分类器补充检索元数据，不阻塞群消息。库满
