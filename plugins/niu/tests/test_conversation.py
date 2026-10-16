@@ -4,7 +4,7 @@ import re
 from core.agent import AgentResponse
 from core.config import Config
 from core.conversation import ConversationStore, TopicRoute
-from core.topic import TopicGateDecision
+from core.topic import TaskRelationDecision, TopicGateDecision
 from core.tools import Artifact
 from domain.memory import MemoryStore
 from domain.message_content import InputImage, QuotedMessage, UserMessage
@@ -30,6 +30,16 @@ class FakeTopicGate:
     async def classify(self, candidate):
         self.calls.append(candidate)
         return TopicGateDecision(next(self.actions), 0.95, "test")
+
+
+class FakeTaskRelationRouter:
+    def __init__(self, *decisions):
+        self.decisions = iter(decisions)
+        self.calls = []
+
+    async def classify_relation(self, candidate):
+        self.calls.append(candidate)
+        return next(self.decisions)
 
 
 async def test_prefix_matching(configured_env):
@@ -142,6 +152,8 @@ async def test_group_member_can_absorb_then_continue_active_topic(
 
     assert len(agent.calls) == 2
     assert "只在 Python 3.12 出现" in str(agent.calls[1]["messages"])
+    assert "任务目标：帮我排查报错" in agent.calls[1]["task_context"]
+    assert "用户 11：只在 Python 3.12 出现" in agent.calls[1]["task_context"]
     assert [call.nickname for call in gate.calls] == ["乙", "乙"]
     await store.close()
 
@@ -195,6 +207,102 @@ async def test_new_explicit_topic_receives_previous_checkpoint(configured_env):
         "<content>我补充一下，只在 3.12 出现</content>\n</group-message>"
     )
     assert "排查 Python 报错" not in str(agent.calls[1]["messages"])
+    task_states = store._groups[1].task_states
+    assert len(task_states) == 2
+    assert {
+        task.goal for task in task_states.values()
+    } == {
+        "排查 Python 报错",
+        "我补充一下，只在 3.12 出现",
+    }
+    await store.close()
+
+
+async def test_explicit_correction_stays_on_existing_task(configured_env):
+    config = Config.from_env()
+    agent = FakeAgent()
+    relation_router = FakeTaskRelationRouter(
+        TaskRelationDecision(
+            "correction",
+            0.96,
+            constraint_patch=("不要改生产配置",),
+            reason="同一排查目标",
+        )
+    )
+    store = ConversationStore(
+        config=config,
+        agent=agent,
+        memory=MemoryStore(
+            config.data_dir,
+            max_items=1,
+            max_chars=10,
+            notes_max_chars=10,
+        ),
+        task_router=relation_router,
+    )
+
+    async def send_text(text, mention_sender):
+        pass
+
+    async def send_artifact(artifact):
+        pass
+
+    first = await store.route(
+        group_id=1,
+        user_id=10,
+        nickname="甲",
+        text="南瓜 排查 Python 报错",
+        explicit=True,
+        has_reply=False,
+        only_mentions_others=False,
+        other_command=False,
+        has_images=False,
+        has_emojis=False,
+    )
+    assert await store.accept(
+        message_id=1,
+        group_id=1,
+        user_id=10,
+        nickname="甲",
+        message=UserMessage("排查 Python 报错"),
+        send_text=send_text,
+        send_artifact=send_artifact,
+        route=first,
+    )
+    await store._groups[1].queue.join()
+    topic_id = store._groups[1].active_topic.topic_id
+
+    correction = await store.route(
+        group_id=1,
+        user_id=10,
+        nickname="甲",
+        text="南瓜 不要改生产配置",
+        explicit=True,
+        has_reply=False,
+        only_mentions_others=False,
+        other_command=False,
+        has_images=False,
+        has_emojis=False,
+    )
+    assert correction.topic_id == topic_id
+    assert correction.task_relation == "correction"
+    assert await store.accept(
+        message_id=2,
+        group_id=1,
+        user_id=10,
+        nickname="甲",
+        message=UserMessage("不要改生产配置"),
+        send_text=send_text,
+        send_artifact=send_artifact,
+        route=correction,
+    )
+    await store._groups[1].queue.join()
+
+    assert len(store._groups[1].task_states) == 1
+    task = store._groups[1].task_states[topic_id]
+    assert task.goal == "排查 Python 报错"
+    assert task.constraints == ["不要改生产配置"]
+    assert len(relation_router.calls) == 1
     await store.close()
 
 

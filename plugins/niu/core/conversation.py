@@ -8,13 +8,20 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from core.agent import AgentError, AgentLoop
 from core.config import Config
 from core.run import RunStatus
-from core.topic import TopicCandidate, TopicGate
+from core.task_state import TaskState
+from core.topic import (
+    TaskRelation,
+    TaskRelationCandidate,
+    TaskRelationRouter,
+    TopicCandidate,
+    TopicGate,
+)
 from core.tools import Artifact, ToolContext, ToolImage
 from domain.memory import MemoryStore
 from domain.message_content import UserMessage
@@ -33,6 +40,8 @@ class TopicRoute:
     action: RouteAction
     explicit: bool = False
     topic_id: str | None = None
+    task_relation: TaskRelation | None = None
+    constraint_patch: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -87,6 +96,8 @@ class IncomingTurn:
     nickname_snapshot: str
     message: UserMessage
     received_at: float
+    task_relation: TaskRelation | None
+    constraint_patch: tuple[str, ...]
     send_text: SendText
     send_artifact: SendArtifact
     send_group_text: SendGroupText | None = None
@@ -112,6 +123,7 @@ class _GroupState:
     next_sequence: int = 1
     last_activity: float = 0.0
     active_topic: ActiveTopic | None = None
+    task_states: dict[str, TaskState] = field(default_factory=dict)
 
 
 class ConversationStore:
@@ -124,11 +136,13 @@ class ConversationStore:
         agent: AgentLoop,
         memory: MemoryStore,
         topic_gate: TopicGate | None = None,
+        task_router: TaskRelationRouter | None = None,
     ) -> None:
         self.config = config
         self.agent = agent
         self.memory = memory
         self.topic_gate = topic_gate
+        self.task_router = task_router
         self._groups: dict[int, _GroupState] = {}
         self._seen: dict[int, float] = {}
 
@@ -163,7 +177,82 @@ class ConversationStore:
         if explicit:
             if normalized in self._STOP_PHRASES:
                 return TopicRoute("stop", explicit=True)
-            return TopicRoute("respond", explicit=True)
+            if topic is None or self.task_router is None:
+                return TopicRoute(
+                    "respond",
+                    explicit=True,
+                    task_relation="new",
+                )
+            task = state.task_states.get(topic.topic_id) if state else None
+            if task is None:
+                return TopicRoute(
+                    "respond",
+                    explicit=True,
+                    task_relation="new",
+                )
+            try:
+                decision = await self.task_router.classify_relation(
+                    TaskRelationCandidate(
+                        task_context=task.prompt(),
+                        topic_summary=topic.summary,
+                        recent_turns=self._recent_topic_turns(
+                            state.history, topic.topic_id
+                        ),
+                        user_id=user_id,
+                        nickname=nickname[:100],
+                        text=normalized[:1000],
+                        has_images=has_images,
+                        has_emojis=has_emojis,
+                        seconds_since_activity=max(
+                            0.0,
+                            now
+                            - (
+                                topic.idle_expires_at
+                                - self.config.continuous_chat_idle_ttl
+                            ),
+                        ),
+                    )
+                )
+            except Exception:
+                log.exception(
+                    "task relation router failed: group_id=%s user_id=%s",
+                    group_id,
+                    user_id,
+                )
+                return TopicRoute(
+                    "respond",
+                    explicit=True,
+                    topic_id=topic.topic_id,
+                    task_relation="unclear",
+                )
+            if decision is None:
+                return TopicRoute(
+                    "respond",
+                    explicit=True,
+                    topic_id=topic.topic_id,
+                    task_relation="unclear",
+                )
+            same_task = decision.relation in {
+                "continue",
+                "correction",
+                "supplement",
+                "clarify",
+                "unclear",
+            }
+            return TopicRoute(
+                "absorb"
+                if decision.relation == "supplement"
+                else "respond",
+                explicit=True,
+                topic_id=topic.topic_id if same_task else None,
+                task_relation=decision.relation,
+                constraint_patch=(
+                    decision.constraint_patch
+                    if decision.relation
+                    in {"new", "continue", "correction", "supplement"}
+                    else ()
+                ),
+            )
         if topic is None or other_command or only_mentions_others:
             return TopicRoute("ignore")
         if has_reply:
@@ -243,19 +332,43 @@ class ConversationStore:
             topic_id = "legacy"
             previous_topic_id = None
             respond = True
+            task_relation = "new"
+            constraint_patch = ()
         elif route.explicit:
             previous = self._active_topic(state, now)
-            topic_id = uuid.uuid4().hex
-            previous_topic_id = previous.topic_id if previous is not None else None
-            state.active_topic = ActiveTopic(
-                topic_id=topic_id,
-                opened_at=now,
-                idle_expires_at=now + self.config.continuous_chat_idle_ttl,
-                hard_expires_at=now + self.config.continuous_chat_max_ttl,
-                summary=message.history_text()[:1000],
-                previous_topic_id=previous_topic_id,
+            same_task = (
+                previous is not None
+                and route.topic_id == previous.topic_id
+                and route.task_relation
+                in {
+                    "continue",
+                    "correction",
+                    "supplement",
+                    "clarify",
+                    "unclear",
+                }
             )
-            respond = True
+            if same_task:
+                topic_id = previous.topic_id
+                previous_topic_id = previous.previous_topic_id
+                previous.idle_expires_at = min(
+                    now + self.config.continuous_chat_idle_ttl,
+                    previous.hard_expires_at,
+                )
+            else:
+                topic_id = uuid.uuid4().hex
+                previous_topic_id = previous.topic_id if previous else None
+                state.active_topic = ActiveTopic(
+                    topic_id=topic_id,
+                    opened_at=now,
+                    idle_expires_at=now + self.config.continuous_chat_idle_ttl,
+                    hard_expires_at=now + self.config.continuous_chat_max_ttl,
+                    summary=message.history_text()[:1000],
+                    previous_topic_id=previous_topic_id,
+                )
+            respond = route.action == "respond"
+            task_relation = route.task_relation or "new"
+            constraint_patch = route.constraint_patch
         else:
             topic = self._active_topic(state, now)
             if (
@@ -274,6 +387,10 @@ class ConversationStore:
             topic.summary = self._merge_summary(
                 topic.summary, message.history_text()
             )
+            task_relation = route.task_relation or (
+                "continue" if respond else "supplement"
+            )
+            constraint_patch = route.constraint_patch
 
         turn = IncomingTurn(
             message_id=message_id,
@@ -286,11 +403,38 @@ class ConversationStore:
             nickname_snapshot=nickname[:100],
             message=message,
             received_at=now,
+            task_relation=task_relation,
+            constraint_patch=constraint_patch,
             send_text=send_text,
             send_artifact=send_artifact,
             send_group_text=send_group_text,
             is_admin=is_admin,
         )
+        task = state.task_states.get(topic_id)
+        if task is None:
+            task = TaskState.start(
+                group_id=group_id,
+                topic_id=topic_id,
+                user_id=user_id,
+                user_text=message.history_text(),
+            )
+            state.task_states[topic_id] = task
+            if len(state.task_states) > 8:
+                oldest_topic_id = next(iter(state.task_states))
+                if oldest_topic_id != topic_id:
+                    del state.task_states[oldest_topic_id]
+        else:
+            task.record_user_input(user_id, message.history_text())
+        if constraint_patch:
+            try:
+                task.add_constraints(constraint_patch)
+            except ValueError:
+                log.warning(
+                    "ignored invalid task constraint patch at enqueue: "
+                    "group_id=%s topic_id=%s",
+                    group_id,
+                    topic_id,
+                )
         state.next_sequence += 1
         state.queue.put_nowait(turn)
         self._seen[message_id] = now
@@ -313,6 +457,7 @@ class ConversationStore:
             and existing.queue.empty()
         ):
             existing.history.clear()
+            existing.task_states.clear()
         if existing is not None:
             existing.last_activity = now
             self._active_topic(existing, now)
@@ -356,6 +501,7 @@ class ConversationStore:
 
     async def _process(self, state: _GroupState, turn: IncomingTurn) -> None:
         current_text = turn.message.history_text()
+        task = self._task_for_turn(state, turn, current_text)
         if not turn.respond:
             self._append_history(
                 state,
@@ -388,25 +534,38 @@ class ConversationStore:
             send_group_text=turn.send_group_text,
         )
         messages = self._messages(state.history, turn)
-        checkpoint = self._checkpoint(
-            state.history, turn.previous_topic_id
-        )
+        checkpoint = self._checkpoint(state, turn.previous_topic_id)
         try:
             memory_context = await self.memory.system_context(
                 turn.group_id, turn.user_id, current_text
             )
+            task_prompt = task.prompt()
+            if turn.task_relation == "unclear":
+                task_prompt += (
+                    "\n本轮消息与当前任务的关系尚未确定。先向用户提出一个最小澄清问题，"
+                    "确认是否继续当前任务；在确认前不要调用业务工具。"
+                )
+            elif turn.task_relation == "clarify":
+                task_prompt += (
+                    "\n用户正在请求澄清当前任务。先给出最小澄清回复，"
+                    "不要调用业务工具或修改任务状态。"
+                )
             response = await self.agent.run(
                 messages=messages,
                 context=context,
                 memory_context=memory_context,
                 conversation_context=checkpoint.prompt() if checkpoint else "",
+                task_context=task_prompt,
                 user_text=current_text,
+                task_state=task,
             )
         except AgentError as exc:
+            task.record_failure(type(exc).__name__)
             await turn.send_text(exc.user_message, True)
             return
         except RuntimeError as exc:
             if str(exc) == "MEMORY_CORRUPTED":
+                task.record_failure("MEMORY_CORRUPTED")
                 await turn.send_text(
                     "记忆数据损坏，已隔离，请联系管理员。",
                     True,
@@ -424,6 +583,11 @@ class ConversationStore:
                     turn.message_id,
                     artifact.kind,
                 )
+                task.record_failure(
+                    "ARTIFACT_SEND_FAILED",
+                    tuple(artifact.kind for artifact in response.artifacts),
+                    run_id=response.trace.run_id if response.trace else "",
+                )
                 await self._safe_send(
                     turn.send_text,
                     "部分内容已生成，但附件发送失败，请稍后重试。",
@@ -432,6 +596,15 @@ class ConversationStore:
                 return
         if response.text.strip():
             await turn.send_text(response.text, response.mention_sender)
+        task.record_run(
+            response_text=response.text,
+            response_status=response.status,
+            trace=response.trace,
+            artifact_kinds=tuple(
+                artifact.kind for artifact in response.artifacts
+            ),
+            completion_gate_passed=response.task_completed,
+        )
         self._append_history(
             state,
             turn,
@@ -442,6 +615,38 @@ class ConversationStore:
         self._refresh_topic(
             state, turn.topic_id, current_text, response.text
         )
+
+    @staticmethod
+    def _task_for_turn(
+        state: _GroupState,
+        turn: IncomingTurn,
+        current_text: str,
+    ) -> TaskState:
+        task = state.task_states.get(turn.topic_id)
+        if task is None:
+            task = TaskState.start(
+                group_id=turn.group_id,
+                topic_id=turn.topic_id,
+                user_id=turn.user_id,
+                user_text=current_text,
+            )
+            state.task_states[turn.topic_id] = task
+            if len(state.task_states) > 8:
+                oldest_topic_id = next(iter(state.task_states))
+                if oldest_topic_id != turn.topic_id:
+                    del state.task_states[oldest_topic_id]
+        else:
+            task.record_user_input(turn.user_id, current_text)
+        if turn.constraint_patch:
+            try:
+                task.add_constraints(turn.constraint_patch)
+            except ValueError:
+                log.warning(
+                    "ignored invalid task constraint patch: group_id=%s topic_id=%s",
+                    turn.group_id,
+                    turn.topic_id,
+                )
+        return task
 
     def _append_history(
         self,
@@ -527,42 +732,24 @@ class ConversationStore:
 
     @staticmethod
     def _checkpoint(
-        history: deque[CompletedTurn],
+        state: _GroupState,
         previous_topic_id: str | None,
     ) -> PreviousTopicCheckpoint | None:
         if previous_topic_id is None:
             return None
-        turns = [
-            item for item in history if item.topic_id == previous_topic_id
-        ][-4:]
-        if not turns:
+        task = state.task_states.get(previous_topic_id)
+        if task is None:
             return None
-        goal = turns[0].user_text[:500]
-        facts = tuple(
-            item.user_text[:300]
-            for item in turns[1:]
-            if item.user_text.strip()
-        )
-        latest_result = next(
-            (
-                item.assistant_text[:800]
-                for item in reversed(turns)
-                if item.assistant_text.strip()
-            ),
-            "",
-        )
-        status = turns[-1].status
-        pending = (
-            ("继续核对上一话题中尚未确认的信息",)
-            if status != "completed"
-            else ()
-        )
         return PreviousTopicCheckpoint(
-            goal=goal,
-            confirmed_facts=facts,
-            latest_result=latest_result,
-            pending=pending,
-            status=status,
+            goal=task.goal,
+            confirmed_facts=tuple(
+                evidence.summary
+                for evidence in task.evidence
+                if evidence.success
+            )[-6:],
+            latest_result=task.last_result,
+            pending=tuple(task.pending_actions),
+            status=task.status,
         )
 
     @staticmethod

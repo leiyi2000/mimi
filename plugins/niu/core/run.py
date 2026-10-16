@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Literal
 
 
@@ -20,6 +20,9 @@ class RunEvent:
     tool_name: str | None = None
     duration_ms: int | None = None
     error_code: str | None = None
+    summary: str | None = None
+    source: str | None = None
+    artifact_kinds: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -50,6 +53,17 @@ class RunTrace:
 
     def as_log(self) -> dict[str, object]:
         finished_at = self.finished_at or time.monotonic()
+        event_logs = [
+            {
+                "kind": event.kind,
+                "round_index": event.round_index,
+                "tool_name": event.tool_name,
+                "duration_ms": event.duration_ms,
+                "error_code": event.error_code,
+                "artifact_kinds": event.artifact_kinds,
+            }
+            for event in self.events
+        ]
         return {
             "run_id": self.run_id,
             "group_id": self.group_id,
@@ -62,5 +76,5 @@ class RunTrace:
             "output_tokens": self.output_tokens,
             "plan_sent": self.plan_sent,
             "error_code": self.error_code,
-            "events": [asdict(event) for event in self.events],
+            "events": event_logs,
         }

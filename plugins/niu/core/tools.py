@@ -95,7 +95,13 @@ class ToolResult:
 
 ToolHandler = Callable[[ToolContext, dict[str, Any]], Awaitable[ToolResult]]
 RunCleanupHandler = Callable[[ToolContext], Awaitable[None]]
-ToolControl = Literal["", "activate_skills", "publish_plan", "complete_task"]
+ToolControl = Literal[
+    "",
+    "activate_skills",
+    "publish_plan",
+    "task_updates",
+    "complete_task",
+]
 ToolExecution = Literal["auto", "parallel", "sequential", "barrier"]
 
 
@@ -113,6 +119,7 @@ class Tool:
     control: ToolControl = ""
     execution: ToolExecution = "auto"
     restricts_followup_to_read_only: bool = False
+    persistent_task_only: bool = False
 
     def api_schema(self) -> dict[str, Any]:
         return {
@@ -150,12 +157,14 @@ class ToolRegistry:
         read_only_only: bool = False,
         skill_names: set[str] | None = None,
         task_active: bool = False,
+        task_state_available: bool = False,
     ) -> list[dict[str, Any]]:
         return [
             tool.api_schema()
             for tool in self._tools.values()
             if not read_only_only or tool.read_only
             if not tool.task_only or task_active
+            if not tool.persistent_task_only or task_state_available
             if skill_names is None
             or not tool.skill_name
             or tool.skill_name in skill_names

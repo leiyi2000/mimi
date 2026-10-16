@@ -13,6 +13,7 @@ from core.prompts import PromptCatalog
 from core.reply import ReplyTools
 from core.runtime import AgentRuntimeTools
 from core.skills import SkillRegistry
+from core.task_state import TaskState
 from core.tools import (
     Artifact,
     Tool,
@@ -435,6 +436,89 @@ async def test_complete_task_must_be_separate_from_external_tools(
     )
     assert json.loads(rejected["content"])["code"] == ("COMPLETION_MUST_BE_SEPARATE")
     assert response.text == "任务完成"
+
+
+async def test_persistent_task_patch_and_completion_gate(
+    configured_env,
+):
+    config = Config.from_env()
+    plugin_root = Path(__file__).resolve().parent.parent
+    skills = SkillRegistry(plugin_root / "skills")
+    skills.load(enabled={"agent-runtime"})
+    registry = ToolRegistry()
+    AgentRuntimeTools(skills.activation_names()).register(registry)
+
+    async def produce(context, arguments):
+        return ToolResult(
+            "PRODUCED",
+            artifacts=(Artifact("image", b"image", "image/png", "result"),),
+        )
+
+    registry.register(
+        Tool(
+            "produce",
+            "produce",
+            {"type": "object"},
+            produce,
+            completion_required=True,
+        )
+    )
+    update = ModelResponse(
+        content=(
+            ToolUseBlock(
+                id="update",
+                name="update_task",
+                input={
+                    "deliverable": "QQ 图片",
+                    "phase": "executing",
+                },
+            ),
+        )
+    )
+    completion = ModelResponse(
+        content=(
+            ToolUseBlock(
+                id="complete",
+                name="complete_task",
+                input={"status": "completed", "summary": "图片已生成"},
+            ),
+        )
+    )
+    client = FakeProvider(
+        [
+            update,
+            tool_response(name="produce"),
+            completion,
+            text_response("已发送图片"),
+        ]
+    )
+    task = TaskState.start(
+        group_id=1,
+        topic_id="topic-1",
+        user_id=2,
+        user_text="生成图片",
+    )
+    loop = AgentLoop(
+        model_provider=client,
+        config=config,
+        prompts=PromptCatalog.load(plugin_root / "prompts"),
+        skills=skills,
+        tools=registry,
+        model_semaphore=asyncio.Semaphore(1),
+    )
+
+    response = await loop.run(
+        messages=[{"role": "user", "content": "生成图片"}],
+        context=ToolContext(1, 2, 3, "tester"),
+        memory_context="none",
+        user_text="生成图片",
+        task_state=task,
+    )
+
+    assert response.task_completed
+    assert task.deliverable == "QQ 图片"
+    assert "update_task" in [tool["name"] for tool in client.requests[0].tools]
+    assert response.artifacts[0].kind == "image"
 
 
 async def test_multiple_tools_execute_in_parallel(configured_env):

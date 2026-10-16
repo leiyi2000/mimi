@@ -6,6 +6,7 @@ import binascii
 import itertools
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, replace
@@ -28,6 +29,7 @@ from core.run import RunEvent, RunStatus, RunTrace
 from core.runtime import RunController, RunState
 from core.skills import SkillRegistry
 from core.task import TaskFrame
+from core.task_state import TaskState
 from core.tools import Artifact, ToolContext, ToolRegistry, ToolResult
 
 
@@ -41,6 +43,7 @@ class AgentResponse:
     status: RunStatus = "completed"
     trace: RunTrace | None = None
     mention_sender: bool = False
+    task_completed: bool = False
 
 
 class AgentError(RuntimeError):
@@ -87,6 +90,8 @@ class AgentLoop:
         context: ToolContext,
         memory_context: str,
         conversation_context: str = "",
+        task_context: str = "",
+        task_state: TaskState | None = None,
         user_text: str = "",
     ) -> AgentResponse:
         trace = RunTrace(
@@ -101,6 +106,8 @@ class AgentLoop:
                     context=run_context,
                     memory_context=memory_context,
                     conversation_context=conversation_context,
+                    task_context=task_context,
+                    task_state=task_state,
                     user_text=user_text,
                     trace=trace,
                 )
@@ -116,6 +123,7 @@ class AgentLoop:
                 status=response.status,
                 trace=trace,
                 mention_sender=response.mention_sender,
+                task_completed=response.task_completed,
             )
         finally:
             try:
@@ -130,10 +138,16 @@ class AgentLoop:
         context: ToolContext,
         memory_context: str,
         conversation_context: str,
+        task_context: str,
+        task_state: TaskState | None,
         user_text: str,
         trace: RunTrace,
     ) -> AgentResponse:
-        state, preactivated_skills = self.controller.start(messages, user_text)
+        state, preactivated_skills = self.controller.start(
+            messages,
+            user_text,
+            task_state=task_state,
+        )
         trace.events.extend(
             RunEvent(kind="skill_preactivated", tool_name=name)
             for name in sorted(preactivated_skills)
@@ -143,6 +157,7 @@ class AgentLoop:
             response = await self._request(
                 memory_context=memory_context,
                 conversation_context=conversation_context,
+                task_context=task_context,
                 run_id=trace.run_id,
                 round_index=round_index,
                 **self.controller.prepare_request(state),
@@ -174,6 +189,7 @@ class AgentLoop:
                         state=state,
                         memory_context=memory_context,
                         conversation_context=conversation_context,
+                        task_context=task_context,
                         trace=trace,
                         reason=decision.reason,
                         partial_text=text,
@@ -193,6 +209,7 @@ class AgentLoop:
                     mention_sender=state.mention_sender,
                     title_hint=user_text,
                     suppress_text=state.suppress_final_text,
+                    task_completed=state.task.finished,
                 )
             state.messages.append(
                 {
@@ -279,6 +296,26 @@ class AgentLoop:
                 state.plan_published = True
                 trace.plan_sent = True
 
+        for block in batch.task_updates:
+            if len(tool_uses) != len(batch.task_updates):
+                results[str(block.id)] = ToolResult.error(
+                    "TASK_UPDATE_MUST_BE_SEPARATE",
+                    "任务状态更新必须单独提交，再执行其他动作。",
+                    retryable=True,
+                )
+                continue
+            result = self.controller.apply_task_patch(
+                state, dict(block.input)
+            )
+            if not result.is_error:
+                result = await self._execute_tool(
+                    block=block,
+                    context=context,
+                    round_index=round_index,
+                    trace=trace,
+                )
+            results[str(block.id)] = result
+
         executable: list[Any] = []
         for block in batch.regular:
             was_active = state.task.active
@@ -332,10 +369,13 @@ class AgentLoop:
                     retryable=True,
                 )
                 continue
-            gate_error = state.task.complete(dict(block.input))
+            gate_error = self.controller.validate_completion(
+                state, dict(block.input)
+            )
             if gate_error is not None:
                 results[str(block.id)] = gate_error
                 continue
+            state.task.complete(dict(block.input))
             result = await self._execute_tool(
                 block=block,
                 context=context,
@@ -382,6 +422,11 @@ class AgentLoop:
                 tool_name=str(block.name),
                 duration_ms=int((time.monotonic() - started_at) * 1000),
                 error_code=result.error_code,
+                summary=_tool_summary(result),
+                source=_tool_source(result),
+                artifact_kinds=tuple(
+                    artifact.kind for artifact in result.artifacts
+                ),
             )
         )
         if log.isEnabledFor(logging.DEBUG):
@@ -427,6 +472,7 @@ class AgentLoop:
         state: RunState,
         memory_context: str,
         conversation_context: str,
+        task_context: str,
         trace: RunTrace,
         reason: str,
         partial_text: str = "",
@@ -449,6 +495,7 @@ class AgentLoop:
                 messages=synthesis_messages,
                 memory_context=memory_context,
                 conversation_context=conversation_context,
+                task_context=task_context,
                 read_only_only=True,
                 expose_tools=False,
                 active_skill_names=state.active_skills,
@@ -477,6 +524,7 @@ class AgentLoop:
             mention_sender=state.mention_sender,
             title_hint=user_text,
             suppress_text=state.suppress_final_text,
+            task_completed=False,
         )
 
     async def _response(
@@ -488,6 +536,7 @@ class AgentLoop:
         mention_sender: bool,
         title_hint: str,
         suppress_text: bool,
+        task_completed: bool,
     ) -> AgentResponse:
         finalized = await self.reply_policy.finalize(
             text=text,
@@ -500,6 +549,7 @@ class AgentLoop:
             artifacts=finalized.artifacts,
             status=status,
             mention_sender=mention_sender,
+            task_completed=task_completed,
         )
 
     async def _request(
@@ -508,11 +558,13 @@ class AgentLoop:
         messages: list[dict[str, Any]],
         memory_context: str,
         conversation_context: str = "",
+        task_context: str = "",
         read_only_only: bool,
         expose_tools: bool = True,
         active_skill_names: set[str] | None = None,
         system_extra: str = "",
         task: TaskFrame | None = None,
+        task_state_available: bool = False,
         run_id: str = "",
         round_index: int = -1,
     ) -> ModelResponse:
@@ -525,6 +577,7 @@ class AgentLoop:
                     else self.skills.names()
                 ),
                 task_active=bool(task and task.active and not task.finished),
+                task_state_available=task_state_available,
             )
             if expose_tools
             else []
@@ -533,6 +586,7 @@ class AgentLoop:
             capability_catalog=self.skills.catalog(),
             memory_context=memory_context,
             conversation_context=conversation_context,
+            task_context=task_context,
             active_skills=self.skills.prompt(active_skill_names),
             task_state=task.prompt() if task is not None else "",
             run_directive=system_extra,
@@ -677,7 +731,6 @@ class AgentLoop:
         except (ValueError, binascii.Error):
             return "[base64 omitted: invalid data]"
         return f"[base64 omitted: {byte_count} bytes]"
-
     @staticmethod
     def _text(response: ModelResponse) -> str:
         parts = [
@@ -703,3 +756,17 @@ class AgentLoop:
                 separators=(",", ":"),
             ),
         )
+
+
+def _tool_summary(result: ToolResult) -> str:
+    content = " ".join(result.content.split())
+    if not content:
+        return "工具返回成功"
+    if result.is_error:
+        return f"工具返回错误：{content[:220]}"
+    return content[:240]
+
+
+def _tool_source(result: ToolResult) -> str:
+    match = re.search(r"https?://[^\s<>\"]+", result.content)
+    return match.group(0)[:500] if match else ""

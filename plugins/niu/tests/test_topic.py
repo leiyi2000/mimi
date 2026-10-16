@@ -4,7 +4,7 @@ import pytest
 
 from core.config import Config
 from core.model import ModelResponse, TextBlock
-from core.topic import TopicCandidate
+from core.topic import TaskRelationCandidate, TopicCandidate
 from providers.topic import ModelTopicGate
 
 
@@ -28,6 +28,20 @@ def candidate():
         user_id=2,
         nickname="乙",
         text="我补充一下，只在 3.12 出现",
+        has_images=False,
+        has_emojis=False,
+        seconds_since_activity=3,
+    )
+
+
+def relation_candidate():
+    return TaskRelationCandidate(
+        task_context="任务目标：排查 Python 报错",
+        topic_summary="正在排查 Python 报错",
+        recent_turns=("甲：只在生产环境出现",),
+        user_id=2,
+        nickname="乙",
+        text="南瓜，补充一个约束，不要改生产配置",
         has_images=False,
         has_emojis=False,
         seconds_since_activity=3,
@@ -99,3 +113,54 @@ async def test_topic_gate_ignores_invalid_fields(configured_env, text):
     decision = await gate.classify(candidate())
 
     assert decision.action == "ignore"
+
+
+async def test_task_relation_router_accepts_structured_patch(configured_env):
+    provider = FakeProvider(
+        '{"relation":"correction","confidence":0.94,'
+        '"constraint_patch":["不要改生产配置"],"reason":"补充限制"}'
+    )
+    gate = ModelTopicGate(
+        provider=provider,
+        config=Config.from_env(),
+        semaphore=asyncio.Semaphore(1),
+    )
+
+    decision = await gate.classify_relation(relation_candidate())
+
+    assert decision.relation == "correction"
+    assert decision.constraint_patch == ("不要改生产配置",)
+    assert provider.requests[0].tools == []
+    assert provider.requests[0].max_tokens == 256
+
+
+async def test_task_relation_router_downgrades_low_confidence_to_unclear(
+    configured_env,
+):
+    gate = ModelTopicGate(
+        provider=FakeProvider(
+            '{"relation":"continue","confidence":0.4,"reason":"不确定"}'
+        ),
+        config=Config.from_env(),
+        semaphore=asyncio.Semaphore(1),
+    )
+
+    decision = await gate.classify_relation(relation_candidate())
+
+    assert decision.relation == "unclear"
+
+
+async def test_task_relation_router_rejects_invalid_patch(configured_env):
+    gate = ModelTopicGate(
+        provider=FakeProvider(
+            '{"relation":"continue","confidence":0.9,'
+            '"constraint_patch":"不要猜"}'
+        ),
+        config=Config.from_env(),
+        semaphore=asyncio.Semaphore(1),
+    )
+
+    decision = await gate.classify_relation(relation_candidate())
+
+    assert decision.relation == "unclear"
+    assert decision.confidence == 0

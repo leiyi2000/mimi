@@ -5,6 +5,7 @@ from typing import Any, Literal
 
 from core.skills import SkillRegistry
 from core.task import TaskFrame
+from core.task_state import TaskPatch, TaskState
 from core.tools import (
     Artifact,
     Tool,
@@ -22,6 +23,7 @@ class RunState:
     messages: list[dict[str, Any]]
     active_skills: set[str]
     task: TaskFrame = field(default_factory=TaskFrame)
+    task_state: TaskState | None = None
     artifacts: list[Artifact] = field(default_factory=list)
     error_counts: dict[tuple[str, str], int] = field(default_factory=dict)
     read_only_only: bool = False
@@ -34,6 +36,7 @@ class RunState:
 class ToolBatch:
     activations: tuple[Any, ...]
     plans: tuple[Any, ...]
+    task_updates: tuple[Any, ...]
     regular: tuple[Any, ...]
     completions: tuple[Any, ...]
 
@@ -54,10 +57,11 @@ class RunController:
         self,
         messages: list[dict[str, Any]],
         user_text: str,
+        task_state: TaskState | None = None,
     ) -> tuple[RunState, set[str]]:
         preactivated = self.skills.match_explicit(user_text)
         active = self.skills.default_names() | preactivated
-        return RunState(list(messages), active), preactivated
+        return RunState(list(messages), active, task_state=task_state), preactivated
 
     def prepare_request(self, state: RunState) -> dict[str, Any]:
         return {
@@ -65,12 +69,14 @@ class RunController:
             "read_only_only": state.read_only_only,
             "active_skill_names": state.active_skills,
             "task": state.task,
+            "task_state_available": state.task_state is not None,
         }
 
     def group_calls(self, tool_uses: list[Any]) -> ToolBatch:
         groups: dict[str, list[Any]] = {
             "activate_skills": [],
             "publish_plan": [],
+            "task_updates": [],
             "regular": [],
             "complete_task": [],
         }
@@ -81,6 +87,7 @@ class RunController:
         return ToolBatch(
             tuple(groups["activate_skills"]),
             tuple(groups["publish_plan"]),
+            tuple(groups["task_updates"]),
             tuple(groups["regular"]),
             tuple(groups["complete_task"]),
         )
@@ -105,6 +112,58 @@ class RunController:
         if tool is not None and tool.completion_required:
             state.task.require(tool.name)
         return None
+
+    def apply_task_patch(
+        self,
+        state: RunState,
+        arguments: dict[str, Any],
+    ) -> ToolResult:
+        if state.task_state is None:
+            return ToolResult.error(
+                "TASK_STATE_UNAVAILABLE",
+                "当前运行没有可更新的任务状态。",
+                retryable=False,
+            )
+        try:
+            state.task_state.apply_patch(TaskPatch.from_mapping(arguments))
+        except ValueError as exc:
+            return ToolResult.error(
+                "INVALID_TASK_PATCH",
+                str(exc),
+                retryable=True,
+            )
+        return ToolResult("TASK_STATE_UPDATED")
+
+    def validate_completion(
+        self,
+        state: RunState,
+        arguments: dict[str, Any],
+    ) -> ToolResult | None:
+        error = state.task.validate_completion(arguments)
+        if error is not None:
+            return error
+        if state.task_state is None:
+            return None
+        status = arguments.get("status")
+        summary = arguments.get("summary")
+        remaining = arguments.get("remaining", [])
+        accepted_criteria = arguments.get("accepted_criteria", [])
+        if not isinstance(status, str) or not isinstance(summary, str):
+            return ToolResult.error(
+                "INVALID_COMPLETION",
+                "完成状态、摘要或未完成事项不符合约束。",
+                retryable=True,
+            )
+        return state.task_state.validate_completion(
+            status=status,
+            summary=summary,
+            remaining=remaining if isinstance(remaining, list) else [],
+            artifacts=state.artifacts,
+            required_tools=state.task.required_tools,
+            accepted_criteria=(
+                accepted_criteria if isinstance(accepted_criteria, list) else []
+            ),
+        )
 
     def execution_mode(self, block: Any) -> str:
         tool = self.tools.get(str(block.name))
@@ -239,6 +298,54 @@ class AgentRuntimeTools:
         )
         registry.register(
             Tool(
+                name="update_task",
+                description=(
+                    "Update the current Task contract after understanding a "
+                    "meaningful goal. Use only for explicit goal, deliverable, "
+                    "constraint, acceptance, phase, or next-action facts. "
+                    "This cannot mark a task complete or change ownership."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "goal": {"type": "string", "maxLength": 500},
+                        "deliverable": {"type": "string", "maxLength": 200},
+                        "constraints": {
+                            "type": "array",
+                            "maxItems": 8,
+                            "items": {"type": "string", "maxLength": 200},
+                        },
+                        "acceptance_criteria": {
+                            "type": "array",
+                            "maxItems": 8,
+                            "items": {"type": "string", "maxLength": 240},
+                        },
+                        "phase": {
+                            "enum": [
+                                "understanding",
+                                "executing",
+                                "verifying",
+                                "recoverable_failure",
+                            ]
+                        },
+                        "pending_actions": {
+                            "type": "array",
+                            "maxItems": 5,
+                            "items": {"type": "string", "maxLength": 200},
+                        },
+                    },
+                    "minProperties": 1,
+                },
+                handler=self.update_task,
+                read_only=True,
+                skill_name="agent-runtime",
+                persistent_task_only=True,
+                control="task_updates",
+                execution="barrier",
+            )
+        )
+        registry.register(
+            Tool(
                 name="complete_task",
                 description=(
                     "Pass the task finish gate before the final answer after a "
@@ -263,6 +370,15 @@ class AgentRuntimeTools:
                                 "type": "string",
                                 "minLength": 1,
                                 "maxLength": 200,
+                            },
+                        },
+                        "accepted_criteria": {
+                            "type": "array",
+                            "maxItems": 8,
+                            "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 240,
                             },
                         },
                     },
@@ -329,3 +445,10 @@ class AgentRuntimeTools:
         _arguments: dict[str, Any],
     ) -> ToolResult:
         return ToolResult("TASK_COMPLETION_RECORDED")
+
+    async def update_task(
+        self,
+        _context: ToolContext,
+        _arguments: dict[str, Any],
+    ) -> ToolResult:
+        return ToolResult("TASK_STATE_UPDATED")

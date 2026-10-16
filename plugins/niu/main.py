@@ -200,15 +200,17 @@ class NiuApplication:
                 min_chars=config.auto_render_min_chars
             ),
         )
+        topic_router = ModelTopicGate(
+            provider=self.model_provider,
+            config=config,
+            semaphore=model_semaphore,
+        )
         self.conversations = ConversationStore(
             config=config,
             agent=self.agent,
             memory=self.memory,
-            topic_gate=ModelTopicGate(
-                provider=self.model_provider,
-                config=config,
-                semaphore=model_semaphore,
-            ),
+            topic_gate=topic_router,
+            task_router=topic_router,
         )
 
     async def start(self) -> None:

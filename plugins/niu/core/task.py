@@ -28,6 +28,17 @@ class TaskFrame:
             self.required_tools[tool_name] = not result.is_error
 
     def complete(self, arguments: dict[str, Any]) -> ToolResult | None:
+        error = self.validate_completion(arguments)
+        if error is not None:
+            return error
+        self.finished = True
+        self.outcome = arguments["status"]
+        return None
+
+    def validate_completion(
+        self,
+        arguments: dict[str, Any],
+    ) -> ToolResult | None:
         if not self.active:
             return ToolResult.error(
                 "TASK_NOT_ACTIVE",
@@ -76,8 +87,6 @@ class TaskFrame:
                 "部分完成时必须列出至少一个未完成事项。",
                 retryable=True,
             )
-        self.finished = True
-        self.outcome = status
         return None
 
     def prompt(self) -> str:
