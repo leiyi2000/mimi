@@ -1,7 +1,7 @@
 ---
 name: agent-runtime
 description: 为耗时任务发布计划，并在证据型工具执行后显式通过任务完成门。
-allowed-tools: publish_plan complete_task
+allowed-tools: publish_plan update_task complete_task
 default-active: true
 ---
 
@@ -12,6 +12,10 @@ default-active: true
 工具参数或逐步进度。
 
 简单问答、单次查询和单工具即可完成的请求不要发布计划。同一次运行不得重复发布计划。
+
+对包含多个依赖步骤、明确交付物或持续执行意图的请求，可以先用 `update_task` 记录用户
+明确的目标、交付物、约束、验收条件和下一步动作。简单问答不要为了填状态而调用它；
+该工具不能修改任务归属、已验证证据或完成状态。
 
 当系统提示已进入任务完成门时，最终回答前必须调用 `complete_task`。只有真实成功的工具结果
 可以支持 `completed`；工具失败且没有替代路径，或仍有步骤无法完成时使用
