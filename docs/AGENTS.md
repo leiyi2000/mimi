@@ -24,7 +24,6 @@ README 是使用入口，AGENTS 是 Agent 路由入口；两者不复制详细�
 | 项目边界与实现硬约束 | `../AGENTS.md` |
 | 设计、编码、部署规范 | `spec/` |
 | 本地开发、排障、性能优化 | `develop-guide/` |
-| Niu Agent 体验评审与改进路线 | `feature/20261013-niu-agent-loop/experience-review.md` |
 | 某功能的 Git 演进与设计背景 | `feature/<date-slug>/design.md` |
 | 用户命令和插件用法 | `../README.md`、`../plugins/<name>/README.md` |
 

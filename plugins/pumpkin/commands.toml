@@ -1,0 +1,10 @@
+[plugin]
+key = "pumpkin"
+name = "南瓜"
+description = "AI"
+order = 60
+
+[[commands]]
+name = "闭嘴"
+usage = "闭嘴"
+description = "让南瓜在当前会话休眠，直到再次被明确唤醒"

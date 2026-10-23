@@ -8,7 +8,7 @@
 
 Mimi 是基于 NapCat/OneBot 的插件化 QQ 机器人。仓库采用单仓库、多进程结构：
 
-- Docker Compose 提供 NapCat、网易云 API、QIMEI、Mimi、Sandbox 和受控出口代理。
+- Docker Compose 提供 NapCat、网易云 API、QIMEI 和 Mimi。
 - Mimi 根进程扫描 `plugins/*`，校验命令清单并启动插件子进程。
 - 每个插件拥有独立 Python 环境、NapCat WebSocket、业务代码和运行数据。
 - 插件之间不直接导入；共享的是环境变量、NapCat 服务和明确的 HTTP 服务。
@@ -23,34 +23,28 @@ flowchart LR
         LOL[LOL]
         APEX[APEX]
         MUSIC[Music]
-        NIU[Niu]
         YASUO[Yasuo]
+        PUMPKIN[Pumpkin]
         PM --> HELP
         PM --> LOL
         PM --> APEX
         PM --> MUSIC
-        PM --> NIU
         PM --> YASUO
+        PM --> PUMPKIN
     end
 
     NC <--> HELP
     NC <--> LOL
     NC <--> APEX
     NC <--> MUSIC
-    NC <--> NIU
     NC <--> YASUO
+    NC <--> PUMPKIN
 
     LOL --> QIMEI[QIMEI Java 服务]
     LOL --> MLOL[掌盟 API]
     APEX --> EA[EA / ALS API]
     MUSIC --> NCM[ncm-api]
     MUSIC --> SIGN[音乐卡片签名服务]
-    NIU --> LLM[MiniMax / OpenAI / Anthropic]
-    NIU --> MM[MiniMax 图片与音乐 API]
-    NIU --> YAPI[Yasuo Agent 只读 API]
-    NIU --> SANDBOX[Sandbox]
-    SANDBOX --> PROXY[Squid 出口代理]
-    PROXY --> WEB[公网 80 / 443]
 ```
 
 ## 运行视图
@@ -61,8 +55,6 @@ flowchart LR
 | `ncm-api` | 网易云搜索、登录和账户接口 | 外部服务状态 |
 | `qimei` | 通过 Unidbg 与原生库注册 QIMEI36 | `data/qimei/` 仅缓存 APK |
 | `mimi` | 根进程与全部插件子进程 | 插件数据卷 |
-| `sandbox` | 降权执行 Niu 的一次性 Code Tool 与 Run 级 Workspace Tool | `/workspaces` tmpfs |
-| `sandbox-egress-proxy` | 代理 Sandbox 公网流量并拒绝私网目标 | 无持久状态 |
 
 `mimi/main.py` 创建 `PluginManager`。管理器扫描 `plugins/` 的直接子目录，读取
 `commands.toml` 并做全局、大小写不敏感的命令去重，然后在每个插件目录执行
@@ -83,14 +75,10 @@ plugins/
   lol/                    # 掌盟登录、战绩、详情与海报
   apex/                   # EA 战绩、绑定与地图轮换
   music/                  # 网易云搜索、登录与音乐卡片
-  niu/                    # 群聊 AI
   yasuo/                  # 群消息归档、撤回海报与查询 API
+  pumpkin/                # Harness Agent、TaskRuntime、Artifact 与能力插件
 qimei/
   src/main/java/qimei/    # QIMEI HTTP、APK 校验、Unidbg 调用
-sandbox/
-  app.py                  # 执行 API、限额、降权与产物收集
-  entrypoint.sh           # 任务 UID 出口防火墙
-  squid.conf              # 公网代理目标与端口策略
 ```
 
 复杂插件采用以下依赖方向：
@@ -118,13 +106,34 @@ main / config
 | QQ 登录与 NapCat 配置 | NapCat | `data/napcat/` |
 | APEX 用户绑定与资产 | APEX 插件 | `data/mini/plugins/apex/data/` |
 | LOL 端游/手游独立用户绑定、唯一共享会话、设备 profile、QIMEI36 | LOL 插件 | `data/mini/plugins/lol/data/` |
-| Niu 群级性格、长期记忆、群表情库与 Agent 审计 | Niu 插件 | `data/mini/plugins/niu/data/` |
 | 群消息、撤回事件与下载图片 | Yasuo 插件 | `data/mini/plugins/yasuo/data/` |
+| Agent Inbox、Session Event、任务、Artifact 与 Outbox | Pumpkin 插件 | `data/mini/plugins/pumpkin/data/` |
 | QIMEI 所需固定 APK | QIMEI 服务 | `data/qimei/` |
 | 网易云 Cookie | Music 插件 | 配置的数据文件 |
 
 运行数据不属于源码，不进入 Git 或 Docker 构建上下文。QIMEI 服务不拥有设备身份；
 LOL 插件以 profile digest 校验 QIMEI36 缓存，缓存未命中时才调用服务。
+
+Pumpkin 每个 QQ scope 只有一个长期 Conversation Agent。`runtime/ingress.py` 负责适配、
+归档、唤醒边界和写入持久化 Inbox；消息进入 Turn/Step AgentLoop 后由 Session Event
+恢复模型上下文。`runtime/task_runtime.py` 独立负责任务调度、并发、revision 过期、取消
+和恢复；Task Executor 只执行任务并登记 Artifact，不直接发送 QQ 消息。
+`runtime/artifacts.py` 负责 Artifact 校验、原子写入、来源指纹和纠正门禁。聊天回复和
+确定性任务终态通知统一写入 Outbox，再由唯一 sender 发送。任务状态迁移由确定性
+TaskService 校验。`persistence/` 只提供 Tortoise 模型、按领域 Repository 和
+`PumpkinStore` 组合入口，不承载恢复或验收策略；启动恢复由 `runtime/recovery.py`
+编排。基础设施由 `core/services.py` 的具名 Service Definition 通过插件管理器装配；
+`runtime/turn_policy.py` 按强类型 Inbox 来源生成每轮 capability/loadout，工具执行层
+再次校验 capability。`runtime/task_events.py` 是 TaskEvent 写入 Conversation Inbox
+的唯一发布者。
+
+Pumpkin 的有效数据路径只有：
+
+```text
+NapCat -> MessageIngress -> MessageArchive -> AgentInbox
+       -> AgentLoop -> SessionEvent -> Tool / TaskService / ArtifactService
+       -> Outbox -> NapCat
+```
 
 ## LOL 核心链路
 
@@ -150,93 +159,6 @@ LOL 插件以 profile digest 校验 QIMEI36 缓存，缓存未命中时才调用
 登录时，LOL 插件把设备原生配置发送给 QIMEI 服务。QIMEI 服务串行运行 ARM64
 `libqimei.so`，返回 QIMEI36；插件将其作为 `mcode` 完成掌盟登录并持久化票据。
 
-## Niu Agent 链路
-
-Niu 使用文本前缀或直接 @ 开启群级连续话题。话题按群保存在进程内，具有独立
-`topic_id`、120 秒默认空闲超时和 900 秒默认最长存活时间；相关群友消息可在窗口内直接
-追问或补充。普通消息先经过 `ModelTopicGate` 的受限分类，分为忽略、静默吸收和立即回复；
-只 @ 其他成员、其他插件命令、低置信消息及无关聊天不进入 Agent 历史，也不刷新超时。
-`ConversationStore` 为每个群维护有界 FIFO 队列和按 `topic_id` 隔离的短期完整轮次，
-`AgentLoop` 只依赖 `ModelProvider`，通过内部统一的请求、内容块、工具
-调用、停止原因、用量和错误模型调用 MiniMax、OpenAI 或 Anthropic。厂商协议转换留在
-`providers/model.py`；MiniMax 和 Claude 使用 Anthropic 消息协议，GPT 使用 OpenAI Chat
-Completions 协议。模型请求只在调用期间占用全局并发槽位，工具执行和媒体发送不占用模型
-槽位；单条业务失败不会重建 NapCat 连接。入口在任何解析前丢弃
-`user_id == self_id` 的事件，防止机器人回复或代发指令再次触发 Niu；其他群消息即使未
-触发对话，也会旁路收集 `MFace` 和 NapCat 明确标记为 `Image(sub_type=1)` 或
-`Image(file=marketface)` 的自定义表情。
-
-插件内部按职责分为 `adapters/` QQ 协议适配、`core/` Agent 编排与工具协议、
-`domain/` 领域模型和持久化，以及 `providers/` 外部服务适配；入口只负责装配这些边界。
-`core/skills.py` 只负责 Skill 元数据、加载、路由和 Tool 绑定校验；缺失 Skill、未知或
-非法 frontmatter、空正文及 Tool 声明不一致都会使启动失败。能力目录仅暴露经过 XML
-转义的适用场景、显式触发词、示例、排除项和 Tool 名称。`core/tools.py` 只定义 Tool
-协议、注册表和执行边界。Agent 控制 Tool 与回复 Tool 分别和对应的
-`core/runtime.py`、`core/reply.py` 放在一起；图片和音乐 Tool 跟随外部媒体 Provider
-放在 `providers/media_tools.py`，因此 core 不反向导入 providers。
-`PromptCatalog` 严格加载安全、任务执行、群聊表达和 NapCat 协议四层固定提示词，并以
-独立 XML section 组装能力目录、低优先级记忆、上一话题检查点、激活 Skill、任务状态和
-当前运行指令；每轮只注入最新状态，记忆与话题检查点在进入 section 前转义。显式唤醒先由
-受限模型判断 `TaskRelation`：继续、纠正和补充复用当前 Task，独立或无关请求创建新
-`topic_id`，低置信关系进入最小澄清路径。紧邻的上一话题由 TaskState 的目标、Evidence、
-最新结果、未完成项和状态组成有界检查点；不直接读取旧话题原文或继承上一成员权限。QQ 适配层通过
-当前 NapCat 连接解析成员 At
-和引用消息，向领域层提供带成员 ID、昵称快照、来源标记的文本与图片；当前消息和引用消息
-共用输入图片限额。成员先单独发送普通图片、随后发送无图触发消息时，适配层按群和成员
-暂存并单次消费最近图片；过期图片不会进入模型。短期历史仍只保存摘要。
-
-`ConversationStore` 按 `topic_id` 保存有界的 `TaskState`，记录任务目标、参与成员、待解析
-用户输入、工具 `Evidence`、阶段、最近结果、错误和待办动作。每次 `AgentLoop` 请求通过
-独立的 `<task_context>` section 注入对应任务；`update_task` 只能提交经过校验的目标、交付物、
-约束、验收条件、阶段和待办补丁，不能修改 owner、证据或完成状态。Run 完成后由 `RunTrace`
-的工具成功/失败事件和已发送 Artifact 回写状态；`complete_task` 还必须通过 TaskState 的
-交付物和验收条件门。不同 Topic 使用不同 TaskState，群历史过期时同步清理任务状态。该状态
-仍只存在进程内，不写入长期记忆或完整群聊归档。
-
-`AgentLoop` 只驱动模型轮次；`RunController` 在请求前准备动态上下文，在模型和工具结果
-写回后执行 finish-turn 判断，并在继续时注入下一轮指令。Skill 激活、计划和完成门通过
-Tool 的 control 元数据形成串行屏障；工具执行方式、低信任结果触发的只读降级和默认激活
-Skill 同样由 Tool/Skill 元数据声明，不在循环中匹配具体名称。
-
-Agent 首轮只注入 Skill Catalog、基础 `agent-runtime` Skill、动态 `mimi` Skill 和对应
-Tool；其他 Skill 由元数据中的高置信显式触发词预激活，或经 `activate_skill` 语义路由后
-再注入完整指令与 Schema。Web Search 通过本地
-`search_web` Tool 调用 AnySearch，并向模型保留结构化标题、完整 URL 和摘要。长任务可通过
-`publish_plan` 在其他 Tool 前发送一次用户可见计划。Agent Loop 不限制 Tool Use 次数，
-按模型自然停止或 Finish Gate 明确结束；输出截断时执行无 Tool 的最终总结。`RunTrace`
-只记录运行 ID、阶段、耗时、Token 和错误码，不记录群聊原文或图片。包含附件的结果先发送
-附件，全部成功后才发送完成文本。
-最终文本默认不 At；模型只有调用 `mention_current_sender` 后，发送层才 At 当前发言者。
-
-启动时 `MimiCommandCatalog` 扫描 `plugins/*/commands.toml`，把显式设置
-`agent = true` 的非 Niu 指令生成内存 `mimi` Skill。`run_mimi_command` 只允许发送该
-目录中的完整指令到当前群，由对应插件进程处理；该 Skill 默认激活，避免模型因未路由
-Skill 而否认点歌等已有插件能力。绑定、登录和管理类指令不开放。连续话题路由同时读取
-所有非 Niu 命令名，避免活跃窗口截获本应由其他插件处理的消息。
-群级性格和筛选后的长期记忆由 `MemoryStore` 原子写入 Niu 数据卷，完整群聊不持久化。
-`StickerStore` 按群保存商城表情元数据、`sub_type=1`/`marketface` 图片和模型确认收藏的
-反应图；被动图片由受每日额度约束的后台多模态分类器补充检索元数据，不阻塞群消息。库满
-后新表情随机替换一条旧记录并清理对应图片；照片、截图等普通群图片不被动保存。
-群历史只能通过 Yasuo 默认绑定在 `127.0.0.1:6273` 的 `/v1/agent/*` 只读接口访问，Niu
-不导入 Yasuo 代码或读取其数据库。该接口按请求级数量、单图大小和总大小限制返回已归档
-图片；Niu 将图片从响应 Base64 解码为模型原生多模态 Tool Result，历史文本中只保留索引
-和省略计数。Code Tool 通过 Bearer 认证调用独立 `sandbox`，每次执行创建一次性 tmpfs
-工作区；Workspace Skill 则以 Agent `run_id` 懒创建工作区，同一 Run 内可分步列举、
-读写、执行和显式导出文件，Agent 无论成功或异常退出都会请求删除。
-两种模式都使用独立数值 UID，可使用 Bash、Python、pip、curl 与 Git。Sandbox 不读取
-Mimi `.env`、不挂数据卷或 Docker Socket；文件 API 拒绝绝对路径、路径穿越和符号链接，
-任务 UID 在容器出口规则下只能连接 Squid，代理拒绝回环、私网、链路本地、CGNAT、元数据
-地址和非 80/443 端口。公开 HTTPS 文件直链同样通过 Sandbox 和 Squid 下载，可作为任意
-MIME 类型的 QQ 文件附件发送；常见图片类型默认直接作为 QQ 图片发送，也可显式保留文件
-形式。URL 仅在工具内部用于检索和下载，最终群聊正文由 Agent 发送边界统一移除 URL。
-执行受超时、内存、进程、文件、输出和并发限额约束。
-
-复杂回复通过结构化 Tool 输入和固定 HTML 模板，由 pytakumi 渲染为图片；模型不能注入
-HTML、样式、脚本、外链或宿主文件。自动渲染阈值可配置，纯图片回复不额外发送状态说明。
-图片交付意图由 `reply` Skill 和 NapCat 提示词约束；成功图片产物通过 Tool Result 显式
-声明隐藏最终正文，运行时不使用自然语言关键词推断用户意图。
-图片与音乐 Provider 通过独立环境变量启用。
-
 ## 架构不变量
 
 1. 业务功能留在 `plugins/<name>/`，根 `mimi/` 只做进程编排和基础连接。
@@ -247,4 +169,3 @@ HTML、样式、脚本、外链或宿主文件。自动渲染阈值可配置，�
 6. QIMEI 服务保持无设备状态，并保留在仓库根目录。
 7. Cookie、Token、OAuth 回调、设备标识和数据库不进入日志、文档或 Git。
 8. `data/` 与插件数据目录不进入 Docker 构建上下文。
-9. Sandbox 不接收 Mimi 业务密钥或持久数据，任务网络只能经过受控出口代理。

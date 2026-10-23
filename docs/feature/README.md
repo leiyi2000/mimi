@@ -14,11 +14,8 @@
 | [LOL 与命令目录](20260918-lol-plugin/design.md) | `c69bac9` | `c69bac9` | shipped |
 | [英雄联盟手游战绩适配](20260920-lol-mobile-game/design.md) | - | - | shipped |
 | [群撤回消息查询](20261012-recalled-message-query/design.md) | - | - | implemented |
-| [Niu 轻量 Agent Loop](20261013-niu-agent-loop/design.md) | - | - | shipped |
-| [Niu Sandbox](20261014-niu-sandbox/design.md) | - | - | implemented |
-| [Niu Agent 目标驱动优化](20261014-niu-agent-purpose/design.md) | - | - | implemented |
-| [Niu Model Provider](20261014-niu-model-provider/design.md) | - | - | implemented |
-| [Niu 群级连续对话](20261015-niu-continuous-chat/design.md) | - | - | implemented |
-| [Niu 任务连续性与上下文架构](20261016-niu-task-continuity/design.md) | - | - | implemented |
-
-早期 Music 与 Niu 的接入属于插件运行时演进，在第一篇档案中说明，不额外拆文档。
+| [Pumpkin AI 虚拟人物](20261020-pumpkin-agent/design.md) | - | - | implemented |
+| [Pumpkin 能力评测与自动优化](20261021-pumpkin-capability-evaluation/design.md) | - | - | draft |
+| [Pumpkin Harness Agent 重构](20261022-pumpkin-harness-agent/design.md) | - | - | implemented |
+| [Pumpkin 完全对齐 DeepSeek Harness](20261023-pumpkin-harness-alignment/design.md) | - | - | implemented |
+| [Pumpkin 按 Agent 角色配置思考深度](20261023-pumpkin-role-reasoning-effort/design.md) | - | - | implemented |

@@ -17,6 +17,7 @@ plugins/*/tests/output/
 .env.*
 !.env.example
 .trae/
+.trae-html-share-packages/
 .DS_Store
 DESIGN.md
 !docs/feature/**/design.md

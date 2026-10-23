@@ -12,7 +12,7 @@ commits:
 
 # 插件运行时
 
-> 建立基于 NapCat 的多进程插件框架，并让 Music、Niu 成为首批独立业务插件。
+> 建立基于 NapCat 的多进程插件框架，并让 Music 成为首批独立业务插件。
 
 ## 1. 背景与目标
 
@@ -27,7 +27,6 @@ commits:
 | 2026-04-10 | `33edfe9` | demo 演进为 Music |
 | 2026-04-14 | `29f7d07` | 增加 Dockerfile 和 Music 运行依赖 |
 | 2026-04-14 | `9b90be6` | Music 增加异常处理与自动重连 |
-| 2026-04-15 | `e52720a` | 移除已跟踪 `.env`，加入 Niu |
 
 ## 3. 代码实现流程
 
@@ -62,7 +61,7 @@ python -m mimi.main
 
 ### 3.3 消息进入业务插件
 
-根进程不转发 OneBot 事件。APEX、LOL、Music、Help、Niu 和 Yasuo 各自创建
+根进程不转发 OneBot 事件。APEX、LOL、Music、Help 和 Yasuo 各自创建
 `NapCatClient`，直接消费同一个 WebSocket 服务：
 
 ```text

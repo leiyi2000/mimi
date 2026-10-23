@@ -4,6 +4,7 @@ plugins/**/data
 plugins/**/data/*
 
 .git/
+.trae-html-share-packages/
 .venv/
 .env
 .env.*

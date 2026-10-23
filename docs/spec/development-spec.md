@@ -23,7 +23,7 @@ updated: 2026-09-18
 - Python 模块使用 snake_case，文档路径使用 kebab-case。
 - 业务代码留在所属插件；插件入口不堆积领域转换和渲染细节。
 - 用户可见文案使用中文。
-- `commands.toml` 的 `name` 是真实触发词，`usage` 只用于展示。只有适合由 Niu 通过群消息
+- `commands.toml` 的 `name` 是真实触发词，`usage` 只用于展示。只有适合由自动化调用方
   代为调用的无身份副作用指令才设置 `agent = true`；该字段缺失时默认不开放。
 
 ## 3. 测试

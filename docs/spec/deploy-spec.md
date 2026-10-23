@@ -40,28 +40,6 @@ chmod 600 .env
 | `MUSIC_SIGN_API` | 音乐卡片需要 | `https://apii.xianyuw.cn/api/v1/qq-musicArk` | QQ 音乐卡片签名接口 |
 | `MUSIC_SIGN_KEY` | 音乐卡片需要 | `replace-with-xianyuw-token` | 签名接口 Token |
 | `NETEASE_COOKIE` | 否 | 不配置 | 仅用于部署时预置网易云登录态 |
-| `NIU_MODEL_PROVIDER` | 否 | `minimax` | 文本 Provider：`minimax`、`openai` 或 `anthropic` |
-| `NIU_MODEL` | 否 | 随 Provider 变化 | 文本模型名称 |
-| `NIU_MODEL_BASE_URL` | 否 | 随 Provider 变化 | 文本模型 API 地址 |
-| `NIU_MODEL_API_KEY` | 南瓜需要 | `replace-with-model-token` | 文本模型 Token |
-| `ANYSEARCH_API_KEY` | 南瓜需要 | 不配置 | AnySearch API Key |
-| `MINIMAX_API_BASE_URL` | 南瓜媒体能力需要 | `https://api.minimaxi.com/v1` | 图片和音乐原生端点 |
-| `MINIMAX_API_KEY` | 南瓜媒体能力需要 | `replace-with-minimax-token` | MiniMax 图片和音乐 Token |
-| `NIU_TRIGGER_PREFIX` | 否 | `南瓜` | 群消息文本触发前缀 |
-| `NIU_CONTINUOUS_CHAT_IDLE_TTL` | 否 | `120` | 群级连续话题空闲超时秒数，范围 `30..600` |
-| `NIU_CONTINUOUS_CHAT_MAX_TTL` | 否 | `900` | 群级连续话题最长存活秒数，范围 `120..3600`，不得小于空闲超时 |
-| `NIU_MAX_INPUT_IMAGES` | 否 | `4` | 单轮南瓜消息及群历史的图片上限 |
-| `NIU_INPUT_IMAGE_MAX_BYTES` | 否 | `5242880` | 单张消息或群历史图片字节上限 |
-| `NIU_STICKERS_ENABLED` | 否 | `true` | 启用群表情包收集、整理和回复 |
-| `NIU_STICKER_MAX_ITEMS` | 否 | `200` | 每群表情包条目上限 |
-| `NIU_STICKER_DAILY_UPDATES` | 否 | `30` | 每群每日表情包变更次数上限 |
-| `NIU_STICKER_DAILY_CLASSIFICATIONS` | 否 | `5` | 每群每日后台 AI 分类次数上限 |
-| `NIU_GROUP_HISTORY_ENABLED` | 否 | `true` | 是否启用当前群历史查询 |
-| `YASUO_API_URL` | 群历史需要 | `http://127.0.0.1:6273` | Yasuo 内部 API |
-| `SANDBOX_TOKEN` | 南瓜需要 | 随机高熵字符串 | Mimi 与 Sandbox 间的 Bearer Token |
-| `NIU_SANDBOX_TIMEOUT` | 否 | `30` | 单次代码执行秒数，上限 60 |
-| `NIU_IMAGE_ENABLED` | 否 | `true` | 图片 Skill；当前账号已完成付费权限验收 |
-| `NIU_MUSIC_ENABLED` | 否 | `false` | 完成音乐 API 权限验收后开启 |
 | `MLOL_HOST` | 否 | `mlol.qt.qq.com` | 掌盟接口主机 |
 | `QIMEI_URL` | LOL 登录需要 | `http://qimei:8080` | QIMEI36 服务地址 |
 
@@ -70,11 +48,6 @@ chmod 600 .env
 使用内置默认值，位于各自 `data/` 目录，通常不需要写入环境配置。该 `data/` 目录必须
 持久且可写：设备档案漂移会使 QIMEI36 缓存失效并重新注册，等价于更换设备，可能触发掌盟
 风控。设备档案的生成方式见 [LOL 插件说明](../../plugins/lol/README.md#设备档案)。
-
-MiniMax 默认模式兼容旧的 `MINIMAX_MODEL`、`ANTHROPIC_BASE_URL` 和
-`ANTHROPIC_API_KEY`。新部署统一使用 `NIU_MODEL_*`；使用 GPT 时将 Provider 设为
-`openai`，使用 Claude 时设为 `anthropic`。图片和音乐始终走 MiniMax 原生端点，因此在
-文本模型切换到 GPT 或 Claude 后，启用媒体 Skill 仍需单独配置 `MINIMAX_API_KEY`。
 
 ### 1.3 外部凭据
 
@@ -112,23 +85,18 @@ Token，默认请求地址已写入 `MUSIC_SIGN_API`。
 - Secret 只在运行时注入，不写入文档、日志或测试。
 - 新环境变量必须在读取点提供明确默认值或启动失败信息。
 - 管理员列表使用 `ADMINS`，权限仍由每个管理命令在处理器内校验。
-- `sandbox` 不读取 `.env`，只注入 `SANDBOX_TOKEN`；禁止挂载 Mimi 数据卷、
-  Docker Socket 或宿主目录。
-- Sandbox 与 Mimi 只共享内部控制网络。任务 UID 的出口只能到 Squid，代理拒绝回环、
-  RFC1918、链路本地、CGNAT、云元数据和非 80/443 端口。
 
 ## 2. 构建
 
 - `.dockerignore` 排除 `data/`、插件数据、`.git/`、虚拟环境和工具缓存。
 - QIMEI 保持独立多阶段 Maven/JRE 镜像。
 - Mimi 镜像必须同步每个插件的独立依赖。
-- Sandbox 使用只读根文件系统和 tmpfs 工作区；Squid 是唯一公网出口。
 - 只有排查缓存问题时使用 `--no-cache`。
 - 构建前后关注上下文大小和镜像体积，禁止把数据库、图片缓存或 APK 放入 Mimi 镜像。
 
 ## 3. 数据
 
-- NapCat、APEX、LOL、Niu、Yasuo 和 QIMEI 使用显式数据卷。
+- NapCat、APEX、LOL、Yasuo 和 QIMEI 使用显式数据卷。
 - 数据卷路径是运行契约，变更前提供迁移和回滚方案。
 - 备份包含登录凭据与聊天数据，必须加密并限制访问。
 - QIMEI APK 缓存可以重建；LOL 会话和用户绑定不能当作缓存删除。
@@ -136,15 +104,14 @@ Token，默认请求地址已写入 `MUSIC_SIGN_API`。
 ## 4. 发布
 
 ```bash
-docker compose build mimi qimei sandbox
+docker compose build mimi qimei
 docker compose up -d
 docker compose ps
 docker compose logs --tail=200 mimi qimei
 ```
 
-只修改插件 Python 业务时可单独重建 `mimi`；修改 Code Tool、Sandbox 或代理策略时同时
-重建 `mimi sandbox` 并重启 `sandbox-egress-proxy`；修改 QIMEI 协议、原生库或
-Java 代码时同时重建 `qimei`。重建后至少验证帮助命令、一个文本命令和一个图片命令。
+只修改插件 Python 业务时可单独重建 `mimi`；修改 QIMEI 协议、原生库或 Java 代码时同时
+重建 `qimei`。重建后至少验证帮助命令、一个文本命令和一个图片命令。
 
 ## 5. 回滚
 

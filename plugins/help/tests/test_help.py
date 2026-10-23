@@ -20,8 +20,8 @@ def test_catalog_loads_all_visible_plugins():
         "lol",
         "apex",
         "music",
-        "chat",
         "yasuo",
+        "pumpkin",
     ]
     assert sum(len(plugin.commands) for plugin in plugins) == 21
 
