@@ -219,6 +219,7 @@ class TaskRepository(Protocol):
         goal: str,
         constraints: tuple[str, ...],
         requested_deliverables: tuple[str, ...],
+        allowed_skills: tuple[str, ...],
         using_db: Any = None,
     ) -> bool: ...
 
@@ -257,7 +258,13 @@ class TaskRepository(Protocol):
         through_revision: int | None = None,
     ) -> tuple[TaskCorrection, ...]: ...
 
-    async def record_correction_violation(self, correction_id: str) -> int: ...
+    async def record_correction_violation(
+        self,
+        correction_id: str,
+        *,
+        revision: int,
+        reason: str,
+    ) -> int: ...
 
     async def artifact_rejection_fingerprints(
         self,

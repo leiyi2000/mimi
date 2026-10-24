@@ -35,6 +35,7 @@ def registry():
         ("generate_image", "image-render", frozenset({AgentRole.TASK})),
         ("generate_audio", "audio-render", frozenset({AgentRole.TASK})),
         ("render_html", "html-render", frozenset({AgentRole.TASK})),
+        ("render_markdown", "markdown-render", frozenset({AgentRole.TASK})),
     ):
         value.register(
             Tool(
@@ -63,6 +64,7 @@ def test_skill_catalog_and_role_boundaries():
         "group-history",
         "image-render",
         "html-render",
+        "markdown-render",
         "media-inspection",
         "web-search",
     }

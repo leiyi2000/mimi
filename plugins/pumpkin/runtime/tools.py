@@ -119,8 +119,11 @@ def build_registry(
     register(
         "chat_turn_complete",
         "结束当前聊天轮次。群聊话题明显结束、转向无关内容或有人要求停止参与时，"
-        "topic_state 使用 ended，否则使用 active；sent_message_ids 只能引用本轮已确认"
-        "发送的消息。",
+        "topic_state 使用 ended，否则使用 active；sent_message_ids 必须按发送顺序完整"
+        "复制当前轮所有发送工具返回的 message_ids，不得包含历史消息 ID。工具返回"
+        "SEND_NOT_CONFIRMED 时，根据结果中的 confirmed_message_ids 修正后重试。"
+        "只有当前回复明确邀请群内其他成员继续参与时，才将 topic_audience 设为 "
+        "group_open；requester_only 可关闭此前开放范围。省略该字段时保持现状。",
         {
             "type": "object",
             "required": ["outcome", "sent_message_ids", "topic_state"],
@@ -136,6 +139,10 @@ def build_registry(
                 "topic_state": {
                     "type": "string",
                     "enum": ["active", "ended"],
+                },
+                "topic_audience": {
+                    "type": "string",
+                    "enum": ["requester_only", "group_open"],
                 },
                 "reason": {"type": "string"},
             },
@@ -282,7 +289,9 @@ def build_registry(
     register(
         "complete_task",
         "在验收条件已有可验证证据时完成或部分完成当前任务。artifact_ids 只引用当前任务"
-        "工具返回的 Artifact ID；remaining 说明部分完成后仍未完成的事项。",
+        "工具返回的 Artifact ID；accepted_criteria 使用 task_corrections 中"
+        " acceptance_criteria_refs 的 criterion_id，旧版验收条件原文仍兼容；"
+        "remaining 说明部分完成后仍未完成的事项。",
         {
             "type": "object",
             "required": [
@@ -358,7 +367,8 @@ def build_registry(
     register(
         "send_napcat_reply",
         "发送当前作用域的普通聊天回复；群聊普通回复不引用消息，正文超过 80 个字符时 "
-        "Runtime 会自动渲染为图片。",
+        "Runtime 会自动渲染为图片。总发送条数不得超过动态上下文中的 "
+        "max_reply_messages。",
         {
             "type": "object",
             "required": ["idempotency_key"],
@@ -430,7 +440,8 @@ def build_registry(
     )
     register(
         "send_napcat_replies",
-        "按顺序发送 1-3 条短聊天消息；每条消息都应只表达一个事实。",
+        "按顺序发送 1-3 条短聊天消息；每条消息都应只表达一个事实，且总条数不得超过"
+        "动态上下文中的 max_reply_messages。",
         {
             "type": "object",
             "required": ["messages", "idempotency_key"],
@@ -466,7 +477,8 @@ def build_registry(
     )
     register(
         "update_task",
-        "修改当前作用域内任务状态或 revision。",
+        "修改当前作用域内任务状态或 revision。revise 时可用 allowed_skills 显式替换"
+        " Task Executor Skill 授权；省略则保留当前授权。",
         {
             "type": "object",
             "required": ["task_id", "revision", "action", "idempotency_key"],
@@ -480,6 +492,10 @@ def build_registry(
                 "goal": {"type": "string"},
                 "constraints": {"type": "array", "items": {"type": "string"}},
                 "requested_deliverables": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "allowed_skills": {
                     "type": "array",
                     "items": {"type": "string"},
                 },
@@ -500,7 +516,9 @@ def build_registry(
     register(
         "submit_task_correction",
         "用户否定既有结果或提出修正时，将说明、可验证验收条件和被否定 Artifact 关联到"
-        "原任务，并创建继承纠正约束的新 revision；不要创建无关任务代替纠正。",
+        "原任务，并创建继承纠正约束的新 revision；不要创建无关任务代替纠正。"
+        "执行方式改变时用 allowed_skills 显式替换 Task Executor Skill 授权；省略则保留"
+        "当前授权。",
         {
             "type": "object",
             "required": [
@@ -525,6 +543,10 @@ def build_registry(
                 "goal": {"type": "string"},
                 "constraints": {"type": "array", "items": {"type": "string"}},
                 "requested_deliverables": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "allowed_skills": {
                     "type": "array",
                     "items": {"type": "string"},
                 },

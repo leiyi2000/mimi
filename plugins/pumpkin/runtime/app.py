@@ -13,6 +13,7 @@ from capabilities import (
     CodeCapabilityPlugin,
     HtmlCapabilityPlugin,
     ImageCapabilityPlugin,
+    MarkdownCapabilityPlugin,
     WebCapabilityPlugin,
 )
 from capabilities.base import CapabilityServices
@@ -21,6 +22,7 @@ from core.agent_loop import AgentLoopProfile, SessionAgentLoop
 from core.config import ModelConfig, PumpkinConfig
 from core.conversation import ChatSessionService
 from core.domain import (
+    AgentInboxSource,
     AgentProfile,
     AgentRole,
     AgentStatus,
@@ -36,6 +38,7 @@ from core.tasking import TaskService, TaskStateError
 from core.tools import ToolRegistry
 from persistence.store import PumpkinStore
 from providers.html import HtmlRenderer
+from providers.markdown import MarkdownRenderer
 from providers.media import MessageMediaProvider
 from providers.model import (
     AnthropicCompatibleProvider,
@@ -83,6 +86,7 @@ class PumpkinRuntime:
         provider_task: ModelProvider | None = None,
         text_renderer: TextImageRenderer | None = None,
         html_renderer: HtmlRenderer | None = None,
+        markdown_renderer: MarkdownRenderer | None = None,
         trace: Callable[[str], None] | None = None,
         conversation_driver_decorator: Callable[
             [AgentDriver], AgentDriver
@@ -313,11 +317,12 @@ class PumpkinRuntime:
                 ),
             )
         )
-        self.web_plugin = WebCapabilityPlugin()
+        self.web_plugin = WebCapabilityPlugin(trace=self.trace)
         self.code_plugin = CodeCapabilityPlugin()
         self.image_plugin = ImageCapabilityPlugin()
         self.audio_plugin = AudioCapabilityPlugin()
         self.html_plugin = HtmlCapabilityPlugin(html_renderer)
+        self.markdown_plugin = MarkdownCapabilityPlugin(markdown_renderer)
         self.plugin_manager.mount_all(
             (
                 self.web_plugin,
@@ -325,6 +330,7 @@ class PumpkinRuntime:
                 self.image_plugin,
                 self.audio_plugin,
                 self.html_plugin,
+                self.markdown_plugin,
             )
         )
         self.web_provider = self.web_plugin.provider
@@ -382,6 +388,9 @@ class PumpkinRuntime:
                                             {"chat_turn_complete", "create_task"}
                                         ),
                                         max_steps=config.max_steps,
+                                        source_step_limits=(
+                                            (AgentInboxSource.TASK_EVENT, 6),
+                                        ),
                                         turn_policy=ConversationTurnPolicy(),
                                     ),
                                     context.require(ServiceKey.PROVIDER_CHAT),

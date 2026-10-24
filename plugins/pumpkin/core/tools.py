@@ -5,6 +5,7 @@ import inspect
 import json
 import time
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 from collections.abc import Awaitable, Callable
 
@@ -15,6 +16,26 @@ ToolHandler = Callable[
     [ToolContext, dict[str, Any]], Awaitable[ToolResult] | ToolResult
 ]
 TraceCallback = Callable[[str], None]
+
+
+class ToolBudgetKind(StrEnum):
+    WEB_SEARCH = "web_search"
+    WEB_FETCH = "web_fetch"
+    WEB_IMAGE = "web_image"
+
+
+@dataclass(frozen=True, slots=True)
+class ToolBudgetLimits:
+    web_search: int
+    web_fetch: int
+    web_image: int
+
+    def limit_for(self, kind: ToolBudgetKind) -> int:
+        return {
+            ToolBudgetKind.WEB_SEARCH: self.web_search,
+            ToolBudgetKind.WEB_FETCH: self.web_fetch,
+            ToolBudgetKind.WEB_IMAGE: self.web_image,
+        }[kind]
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +52,9 @@ class Tool:
     completion_required: bool = False
     allowed_roles: frozenset[AgentRole] = frozenset(AgentRole)
     required_capabilities: frozenset[TurnCapability] = frozenset()
+    budget_kind: ToolBudgetKind | None = None
+    deduplicate_argument: str | None = None
+    model_content_max_chars: int | None = None
 
 
 class ToolRegistryError(ValueError):

@@ -5,6 +5,7 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from functools import partial
 from typing import Any
 
 from core.agent import Agent
@@ -12,19 +13,22 @@ from core.agent_loop import AgentLoopProfile, SessionAgentLoop
 from core.config import PumpkinConfig
 from core.domain import (
     AgentEventType,
+    AgentInboxItem,
     AgentInboxSource,
     AgentInboxTarget,
     AgentRole,
     AgentProfile,
+    ArtifactRef,
     MessageRecord,
     PersonRef,
     TaskHandoff,
     TaskStatus,
+    ToolCall,
 )
 from core.skills import SkillRegistry
 from persistence.repositories import TaskRuntimeStore
 from core.tasking import TaskService, TaskStateError
-from core.tools import ToolRegistry
+from core.tools import ToolBudgetLimits, ToolRegistry
 from core.prompts import static_prompt
 from runtime.task_events import ConversationInboxPublisher
 
@@ -188,6 +192,10 @@ class TaskRuntime:
                 self._clear_task_run(handoff.task_id)
                 return
             self.runs[handoff.task_id] = handoff
+            corrections = await self.store.list_corrections(
+                handoff.task_id,
+                through_revision=handoff.revision,
+            )
             context = {
                 **await self.assistant_context(handoff.scope_id),
                 "task_id": handoff.task_id,
@@ -197,10 +205,7 @@ class TaskRuntime:
                 "previous_task_events": [],
                 "task_corrections": [
                     self.correction_payload(item)
-                    for item in await self.store.list_corrections(
-                        handoff.task_id,
-                        through_revision=handoff.revision,
-                    )
+                    for item in corrections
                 ],
                 "user_supplied_updates": [
                     self.record_payload(item) for item in handoff.source_messages
@@ -216,7 +221,22 @@ class TaskRuntime:
                     completion_tools=frozenset(
                         {"complete_task", "task_turn_complete"}
                     ),
-                    max_steps=self.config.max_steps,
+                    max_steps=self.config.task.budget.max_steps,
+                    reserved_completion_steps=(
+                        self.config.task.budget.finalization_steps
+                    ),
+                    completion_fallback=partial(
+                        self._completion_fallback,
+                        handoff,
+                    ),
+                    budget_notice_thresholds=(0.5, 0.75),
+                    tool_budget=ToolBudgetLimits(
+                        web_search=(
+                            self.config.task.budget.web_search_limit
+                        ),
+                        web_fetch=self.config.task.budget.web_fetch_limit,
+                        web_image=self.config.task.budget.web_image_limit,
+                    ),
                 ),
                 self.provider,
                 self.registry,
@@ -291,6 +311,43 @@ class TaskRuntime:
                 )
             else:
                 await self.reschedule_pending_updates(handoff)
+
+    @staticmethod
+    def _completion_fallback(
+        handoff: TaskHandoff,
+        item: AgentInboxItem,
+        artifacts: tuple[ArtifactRef, ...],
+    ) -> ToolCall | None:
+        if not artifacts:
+            return None
+        artifact_ids = [artifact.artifact_id for artifact in artifacts]
+        accepted_criteria = [
+            str(reference["criterion_id"])
+            for correction in item.payload.get("task_corrections", [])
+            if isinstance(correction, dict)
+            for reference in correction.get("acceptance_criteria_refs", [])
+            if isinstance(reference, dict) and reference.get("criterion_id")
+        ]
+        if not accepted_criteria:
+            accepted_criteria = ["已生成并验证可交付产物"]
+        key = f"runtime-artifact-fallback:{handoff.task_id}:{handoff.revision}"
+        return ToolCall(
+            tool_use_id=uuid.uuid5(uuid.NAMESPACE_URL, key).hex,
+            name="complete_task",
+            arguments={
+                "status": TaskStatus.PARTIALLY_COMPLETED.value,
+                "summary": (
+                    "已生成并验证可交付产物，Runtime 在步骤预算耗尽后"
+                    "保留并提交现有结果"
+                ),
+                "remaining": [
+                    "模型步骤预算耗尽，未能继续核验或完善其余要求"
+                ],
+                "accepted_criteria": accepted_criteria,
+                "artifact_ids": artifact_ids,
+                "idempotency_key": key,
+            },
+        )
 
     async def reschedule_pending_updates(self, handoff: TaskHandoff) -> None:
         updates = self.pending_updates.pop(handoff.task_id, [])

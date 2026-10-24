@@ -64,6 +64,34 @@ class TaskCommandService:
         self.task_event_notifier = task_event_notifier
         self.schedule_queued_task = schedule_queued_task
 
+    def _task_skills(
+        self,
+        values: Any,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        requested = tuple(
+            dict.fromkeys(
+                str(item).strip()
+                for item in values
+                if str(item).strip()
+            )
+        )
+        task_skill_names = {
+            skill.name
+            for skill in self.skills.skills.values()
+            if AgentRole.TASK in skill.agent_roles
+            and skill.name not in self.skills.disabled_skills
+        }
+        configured = (
+            task_skill_names
+            if not self.config.task.allowed_skills
+            else task_skill_names.intersection(self.config.task.allowed_skills)
+        )
+        invalid = tuple(item for item in requested if item not in configured)
+        return (
+            tuple(item for item in requested if item in configured),
+            invalid,
+        )
+
     async def create_task(
         self,
         context: ToolContext,
@@ -123,31 +151,10 @@ class TaskCommandService:
                 and person.participant_ref != requester.participant_ref
             ),
         )
-        requested_skills = tuple(
-            dict.fromkeys(
-                str(item).strip()
-                for item in arguments.get("allowed_skills", [])
-                if str(item).strip()
-            )
+        effective_skills, invalid_skills = self._task_skills(
+            arguments.get("allowed_skills", [])
         )
-        task_skill_names = {
-            skill.name
-            for skill in self.skills.skills.values()
-            if AgentRole.TASK in skill.agent_roles
-            and skill.name not in self.skills.disabled_skills
-        }
-        configured_task_skills = (
-            task_skill_names
-            if not self.config.task.allowed_skills
-            else task_skill_names.intersection(self.config.task.allowed_skills)
-        )
-        invalid_skills = tuple(
-            item for item in requested_skills if item not in configured_task_skills
-        )
-        effective_skills = tuple(
-            item for item in requested_skills if item in configured_task_skills
-        )
-        if requested_skills and not effective_skills:
+        if arguments.get("allowed_skills") and not effective_skills:
             return error(
                 "allowed_skills does not contain an available Task Executor Skill",
                 "INVALID_TASK_SKILLS",
@@ -202,8 +209,6 @@ class TaskCommandService:
             "ack_sent": acknowledgement.status is OutboxStatus.SENT,
             "message_ids": list(acknowledgement.message_ids),
         }
-        if acknowledgement.status is OutboxStatus.SENT:
-            await self.sessions.renew(context.scope_id)
         await self.store.idempotency_put(key, result)
         self.task_runtime.register_task_sources(handoff)
         self.task_runtime.schedule(handoff)
@@ -342,6 +347,16 @@ class TaskCommandService:
                 if latest.revision != revision:
                     return error("task revision is stale", "STALE_REVISION")
                 if action == "revise":
+                    allowed_skills = None
+                    if "allowed_skills" in arguments:
+                        allowed_skills, invalid_skills = self._task_skills(
+                            arguments["allowed_skills"]
+                        )
+                        if invalid_skills:
+                            return error(
+                                "allowed_skills contains an unavailable Task Executor Skill",
+                                "INVALID_TASK_SKILLS",
+                            )
                     revision = await self.task_service.revise(
                         task_id,
                         goal=str(arguments.get("goal") or latest.goal),
@@ -356,6 +371,7 @@ class TaskCommandService:
                                 latest.requested_deliverables,
                             )
                         ),
+                        allowed_skills=allowed_skills,
                     )
                 else:
                     if target_status is None:
@@ -414,6 +430,16 @@ class TaskCommandService:
                 "task correction source is outside current scope",
                 "SCOPE_MISMATCH",
             )
+        allowed_skills = tuple(str(item) for item in row.allowed_skills)
+        if "allowed_skills" in arguments:
+            allowed_skills, invalid_skills = self._task_skills(
+                arguments["allowed_skills"]
+            )
+            if invalid_skills:
+                return error(
+                    "allowed_skills contains an unavailable Task Executor Skill",
+                    "INVALID_TASK_SKILLS",
+                )
         rejected_artifact_ids = tuple(
             dict.fromkeys(
                 str(item)
@@ -458,6 +484,7 @@ class TaskCommandService:
                             row.requested_deliverables,
                         )
                     ),
+                    allowed_skills=allowed_skills,
                 )
         except (ValueError, TaskStateError) as exc:
             return error(str(exc), "TASK_CORRECTION_REJECTED")

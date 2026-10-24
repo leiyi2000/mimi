@@ -11,9 +11,11 @@ from core.domain import (
     InboundMessage,
     MessageSegment,
     MessageSegmentType,
+    TaskCorrection,
     TaskHandoff,
     TaskStatus,
     ToolContext,
+    acceptance_criterion_id,
 )
 from runtime.app import PumpkinRuntime
 
@@ -48,12 +50,17 @@ async def _runtime(tmp_path) -> PumpkinRuntime:
         client=object(),
     )
     await runtime.store.initialize(runtime.config.db_url)
+    runtime.skills.discover()
     runtime.task_event_notifier.notify = AsyncMock()
     runtime.task_commands.schedule_queued_task = AsyncMock()
     return runtime
 
 
-async def _create_running_task(runtime: PumpkinRuntime) -> None:
+async def _create_running_task(
+    runtime: PumpkinRuntime,
+    *,
+    allowed_skills: tuple[str, ...] = (),
+) -> None:
     await runtime.task_service.create(
         TaskHandoff(
             task_id="task-1",
@@ -64,7 +71,7 @@ async def _create_running_task(runtime: PumpkinRuntime) -> None:
             goal="生成一张结果图",
             constraints=(),
             requested_deliverables=("图片",),
-            allowed_skills=(),
+            allowed_skills=allowed_skills,
         )
     )
     await runtime.task_service.transition(
@@ -73,6 +80,126 @@ async def _create_running_task(runtime: PumpkinRuntime) -> None:
         TaskStatus.RUNNING,
         summary="task started",
     )
+
+
+async def _archive_correction_message(
+    runtime: PumpkinRuntime,
+    *,
+    message_id: str,
+    text: str,
+) -> None:
+    await runtime.store.archive(
+        InboundMessage(
+            message_id=message_id,
+            conversation_type=ConversationType.GROUP,
+            scope_id="group:1",
+            sender_id="7",
+            sender_name="member",
+            segments=(MessageSegment(MessageSegmentType.TEXT, text=text),),
+            received_at=datetime.now(UTC),
+            is_self=False,
+            raw_text=text,
+            group_id="1",
+        )
+    )
+
+
+async def test_correction_can_replace_task_skill_authorization(tmp_path):
+    runtime = await _runtime(tmp_path)
+    await _create_running_task(runtime, allowed_skills=("image-render",))
+    await _archive_correction_message(
+        runtime,
+        message_id="replace-skills",
+        text="不要生成插画，改成 HTML 旅游攻略图",
+    )
+
+    result = await runtime.task_commands.submit_task_correction(
+        _context(
+            role=AgentRole.CHAT,
+            run_id="chat-run",
+            message_id="replace-skills",
+        ),
+        {
+            "task_id": "task-1",
+            "revision": 1,
+            "instruction": "使用自由编写的 HTML 生成旅游攻略图",
+            "acceptance_criteria": ["攻略图由 HTML 和 CSS 排版生成"],
+            "allowed_skills": ["html-render"],
+            "idempotency_key": "replace-skills",
+        },
+    )
+
+    assert not result.is_error
+    row = await runtime.store.get_task("task-1")
+    assert row is not None
+    assert row.allowed_skills == ["html-render"]
+    handoff = runtime.task_runtime.handoff_for_row(row)
+    assert handoff.allowed_skills == ("html-render",)
+    await runtime.store.close()
+
+
+async def test_correction_preserves_task_skill_authorization_when_omitted(tmp_path):
+    runtime = await _runtime(tmp_path)
+    await _create_running_task(runtime, allowed_skills=("image-render",))
+    await _archive_correction_message(
+        runtime,
+        message_id="preserve-skills",
+        text="调整图片内容",
+    )
+
+    result = await runtime.task_commands.submit_task_correction(
+        _context(
+            role=AgentRole.CHAT,
+            run_id="chat-run",
+            message_id="preserve-skills",
+        ),
+        {
+            "task_id": "task-1",
+            "revision": 1,
+            "instruction": "调整图片内容",
+            "acceptance_criteria": ["图片内容已调整"],
+            "idempotency_key": "preserve-skills",
+        },
+    )
+
+    assert not result.is_error
+    row = await runtime.store.get_task("task-1")
+    assert row is not None
+    assert row.allowed_skills == ["image-render"]
+    await runtime.store.close()
+
+
+async def test_correction_rejects_unavailable_task_skill_authorization(tmp_path):
+    runtime = await _runtime(tmp_path)
+    await _create_running_task(runtime, allowed_skills=("image-render",))
+    await _archive_correction_message(
+        runtime,
+        message_id="invalid-skills",
+        text="换一种实现方式",
+    )
+
+    result = await runtime.task_commands.submit_task_correction(
+        _context(
+            role=AgentRole.CHAT,
+            run_id="chat-run",
+            message_id="invalid-skills",
+        ),
+        {
+            "task_id": "task-1",
+            "revision": 1,
+            "instruction": "换一种实现方式",
+            "acceptance_criteria": ["结果满足新要求"],
+            "allowed_skills": ["not-configured"],
+            "idempotency_key": "invalid-skills",
+        },
+    )
+
+    assert result.error_code == "INVALID_TASK_SKILLS"
+    row = await runtime.store.get_task("task-1")
+    assert row is not None
+    assert row.revision == 1
+    assert row.allowed_skills == ["image-render"]
+    await runtime.store.close()
 
 
 async def test_first_delivery_is_allowed_and_marked_ready(tmp_path):
@@ -308,7 +435,28 @@ async def test_correction_blocks_same_content_and_source_then_stops_task(tmp_pat
         },
     )
 
-    assert second_violation.error_code == "CORRECTION_REPEAT_LIMIT"
+    assert second_violation.error_code == "CORRECTION_VIOLATION"
+    repeated_source = await runtime.write_artifact(
+        _context(role=AgentRole.TASK, run_id="task-run-2", revision=2),
+        filename="repeated-source.png",
+        kind="image",
+        content=b"\x89PNG\r\n\x1a\nthird",
+        source_ref={"url": "https://example.test/wrong.png"},
+        strategy_ref={"tool": "render_html", "template": "third"},
+    )
+    repeated_violation = await runtime.task_commands.complete_task(
+        _context(role=AgentRole.TASK, run_id="task-run-2", revision=2),
+        {
+            "status": "completed",
+            "summary": "完成",
+            "remaining": [],
+            "accepted_criteria": ["内容必须与任务目标一致"],
+            "artifact_ids": [repeated_source.artifact_id],
+            "idempotency_key": "complete-repeated-source",
+        },
+    )
+
+    assert repeated_violation.error_code == "CORRECTION_REPEAT_LIMIT"
     row = await runtime.store.get_task("task-1")
     assert row is not None
     assert TaskStatus(row.status) is TaskStatus.FAILED
@@ -391,4 +539,167 @@ async def test_completion_must_repeat_inherited_acceptance_criteria(tmp_path):
     )
 
     assert result.error_code == "CORRECTION_VIOLATION"
+    await runtime.store.close()
+
+
+async def test_candidate_delivery_does_not_consume_correction_attempt(tmp_path):
+    runtime = await _runtime(tmp_path)
+    await _create_running_task(runtime)
+    correction = TaskCorrection(
+        correction_id="correction-delivery-ready",
+        task_id="task-1",
+        scope_id="group:1",
+        source_message_id="correction-message",
+        from_revision=0,
+        to_revision=1,
+        instruction="使用新的结果",
+        acceptance_criteria=("结果已核验",),
+        rejected_artifact_ids=(),
+        rejected_hashes=(),
+        rejected_sources=(),
+        rejected_strategies=(),
+    )
+    await runtime.store.create_correction(correction)
+    artifact = await runtime.write_artifact(
+        _context(role=AgentRole.TASK, run_id="task-run", revision=1),
+        filename="candidate.png",
+        kind="image",
+        content=b"\x89PNG\r\n\x1a\ncandidate",
+    )
+
+    result = await runtime.task_commands.send_task_delivery(
+        _context(role=AgentRole.CHAT, run_id="delivery-run"),
+        {
+            "task_id": "task-1",
+            "revision": 1,
+            "text": "候选结果",
+            "artifacts": [artifact.artifact_id],
+            "idempotency_key": "candidate-delivery",
+        },
+    )
+    readiness = await runtime.artifact_service.gate(
+        task_id="task-1",
+        revision=1,
+        scope_id="group:1",
+        artifact_ids=(artifact.artifact_id,),
+        require_delivery_ready=True,
+    )
+
+    assert result.error_code == "TASK_NOT_TERMINAL"
+    assert readiness is not None
+    assert readiness.error_code == "ARTIFACT_NOT_DELIVERY_READY"
+    stored = (await runtime.store.list_corrections("task-1"))[0]
+    assert stored.violation_count == 0
+    await runtime.store.close()
+
+
+async def test_delivery_requires_terminal_task_even_when_artifact_is_ready(tmp_path):
+    runtime = await _runtime(tmp_path)
+    await _create_running_task(runtime)
+    artifact = await runtime.write_artifact(
+        _context(role=AgentRole.TASK, run_id="task-run", revision=1),
+        filename="candidate.png",
+        kind="image",
+        content=b"\x89PNG\r\n\x1a\ncandidate",
+    )
+    await runtime.store.mark_artifacts_delivery_ready(
+        task_id="task-1",
+        revision=1,
+        scope_id="group:1",
+        artifact_ids=(artifact.artifact_id,),
+    )
+
+    result = await runtime.task_commands.send_task_delivery(
+        _context(role=AgentRole.CHAT, run_id="delivery-run"),
+        {
+            "task_id": "task-1",
+            "revision": 1,
+            "text": "不应发送",
+            "artifacts": [artifact.artifact_id],
+            "idempotency_key": "running-delivery",
+        },
+    )
+
+    assert result.error_code == "TASK_NOT_TERMINAL"
+    await runtime.store.close()
+
+
+async def test_completion_accepts_stable_criterion_id_and_legacy_text(tmp_path):
+    runtime = await _runtime(tmp_path)
+    await _create_running_task(runtime)
+    correction = TaskCorrection(
+        correction_id="correction-criteria-id",
+        task_id="task-1",
+        scope_id="group:1",
+        source_message_id="correction-message",
+        from_revision=0,
+        to_revision=1,
+        instruction="补齐正文",
+        acceptance_criteria=("必须包含完整正文",),
+        rejected_artifact_ids=(),
+        rejected_hashes=(),
+        rejected_sources=(),
+        rejected_strategies=(),
+    )
+    await runtime.store.create_correction(correction)
+
+    stable_id = acceptance_criterion_id(correction.correction_id, 0)
+    assert stable_id != correction.acceptance_criteria[0]
+    by_id = await runtime.artifact_service.acceptance_criteria_gate(
+        task_id="task-1",
+        revision=1,
+        accepted_criteria=(stable_id,),
+    )
+    by_legacy_text = await runtime.artifact_service.acceptance_criteria_gate(
+        task_id="task-1",
+        revision=1,
+        accepted_criteria=("必须包含完整正文",),
+    )
+
+    assert by_id is None
+    assert by_legacy_text is None
+    await runtime.store.close()
+
+
+async def test_correction_violation_count_is_scoped_by_revision_and_reason(tmp_path):
+    runtime = await _runtime(tmp_path)
+    await _create_running_task(runtime)
+    correction = TaskCorrection(
+        correction_id="correction-scoped-count",
+        task_id="task-1",
+        scope_id="group:1",
+        source_message_id="correction-message",
+        from_revision=0,
+        to_revision=1,
+        instruction="不要重复错误",
+        acceptance_criteria=("结果已核验",),
+        rejected_artifact_ids=(),
+        rejected_hashes=(),
+        rejected_sources=(),
+        rejected_strategies=(),
+    )
+    await runtime.store.create_correction(correction)
+
+    assert await runtime.store.record_correction_violation(
+        correction.correction_id,
+        revision=1,
+        reason="content",
+    ) == 1
+    assert await runtime.store.record_correction_violation(
+        correction.correction_id,
+        revision=1,
+        reason="source",
+    ) == 1
+    assert await runtime.store.record_correction_violation(
+        correction.correction_id,
+        revision=1,
+        reason="source",
+    ) == 2
+    assert await runtime.store.record_correction_violation(
+        correction.correction_id,
+        revision=2,
+        reason="source",
+    ) == 1
+    stored = (await runtime.store.list_corrections("task-1"))[0]
+    assert stored.violation_count == 2
     await runtime.store.close()

@@ -6,6 +6,7 @@ from typing import Any
 from persistence.models import (
     AgentInboxRow,
     ArtifactAssessmentRow,
+    CorrectionViolationRow,
     TaskCorrectionRow,
     TaskDescriptionRow,
     TaskEventRow,
@@ -189,6 +190,7 @@ class TaskRepositoryMixin:
         goal: str,
         constraints: tuple[str, ...],
         requested_deliverables: tuple[str, ...],
+        allowed_skills: tuple[str, ...],
         using_db: Any = None,
     ) -> bool:
         query = TaskRow.filter(
@@ -203,6 +205,7 @@ class TaskRepositoryMixin:
             goal=goal,
             constraints=list(constraints),
             requested_deliverables=list(requested_deliverables),
+            allowed_skills=list(allowed_skills),
             status=TaskStatus.QUEUED.value,
         )
         return bool(updated)
@@ -384,17 +387,44 @@ class TaskRepositoryMixin:
         rows = await query.order_by("to_revision", "id")
         return tuple(self._correction(row) for row in rows)
 
-    async def record_correction_violation(self, correction_id: str) -> int:
-        row = await TaskCorrectionRow.get_or_none(correction_id=correction_id)
-        if row is None:
+    async def record_correction_violation(
+        self,
+        correction_id: str,
+        *,
+        revision: int,
+        reason: str,
+    ) -> int:
+        correction = await TaskCorrectionRow.get_or_none(
+            correction_id=correction_id
+        )
+        if correction is None:
             raise ValueError("task correction not found")
-        updated = await TaskCorrectionRow.filter(
+        normalized_reason = reason.strip()
+        if revision <= 0 or not normalized_reason:
+            raise ValueError("invalid correction violation scope")
+        row, _ = await CorrectionViolationRow.get_or_create(
             correction_id=correction_id,
+            revision=revision,
+            reason=normalized_reason,
+            defaults={"violation_count": 0},
+        )
+        updated = await CorrectionViolationRow.filter(
+            id=row.id,
             violation_count=row.violation_count,
         ).update(violation_count=row.violation_count + 1)
         if updated != 1:
-            return await self.record_correction_violation(correction_id)
-        return row.violation_count + 1
+            return await self.record_correction_violation(
+                correction_id,
+                revision=revision,
+                reason=normalized_reason,
+            )
+        count = row.violation_count + 1
+        if correction.violation_count < count:
+            await TaskCorrectionRow.filter(
+                correction_id=correction_id,
+                violation_count__lt=count,
+            ).update(violation_count=count)
+        return count
 
     @staticmethod
     def _correction(row: TaskCorrectionRow) -> TaskCorrection:

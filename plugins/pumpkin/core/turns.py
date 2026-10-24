@@ -7,6 +7,7 @@ from .domain import (
     AgentEventType,
     AgentInboxItem,
     AgentRole,
+    ParticipationIntent,
     ToolContext,
     TurnCapability,
 )
@@ -74,6 +75,12 @@ class DefaultTurnPolicy:
             revision=_optional_int(item.payload.get("revision")),
             task_context_mode=str(item.payload.get("task_context_mode", "on_request")),
             address_only_message=(item.payload.get("address_only_message") is True),
+            participation_intent=_optional_participation_intent(
+                item.payload.get("participation_intent")
+            ),
+            max_reply_messages=_reply_message_limit(
+                item.payload.get("max_reply_messages")
+            ),
             inbox_source=item.source_type,
             capabilities=loadout.capabilities,
         )
@@ -89,3 +96,19 @@ def _optional_int(value: object) -> int | None:
     if value is None:
         return None
     return int(value)
+
+
+def _optional_participation_intent(
+    value: object,
+) -> ParticipationIntent | None:
+    if value is None:
+        return None
+    try:
+        return ParticipationIntent(str(value))
+    except ValueError:
+        return None
+
+
+def _reply_message_limit(value: object) -> int:
+    parsed = _optional_int(value)
+    return 3 if parsed is None else max(0, parsed)

@@ -13,10 +13,13 @@ from core.conversation import ChatSessionService
 from core.domain import (
     AgentInboxSource,
     AgentInboxTarget,
+    ConversationDirective,
     InboundMessage,
     MessageRecord,
     MessageSegmentType,
-    SessionState,
+    ParticipationAction,
+    ParticipationIntent,
+    ParticipationReason,
 )
 from persistence.repositories import TaskRuntimeStore
 from runtime.outbox import OutboxSender
@@ -25,10 +28,30 @@ from runtime.outbox import OutboxSender
 log = logging.getLogger(__name__)
 
 
+def _normalized_directive(text: str) -> str:
+    return re.sub(r"[\s，。！？!?、,.：:；;~～]+", "", text).casefold()
+
+
+def _conversation_directive(
+    text: str,
+    stop_aliases: tuple[str, ...],
+) -> ConversationDirective | None:
+    normalized = _normalized_directive(text)
+    if normalized and normalized in {
+        _normalized_directive(alias) for alias in stop_aliases
+    }:
+        return ConversationDirective.STOP
+    return None
+
+
 def _is_force_sleep_command(text: str, assistant_name: str) -> bool:
-    del assistant_name
-    normalized = re.sub(r"[\s，。！？!?、,.：:；;~～]+", "", text).casefold()
-    return normalized == "闭嘴"
+    aliases = (
+        "闭嘴",
+        "别说了",
+        f"{assistant_name}退下",
+        f"退下{assistant_name}",
+    )
+    return _conversation_directive(text, aliases) is ConversationDirective.STOP
 
 
 def _is_address_only_message(
@@ -105,7 +128,20 @@ class MessageIngress:
         if message.is_self:
             self.trace("runtime archived self message")
             return
-        if _is_force_sleep_command(message.raw_text, self.config.assistant.name):
+        directive = _conversation_directive(
+            message.raw_text,
+            self.config.activation.stop_aliases,
+        )
+        if directive is ConversationDirective.STOP:
+            log.info(
+                "pumpkin ingress decision scope=%s message=%s intent=%s "
+                "action=%s reason=%s remaining_budget=0",
+                message.scope_id,
+                message.message_id,
+                ParticipationIntent.STOP.value,
+                ParticipationAction.SLEEP.value,
+                ParticipationReason.STOP_DIRECTIVE.value,
+            )
             await self._force_sleep(message)
             return
         await self.restore_task_sources(message.scope_id)
@@ -125,11 +161,26 @@ class MessageIngress:
             in self.task_source_message_ids(message.scope_id)
         )
         tasks = await self.store.list_tasks(message.scope_id)
-        state = await self.sessions.current(message.scope_id)
-        if state is SessionState.SLEEPING and not wake:
-            return
-        accepted = await self._accept_message(message, state, wake)
-        if not accepted:
+        decision = await self.sessions.decide_participation(
+            message,
+            direct=wake,
+        )
+        log.info(
+            "pumpkin ingress decision scope=%s message=%s intent=%s "
+            "action=%s reason=%s remaining_budget=%d",
+            message.scope_id,
+            message.message_id,
+            decision.intent.value,
+            decision.action.value,
+            decision.reason.value,
+            decision.remaining_budget,
+        )
+        self.trace(
+            "runtime participation "
+            f"intent={decision.intent.value} action={decision.action.value} "
+            f"reason={decision.reason.value}"
+        )
+        if decision.action is not ParticipationAction.ACCEPT:
             return
         assistant_context = await self.assistant_context(message.scope_id)
         if not task_related:
@@ -141,6 +192,10 @@ class MessageIngress:
             "sender_name": message.sender_name,
             "message": self.record_payload(record),
             "direct_to_assistant": wake,
+            "participation_intent": decision.intent.value,
+            "participation_reason": decision.reason.value,
+            "remaining_follow_up_budget": decision.remaining_budget,
+            "max_reply_messages": decision.max_reply_messages,
             "task_related": task_related,
             "task_context_mode": "related" if task_related else "on_request",
             "address_only_message": address_only,
@@ -157,47 +212,6 @@ class MessageIngress:
             target=AgentInboxTarget.NEXT_TURN,
             item_id=f"message:{message.message_id}",
         )
-
-    async def _accept_message(
-        self,
-        message: InboundMessage,
-        state: SessionState,
-        wake: bool,
-    ) -> bool:
-        if wake:
-            if state is not SessionState.ACTIVE:
-                await self.sessions.activate(
-                    message.scope_id,
-                    summary=message.raw_text[:500],
-                    wake_reason="direct",
-                    sender_id=message.sender_id,
-                    explicit_wake=True,
-                )
-            else:
-                await self.sessions.accept_active_message(
-                    message.scope_id,
-                    wake=True,
-                    sender_id=message.sender_id,
-                )
-            return True
-        if state is SessionState.ACTIVE:
-            return await self.sessions.accept_active_message(
-                message.scope_id,
-                wake=False,
-                sender_id=message.sender_id,
-            )
-        if (
-            message.conversation_type.value == "group"
-            and self.config.activation.auto_activate_group
-        ):
-            await self.sessions.activate(
-                message.scope_id,
-                summary=message.raw_text[:500],
-                wake_reason="automatic",
-                sender_id=message.sender_id,
-            )
-            return True
-        return False
 
     async def _force_sleep(self, message: InboundMessage) -> None:
         await self.sessions.force_sleep(message.scope_id)

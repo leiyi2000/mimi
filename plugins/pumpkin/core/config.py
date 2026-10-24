@@ -6,7 +6,9 @@ from enum import StrEnum
 
 
 DEFAULT_SESSION_TTL_SECONDS = 900
-DEFAULT_CHAT_TIMEOUT_SECONDS = 15.0
+DEFAULT_DIRECT_FOLLOW_UP_WINDOW_SECONDS = 120
+DEFAULT_FOLLOW_UP_TURN_BUDGET = 2
+DEFAULT_CHAT_TIMEOUT_SECONDS = 60.0
 DEFAULT_TASK_TIMEOUT_SECONDS = 90.0
 DEFAULT_TASK_INTAKE_TIMEOUT_SECONDS = 60.0
 DEFAULT_SINGLE_TASK_TIMEOUT_SECONDS = 900
@@ -16,8 +18,15 @@ DEFAULT_IMAGE_TIMEOUT_SECONDS = 90.0
 DEFAULT_AUDIO_TIMEOUT_SECONDS = 90.0
 DEFAULT_MEDIA_TIMEOUT_SECONDS = 10.0
 DEFAULT_MAX_STEPS = 36
+DEFAULT_TASK_MAX_STEPS = 16
+DEFAULT_TASK_FINALIZATION_STEPS = 2
+DEFAULT_TASK_WEB_SEARCH_LIMIT = 4
+DEFAULT_TASK_WEB_FETCH_LIMIT = 8
+DEFAULT_TASK_WEB_IMAGE_LIMIT = 4
 DEFAULT_CHAT_MAX_TOKENS = 4096
 DEFAULT_TASK_MAX_TOKENS = 8192
+DEFAULT_WEB_MODEL_CONTENT_CHARS = 8_000
+DEFAULT_WEB_HOST_CONCURRENCY = 2
 
 
 def _csv(value: str) -> tuple[str, ...]:
@@ -87,6 +96,54 @@ class ActivationConfig:
     mention_required: bool = False
     auto_activate_group: bool = False
     session_ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS
+    direct_follow_up_window_seconds: int = (
+        DEFAULT_DIRECT_FOLLOW_UP_WINDOW_SECONDS
+    )
+    follow_up_turn_budget: int = DEFAULT_FOLLOW_UP_TURN_BUDGET
+    direct_reply_limit: int = 2
+    follow_up_reply_limit: int = 1
+    expansion_reply_limit: int = 1
+    stop_aliases: tuple[str, ...] = ("闭嘴", "别说了")
+
+    def __post_init__(self) -> None:
+        if self.session_ttl_seconds <= 0:
+            raise ValueError("session_ttl_seconds must be positive")
+        if self.direct_follow_up_window_seconds <= 0:
+            raise ValueError(
+                "direct_follow_up_window_seconds must be positive"
+            )
+        if self.follow_up_turn_budget < 0:
+            raise ValueError("follow_up_turn_budget must not be negative")
+        if (
+            self.direct_reply_limit <= 0
+            or self.follow_up_reply_limit <= 0
+            or self.expansion_reply_limit <= 0
+        ):
+            raise ValueError("reply limits must be positive")
+
+
+@dataclass(frozen=True, slots=True)
+class TaskBudgetConfig:
+    max_steps: int = DEFAULT_TASK_MAX_STEPS
+    finalization_steps: int = DEFAULT_TASK_FINALIZATION_STEPS
+    web_search_limit: int = DEFAULT_TASK_WEB_SEARCH_LIMIT
+    web_fetch_limit: int = DEFAULT_TASK_WEB_FETCH_LIMIT
+    web_image_limit: int = DEFAULT_TASK_WEB_IMAGE_LIMIT
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("max_steps", self.max_steps),
+            ("finalization_steps", self.finalization_steps),
+            ("web_search_limit", self.web_search_limit),
+            ("web_fetch_limit", self.web_fetch_limit),
+            ("web_image_limit", self.web_image_limit),
+        ):
+            if value <= 0:
+                raise ValueError(f"task budget {name} must be positive")
+        if self.finalization_steps >= self.max_steps:
+            raise ValueError(
+                "task budget finalization_steps must be less than max_steps"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +154,7 @@ class TaskConfig:
     single_task_timeout_seconds: int = DEFAULT_SINGLE_TASK_TIMEOUT_SECONDS
     intake_batch_size: int = 20
     allowed_skills: tuple[str, ...] = ()
+    budget: TaskBudgetConfig = field(default_factory=TaskBudgetConfig)
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +166,14 @@ class WebConfig:
     max_fetch_bytes: int = 1_048_576
     max_image_bytes: int = 5 * 1024 * 1024
     max_fetch_chars: int = 30_000
+    max_model_content_chars: int = DEFAULT_WEB_MODEL_CONTENT_CHARS
+    max_host_concurrency: int = DEFAULT_WEB_HOST_CONCURRENCY
+
+    def __post_init__(self) -> None:
+        if self.max_model_content_chars < 1_000:
+            raise ValueError("web max_model_content_chars must be at least 1000")
+        if self.max_host_concurrency <= 0:
+            raise ValueError("web max_host_concurrency must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,6 +286,31 @@ class PumpkinConfig:
                         str(DEFAULT_SESSION_TTL_SECONDS),
                     )
                 ),
+                direct_follow_up_window_seconds=int(
+                    os.getenv(
+                        "PUMPKIN_DIRECT_FOLLOW_UP_WINDOW_SECONDS",
+                        str(DEFAULT_DIRECT_FOLLOW_UP_WINDOW_SECONDS),
+                    )
+                ),
+                follow_up_turn_budget=int(
+                    os.getenv(
+                        "PUMPKIN_FOLLOW_UP_TURN_BUDGET",
+                        str(DEFAULT_FOLLOW_UP_TURN_BUDGET),
+                    )
+                ),
+                stop_aliases=_csv(
+                    os.getenv(
+                        "PUMPKIN_STOP_ALIASES",
+                        ",".join(
+                            (
+                                "闭嘴",
+                                "别说了",
+                                f"{assistant_name}退下",
+                                f"退下{assistant_name}",
+                            )
+                        ),
+                    )
+                ),
             ),
             model_chat=ModelConfig(
                 provider=_env("PUMPKIN_CHAT_PROVIDER", provider) or provider,
@@ -300,6 +391,28 @@ class PumpkinConfig:
                 ),
                 intake_batch_size=int(os.getenv("PUMPKIN_INTAKE_BATCH_SIZE", "20")),
                 allowed_skills=_csv(os.getenv("PUMPKIN_ALLOWED_SKILLS", "")),
+                budget=TaskBudgetConfig(
+                    max_steps=_positive_int(
+                        "PUMPKIN_TASK_MAX_STEPS",
+                        DEFAULT_TASK_MAX_STEPS,
+                    ),
+                    finalization_steps=_positive_int(
+                        "PUMPKIN_TASK_FINALIZATION_STEPS",
+                        DEFAULT_TASK_FINALIZATION_STEPS,
+                    ),
+                    web_search_limit=_positive_int(
+                        "PUMPKIN_TASK_WEB_SEARCH_LIMIT",
+                        DEFAULT_TASK_WEB_SEARCH_LIMIT,
+                    ),
+                    web_fetch_limit=_positive_int(
+                        "PUMPKIN_TASK_WEB_FETCH_LIMIT",
+                        DEFAULT_TASK_WEB_FETCH_LIMIT,
+                    ),
+                    web_image_limit=_positive_int(
+                        "PUMPKIN_TASK_WEB_IMAGE_LIMIT",
+                        DEFAULT_TASK_WEB_IMAGE_LIMIT,
+                    ),
+                ),
             ),
             web=WebConfig(
                 api_url=_env(
@@ -325,6 +438,14 @@ class PumpkinConfig:
                     )
                 ),
                 max_fetch_chars=int(os.getenv("PUMPKIN_FETCH_MAX_CHARS", "30000")),
+                max_model_content_chars=_positive_int(
+                    "PUMPKIN_WEB_MODEL_CONTENT_MAX_CHARS",
+                    DEFAULT_WEB_MODEL_CONTENT_CHARS,
+                ),
+                max_host_concurrency=_positive_int(
+                    "PUMPKIN_WEB_HOST_CONCURRENCY",
+                    DEFAULT_WEB_HOST_CONCURRENCY,
+                ),
             ),
             code=CodeConfig(
                 base_url=_env(

@@ -116,11 +116,20 @@ LOL 插件以 profile digest 校验 QIMEI36 缓存，缓存未命中时才调用
 
 Pumpkin 每个 QQ scope 只有一个长期 Conversation Agent。`runtime/ingress.py` 负责适配、
 归档、唤醒边界和写入持久化 Inbox；消息进入 Turn/Step AgentLoop 后由 Session Event
-恢复模型上下文。`runtime/task_runtime.py` 独立负责任务调度、并发、revision 过期、取消
-和恢复；Task Executor 只执行任务并登记 Artifact，不直接发送 QQ 消息。
+恢复模型上下文。Conversation Inbox 在尚未领取的条目中优先处理用户消息，后台 TaskEvent
+单 Turn 最多使用 6 个模型步骤，避免任务通知长期阻塞明确唤醒。`runtime/task_runtime.py`
+独立负责任务调度、并发、revision 过期、取消和恢复；Task Executor 只执行任务并登记
+Artifact，不直接发送 QQ 消息。Task Executor 最后两个模型步骤只允许终态工具；步骤耗尽
+但已有已验证 Artifact 时，由 Runtime 以可审计的部分完成事件保留现有交付物。
+群聊参与资格由 Ingress 和 `ChatSessionService` 共同执行：明确唤醒重置同成员短窗口预算，
+预算内追问进入 Inbox；其他成员回复已接受的话题消息，或模型显式开放 `group_open` 受众时，
+可在同一窗口和共享预算内作为扩散进入 Inbox。仅时间相邻的普通群消息仍只归档。助手出站
+消息和模型的 active 话题信号不续期、不开放受众、不增加预算。
 `runtime/artifacts.py` 负责 Artifact 校验、原子写入、来源指纹和纠正门禁。聊天回复和
-确定性任务终态通知统一写入 Outbox，再由唯一 sender 发送。任务状态迁移由确定性
-TaskService 校验。`persistence/` 只提供 Tortoise 模型、按领域 Repository 和
+确定性任务终态通知统一写入 Outbox，再由唯一 sender 发送。候选 Artifact 事件不具备
+交付 capability；只有完成或部分完成的终态 revision 才能交付。纠正验收条件使用稳定 ID
+并兼容旧文本，违规次数按纠正、revision 和原因隔离。任务状态迁移由确定性 TaskService
+校验。`persistence/` 只提供 Tortoise 模型、按领域 Repository 和
 `PumpkinStore` 组合入口，不承载恢复或验收策略；启动恢复由 `runtime/recovery.py`
 编排。基础设施由 `core/services.py` 的具名 Service Definition 通过插件管理器装配；
 `runtime/turn_policy.py` 按强类型 Inbox 来源生成每轮 capability/loadout，工具执行层
@@ -163,7 +172,7 @@ NapCat -> MessageIngress -> MessageArchive -> AgentInbox
 
 1. 业务功能留在 `plugins/<name>/`，根 `mimi/` 只做进程编排和基础连接。
 2. 插件之间不直接依赖代码，通过外部服务或明确契约协作。
-3. 数据获取、领域模型与 HTML 渲染分离。
+3. 数据获取、领域模型与 HTML/Markdown 渲染分离。
 4. `commands.toml` 的真实触发词全仓库唯一。
 5. LOL 查询必须先搜索取得目标身份，再调用战绩接口。
 6. QIMEI 服务保持无设备状态，并保留在仓库根目录。

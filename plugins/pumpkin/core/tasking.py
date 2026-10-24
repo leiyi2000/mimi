@@ -139,6 +139,7 @@ class TaskService:
         goal: str,
         constraints: tuple[str, ...],
         requested_deliverables: tuple[str, ...],
+        allowed_skills: tuple[str, ...] | None = None,
     ) -> int:
         async with in_transaction() as connection:
             row = await self.store.get_task(task_id, using_db=connection)
@@ -154,6 +155,11 @@ class TaskService:
                 goal=goal,
                 constraints=constraints,
                 requested_deliverables=requested_deliverables,
+                allowed_skills=(
+                    tuple(str(item) for item in row.allowed_skills)
+                    if allowed_skills is None
+                    else allowed_skills
+                ),
                 using_db=connection,
             ):
                 raise TaskStateError("task revision update failed")
@@ -187,6 +193,7 @@ class TaskService:
         goal: str,
         constraints: tuple[str, ...],
         requested_deliverables: tuple[str, ...],
+        allowed_skills: tuple[str, ...],
     ) -> TaskCorrection:
         if not instruction.strip() or not acceptance_criteria:
             raise TaskStateError(
@@ -208,6 +215,7 @@ class TaskService:
                 goal=goal,
                 constraints=constraints,
                 requested_deliverables=requested_deliverables,
+                allowed_skills=allowed_skills,
                 using_db=connection,
             ):
                 raise TaskStateError("task correction revision update failed")

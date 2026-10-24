@@ -84,6 +84,44 @@ class FailingProvider:
         )
 
 
+class ReplyThenTimeoutProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stream(self, messages, tools, *, mode):
+        del messages, tools
+        assert mode == "chat"
+        self.calls += 1
+        if self.calls == 1:
+            yield ModelResponse(
+                message=ModelMessage(
+                    role="assistant",
+                    content="",
+                    tool_calls=(
+                        ToolCall(
+                            "send-before-timeout",
+                            "send_napcat_reply",
+                            {
+                                "text": "已经成功回复",
+                                "idempotency_key": "reply-before-timeout",
+                            },
+                        ),
+                    ),
+                ),
+                request_id="reply-before-timeout",
+                provider="fake",
+                model="fake",
+            )
+            return
+        if False:
+            yield None
+        raise ModelProviderError(
+            "model request timed out",
+            retryable=False,
+            code="MODEL_TIMEOUT",
+        )
+
+
 def group_event(
     message_id: int,
     text: str,
@@ -110,7 +148,11 @@ def config_for(tmp_path) -> PumpkinConfig:
     return replace(
         base,
         assistant=replace(base.assistant, name="南瓜"),
-        activation=replace(base.activation, prefixes=("南瓜",)),
+        activation=replace(
+            base.activation,
+            prefixes=("南瓜",),
+            stop_aliases=("闭嘴", "别说了", "南瓜退下", "退下南瓜"),
+        ),
         data_dir=str(tmp_path),
         db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
     )
@@ -156,7 +198,7 @@ async def test_group_message_without_explicit_wake_stays_quiet(tmp_path):
     await runtime.close()
 
 
-async def test_active_group_topic_accepts_other_members(tmp_path):
+async def test_active_group_topic_ignores_other_members(tmp_path):
     client = Client()
     provider = ReplyProvider()
     runtime = ReliablePumpkinRuntime(
@@ -174,7 +216,7 @@ async def test_active_group_topic_accepts_other_members(tmp_path):
     await runtime.handle_event(group_event(6, "我也插一句", sender_id=8))
     await runtime.wait_for_idle(timeout=1)
 
-    assert len(client.sent) == 3
+    assert len(client.sent) == 2
     await runtime.close()
 
 
@@ -189,7 +231,7 @@ async def test_force_sleep_persists_until_explicit_wake(tmp_path):
     )
     await runtime.start()
 
-    await runtime.handle_event(group_event(7, "闭嘴"))
+    await runtime.handle_event(group_event(7, "南瓜退下"))
     await runtime.handle_event(group_event(8, "你还在吗"))
     await runtime.wait_for_idle(timeout=1)
 
@@ -223,6 +265,37 @@ async def test_failed_conversation_turn_sends_receipt_and_completes_inbox(tmp_pa
     sent_text = getattr(client.sent[0][1][-1], "text", "")
     assert "处理失败" in sent_text
     assert await runtime.store.list_pending_agent_inputs("conversation:group:1") == ()
+    await runtime.close()
+
+
+async def test_failed_turn_after_confirmed_reply_suppresses_failure_receipt(tmp_path):
+    client = Client()
+    provider = ReplyThenTimeoutProvider()
+    runtime = ReliablePumpkinRuntime(
+        config_for(tmp_path),
+        client=client,
+        provider_chat=provider,
+        provider_task=provider,
+    )
+    await runtime.start()
+
+    await runtime.handle_event(group_event(11, "南瓜，在吗"))
+    await runtime.wait_for_idle(timeout=1)
+
+    assert provider.calls == 2
+    assert len(client.sent) == 1
+    sent_text = getattr(client.sent[0][1][-1], "text", "")
+    assert sent_text == "已经成功回复"
+    events = await runtime.store.list_agent_events(
+        "conversation:group:1:session"
+    )
+    assert any(
+        event.event_type is AgentEventType.OUTBOX_SENT
+        for event in events
+    )
+    assert events[-1].event_type is AgentEventType.TURN_FAILED
+    assert events[-1].payload["error_code"] == "MODEL_TIMEOUT"
+    assert runtime.reply_ledger.message_ids(events[-1].turn_id or "") == ()
     await runtime.close()
 
 

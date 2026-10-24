@@ -6,7 +6,12 @@ from typing import Any, cast
 from core.config import PumpkinConfig
 from core.domain import AgentRole, ToolContext, ToolResult
 from core.plugins import PluginContext, ServiceKey
-from core.tools import Tool, ToolRegistry
+from core.tools import (
+    Tool,
+    ToolBudgetKind,
+    ToolRegistry,
+    TraceCallback,
+)
 from providers.web import WebProviderError, WebSearchProvider
 
 from .base import CapabilityHost, error, ok, result, task_error
@@ -22,8 +27,9 @@ class WebCapabilityPlugin:
         }
     )
 
-    def __init__(self) -> None:
+    def __init__(self, *, trace: TraceCallback | None = None) -> None:
         self.provider: WebSearchProvider | None = None
+        self.trace = trace
 
     def setup(self, context: PluginContext) -> None:
         config = cast(PumpkinConfig, context.require(ServiceKey.CONFIG))
@@ -43,6 +49,8 @@ class WebCapabilityPlugin:
             max_fetch_bytes=config.web.max_fetch_bytes,
             max_image_bytes=config.web.max_image_bytes,
             max_fetch_chars=config.web.max_fetch_chars,
+            max_host_concurrency=config.web.max_host_concurrency,
+            trace=self.trace,
         )
         self.provider = provider
         context.provide(ServiceKey.WEB_PROVIDER, provider)
@@ -60,6 +68,7 @@ class WebCapabilityPlugin:
                     skill_name="web-search",
                     timeout=25,
                     allowed_roles=frozenset({AgentRole.CHAT, AgentRole.TASK}),
+                    budget_kind=ToolBudgetKind.WEB_SEARCH,
                 )
             )
         )
@@ -80,6 +89,9 @@ class WebCapabilityPlugin:
                     skill_name="web-search",
                     timeout=25,
                     allowed_roles=frozenset({AgentRole.CHAT, AgentRole.TASK}),
+                    budget_kind=ToolBudgetKind.WEB_FETCH,
+                    deduplicate_argument="url",
+                    model_content_max_chars=(config.web.max_model_content_chars),
                 )
             )
         )
@@ -108,6 +120,8 @@ class WebCapabilityPlugin:
                     timeout=35,
                     idempotency_required=True,
                     allowed_roles=frozenset({AgentRole.TASK}),
+                    budget_kind=ToolBudgetKind.WEB_IMAGE,
+                    deduplicate_argument="url",
                 )
             )
         )
@@ -126,6 +140,8 @@ class WebCapabilityPlugin:
                 {
                     "message": "网页搜索未配置或暂时不可用，请稍后重试。",
                     "reason_code": exc.code,
+                    "status_code": exc.status_code,
+                    "retry_after": exc.retry_after,
                 },
                 exc.code,
                 retryable=exc.retryable,
@@ -162,12 +178,19 @@ class WebCapabilityPlugin:
                 ),
                 "FETCH_REDIRECT_REJECTED": "改用搜索结果中的最终公开 URL。",
                 "FETCH_HTTP_ERROR": "稍后重试或改用其他公开来源。",
+                "FETCH_NOT_FOUND": "该页面不存在，改用其他公开来源。",
+                "FETCH_AUTH_FAILED": "该页面需要授权，改用无需登录的公开来源。",
+                "FETCH_RATE_LIMITED": "服务正在限流，稍后重试或改用其他来源。",
+                "FETCH_TIMEOUT": "来源响应超时，稍后重试或改用其他来源。",
+                "FETCH_UPSTREAM_ERROR": "来源暂时异常，稍后重试或改用其他来源。",
                 "FETCH_UNAVAILABLE": "稍后重试或改用其他公开来源。",
             }.get(exc.code, "检查 URL 后改用其他公开来源。")
             return error(
                 {
                     "message": "网页无法安全读取，请改用其他公开来源。",
                     "reason_code": exc.code,
+                    "status_code": exc.status_code,
+                    "retry_after": exc.retry_after,
                     "suggested_action": suggested_action,
                 },
                 exc.code,
@@ -235,6 +258,11 @@ class WebCapabilityPlugin:
             suggested_action = {
                 "FETCH_CONTENT_REJECTED": "改用搜索结果中的其他图片 URL。",
                 "FETCH_HTTP_ERROR": "改用其他公开图片来源。",
+                "FETCH_NOT_FOUND": "图片不存在，改用其他公开图片来源。",
+                "FETCH_AUTH_FAILED": "图片需要授权，改用公开图片来源。",
+                "FETCH_RATE_LIMITED": "图片来源正在限流，稍后重试或更换来源。",
+                "FETCH_TIMEOUT": "图片来源响应超时，稍后重试或更换来源。",
+                "FETCH_UPSTREAM_ERROR": "图片来源暂时异常，稍后重试或更换来源。",
                 "FETCH_PRIVATE_ADDRESS": "改用公网图片来源。",
                 "FETCH_TOO_LARGE": "改用较小的图片。",
             }.get(exc.code, "改用其他公开图片来源。")
@@ -242,6 +270,8 @@ class WebCapabilityPlugin:
                 {
                     "message": "图片无法安全下载。",
                     "reason_code": exc.code,
+                    "status_code": exc.status_code,
+                    "retry_after": exc.retry_after,
                     "suggested_action": suggested_action,
                 },
                 exc.code,

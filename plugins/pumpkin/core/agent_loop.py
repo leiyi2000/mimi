@@ -5,8 +5,10 @@ import json
 import math
 import uuid
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from providers.model import ModelProvider, ModelProviderError
 
@@ -15,8 +17,10 @@ from .config import DEFAULT_MAX_STEPS
 from .domain import (
     AgentEventType,
     AgentInboxItem,
+    AgentInboxSource,
     AgentProfile,
     AgentRole,
+    ArtifactRef,
     ModelMessage,
     ToolCall,
     ToolExecutionStatus,
@@ -25,16 +29,36 @@ from .domain import (
 )
 from .prompts import build_dynamic_context
 from .skills import SkillError, SkillRegistry
-from .tools import ToolRegistry, ToolRegistryError
+from .tools import (
+    Tool,
+    ToolBudgetKind,
+    ToolBudgetLimits,
+    ToolRegistry,
+    ToolRegistryError,
+)
 from .turns import DefaultTurnPolicy, TurnPolicy, TurnToolLoadout
 
 
-def _error_fingerprint(call: ToolCall, result: ToolResult) -> str:
-    arguments = {
-        key: _json_value(value)
-        for key, value in call.arguments.items()
-        if key != "idempotency_key"
+_POLICY_ERROR_CODES = frozenset(
+    {
+        "TOOL_ROLE_NOT_AUTHORIZED",
+        "TOOL_CAPABILITY_NOT_AUTHORIZED",
+        "TOOL_NOT_AUTHORIZED",
+        "TOOL_BUDGET_EXHAUSTED",
     }
+)
+
+
+def _error_fingerprint(call: ToolCall, result: ToolResult) -> str:
+    arguments = (
+        {}
+        if result.error_code in _POLICY_ERROR_CODES
+        else {
+            key: _json_value(value)
+            for key, value in call.arguments.items()
+            if key != "idempotency_key"
+        }
+    )
     return json.dumps(
         {
             "error_code": result.error_code,
@@ -48,7 +72,62 @@ def _error_fingerprint(call: ToolCall, result: ToolResult) -> str:
     )
 
 
-def _tool_content(result: ToolResult) -> Any:
+def _json_text(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def _bounded_tool_payload(payload: dict[str, Any], max_chars: int) -> str:
+    text = _json_text(payload)
+    if len(text) <= max_chars:
+        return text
+    bounded = deepcopy(payload)
+    content = bounded.get("content")
+    if isinstance(content, dict):
+        content["model_content_truncated"] = True
+        if isinstance(content.get("links"), list):
+            content["links"] = content["links"][:10]
+        source_text = content.get("text")
+        if isinstance(source_text, str):
+            content["text"] = ""
+            if len(_json_text(bounded)) <= max_chars:
+                low = 0
+                high = len(source_text)
+                while low < high:
+                    middle = (low + high + 1) // 2
+                    content["text"] = source_text[:middle]
+                    if len(_json_text(bounded)) <= max_chars:
+                        low = middle
+                    else:
+                        high = middle - 1
+                content["text"] = source_text[:low]
+                return _json_text(bounded)
+    bounded["content"] = {
+        "message": "tool result omitted from model context because it is too large",
+        "model_content_truncated": True,
+    }
+    text = _json_text(bounded)
+    if len(text) <= max_chars:
+        return text
+    return _json_text(
+        {
+            "content": {"model_content_truncated": True},
+            "is_error": bool(bounded.get("is_error", False)),
+            "error_code": bounded.get("error_code"),
+            "retryable": bounded.get("retryable", False),
+        }
+    )
+
+
+def _tool_content(
+    result: ToolResult,
+    *,
+    max_chars: int | None = None,
+) -> Any:
     payload = {
         "content": result.content,
         "is_error": result.is_error,
@@ -71,10 +150,10 @@ def _tool_content(result: ToolResult) -> Any:
             for image in result.images
         ],
     }
-    text = json.dumps(
-        payload,
-        ensure_ascii=False,
-        default=str,
+    text = (
+        _bounded_tool_payload(payload, max_chars)
+        if max_chars is not None
+        else _json_text(payload)
     )
     if not result.images:
         return text
@@ -100,21 +179,128 @@ class AgentLoopProfile:
     authorized_skills: frozenset[str] | None = None
     completion_tools: frozenset[str] = frozenset()
     max_steps: int = DEFAULT_MAX_STEPS
+    reserved_completion_steps: int = 0
+    source_step_limits: tuple[tuple[AgentInboxSource, int], ...] = ()
+    completion_fallback: (
+        Callable[[AgentInboxItem, tuple[ArtifactRef, ...]], ToolCall | None]
+        | None
+    ) = None
+    budget_notice_thresholds: tuple[float, ...] = (0.7, 0.85)
+    tool_budget: ToolBudgetLimits | None = None
     turn_policy: TurnPolicy = field(default_factory=DefaultTurnPolicy)
 
+    def __post_init__(self) -> None:
+        if self.max_steps <= 0:
+            raise ValueError("max_steps must be positive")
+        if not 0 <= self.reserved_completion_steps < self.max_steps:
+            raise ValueError(
+                "reserved_completion_steps must be non-negative and less than max_steps"
+            )
+        if any(limit <= 0 for _, limit in self.source_step_limits):
+            raise ValueError("source step limits must be positive")
 
-def _budget_notice(step_index: int, max_steps: int) -> str | None:
-    thresholds = {
-        max(1, math.ceil(max_steps * 0.7)): (
-            "Runtime 提醒：处理预算已使用约 70%。已有结果优先，停止无目的搜索，"
-            "尽快收敛到可交付结果。"
-        ),
-        max(1, math.ceil(max_steps * 0.85)): (
-            "Runtime 提醒：处理预算已使用约 85%。立即停止扩展范围，优先交付已有结果；"
+    def max_steps_for(self, source: AgentInboxSource) -> int:
+        return dict(self.source_step_limits).get(source, self.max_steps)
+
+
+def _budget_notice(
+    step_index: int,
+    max_steps: int,
+    thresholds: tuple[float, ...] = (0.7, 0.85),
+) -> str | None:
+    for threshold in thresholds:
+        if step_index != max(1, math.ceil(max_steps * threshold)):
+            continue
+        percentage = round(threshold * 100)
+        urgency = "立即停止扩展范围，" if threshold >= 0.75 else ""
+        return (
+            f"Runtime 提醒：处理预算已使用约 {percentage}%。{urgency}"
+            "已有结果优先，停止无目的搜索，尽快收敛到可交付结果；"
             "无法完成的部分明确说明，不要继续循环尝试。"
-        ),
-    }
-    return thresholds.get(step_index)
+        )
+    return None
+
+
+def _normalized_url(value: Any) -> str:
+    raw = str(value or "").strip()
+    try:
+        parsed = urlsplit(raw)
+        host = (parsed.hostname or "").lower()
+        if not host:
+            return raw
+        port = parsed.port
+        if port is not None and not (
+            (parsed.scheme.lower() == "http" and port == 80)
+            or (parsed.scheme.lower() == "https" and port == 443)
+        ):
+            host = f"{host}:{port}"
+        query = urlencode(sorted(parse_qsl(parsed.query, keep_blank_values=True)))
+        return urlunsplit((parsed.scheme.lower(), host, parsed.path or "/", query, ""))
+    except (TypeError, ValueError):
+        return raw
+
+
+@dataclass(slots=True)
+class _TurnToolBudget:
+    limits: ToolBudgetLimits
+    counts: dict[ToolBudgetKind, int] = field(default_factory=dict)
+    completed: dict[tuple[ToolBudgetKind, str], ToolResult] = field(
+        default_factory=dict
+    )
+    in_flight: set[tuple[ToolBudgetKind, str]] = field(default_factory=set)
+
+    def prepare(self, tool: Tool, call: ToolCall) -> ToolResult | None:
+        kind = tool.budget_kind
+        if kind is None:
+            return None
+        resource_key = self._resource_key(tool, call)
+        if resource_key is not None:
+            cached = self.completed.get(resource_key)
+            if cached is not None:
+                return cached
+            if resource_key in self.in_flight:
+                return ToolResult(
+                    content={
+                        "message": "the same URL is already being processed",
+                        "reason_code": "DUPLICATE_RESOURCE_IN_FLIGHT",
+                    },
+                    is_error=True,
+                    error_code="DUPLICATE_RESOURCE_IN_FLIGHT",
+                )
+        count = self.counts.get(kind, 0)
+        limit = self.limits.limit_for(kind)
+        if count >= limit:
+            return ToolResult(
+                content={
+                    "message": "the task tool budget is exhausted",
+                    "budget_kind": kind.value,
+                    "limit": limit,
+                },
+                is_error=True,
+                error_code="TOOL_BUDGET_EXHAUSTED",
+            )
+        self.counts[kind] = count + 1
+        if resource_key is not None:
+            self.in_flight.add(resource_key)
+        return None
+
+    def finish(self, tool: Tool, call: ToolCall, result: ToolResult) -> None:
+        resource_key = self._resource_key(tool, call)
+        if resource_key is None:
+            return
+        self.in_flight.discard(resource_key)
+        if not result.is_error or not result.retryable:
+            self.completed[resource_key] = result
+
+    @staticmethod
+    def _resource_key(
+        tool: Tool,
+        call: ToolCall,
+    ) -> tuple[ToolBudgetKind, str] | None:
+        if tool.budget_kind is None or tool.deduplicate_argument is None:
+            return None
+        value = _normalized_url(call.arguments.get(tool.deduplicate_argument))
+        return (tool.budget_kind, value) if value else None
 
 
 @dataclass(slots=True)
@@ -179,11 +365,21 @@ class SessionAgentLoop:
         loadout = self.profile.turn_policy.tool_loadout(item, available_tools)
         visible = set(loadout.visible_tools)
         visible.add("load_skill")
-        blocked_tools = {
-            tool.name for tool in available_tools if tool.name not in visible
-        }
+        max_steps = self.profile.max_steps_for(item.source_type)
+        reserved_completion_steps = min(
+            self.profile.reserved_completion_steps,
+            max_steps - 1,
+        )
+        finalization_start = max_steps - reserved_completion_steps + 1
+        completion_visible = self._completion_tools(loadout)
         non_retryable_errors: dict[str, int] = {}
-        for step_index in range(1, self.profile.max_steps + 1):
+        verified_artifacts: dict[str, ArtifactRef] = {}
+        tool_budget = (
+            _TurnToolBudget(self.profile.tool_budget)
+            if self.profile.tool_budget is not None
+            else None
+        )
+        for step_index in range(1, max_steps + 1):
             step_id = uuid.uuid4().hex
             await agent.session.append(
                 AgentEventType.STEP_STARTED,
@@ -191,7 +387,29 @@ class SessionAgentLoop:
                 turn_id=turn_id,
                 step_id=step_id,
             )
-            notice = _budget_notice(step_index, self.profile.max_steps)
+            finalizing = (
+                reserved_completion_steps > 0
+                and step_index >= finalization_start
+            )
+            if finalizing:
+                visible = set(completion_visible)
+                await agent.session.append(
+                    AgentEventType.RUNTIME_NOTICE,
+                    {
+                        "content": (
+                            "Runtime 强制收尾：常规执行预算已耗尽。当前只能调用完成工具，"
+                            "请立即提交已有结果；有已验证产物但目标未完全满足时，使用"
+                            " partially_completed 并明确 remaining。"
+                        )
+                    },
+                    turn_id=turn_id,
+                    step_id=step_id,
+                )
+            notice = _budget_notice(
+                step_index,
+                max_steps,
+                self.profile.budget_notice_thresholds,
+            )
             if notice is not None:
                 await agent.session.append(
                     AgentEventType.RUNTIME_NOTICE,
@@ -278,6 +496,17 @@ class SessionAgentLoop:
                 )
                 return
             if not assistant.tool_calls:
+                if finalizing or self.profile.profile is AgentProfile.TASK:
+                    await agent.session.append(
+                        AgentEventType.STEP_COMPLETED,
+                        {
+                            "status": "completed",
+                            "reason": "task requires a completion tool",
+                        },
+                        turn_id=turn_id,
+                        step_id=step_id,
+                    )
+                    continue
                 await self._complete_step_and_turn(
                     agent,
                     turn_id,
@@ -304,26 +533,33 @@ class SessionAgentLoop:
                 step_id=step_id,
                 visible=visible,
                 authorized=authorized,
-                blocked_tools=blocked_tools,
                 item=item,
                 loadout=loadout,
+                tool_budget=tool_budget,
             )
             terminal_result: ToolResult | None = None
             terminal_policy_error: ToolResult | None = None
-            completion_error: ToolResult | None = None
             step_non_retryable_errors: dict[str, str] = {}
             for call, result in zip(assistant.tool_calls, results, strict=True):
                 if call.name == "load_skill" and not result.is_error:
                     visible.update(
                         str(name) for name in result.content.get("tool_names", [])
                     )
-                if result.is_error and not result.retryable and result.error_code:
+                for artifact in result.artifacts:
+                    if artifact.verified:
+                        verified_artifacts[artifact.artifact_id] = artifact
+                if (
+                    result.is_error
+                    and result.error_code
+                    and (
+                        not result.retryable
+                        or result.error_code in _POLICY_ERROR_CODES
+                    )
+                ):
                     fingerprint = _error_fingerprint(call, result)
                     step_non_retryable_errors[fingerprint] = result.error_code
                 if call.name in self.profile.completion_tools and not result.is_error:
                     terminal_result = result
-                if call.name == "chat_turn_complete" and result.is_error:
-                    completion_error = result
                 if result.error_code == "CORRECTION_REPEAT_LIMIT":
                     terminal_policy_error = result
             if terminal_policy_error is not None:
@@ -335,22 +571,10 @@ class SessionAgentLoop:
                     reason="repeated correction violation",
                 )
                 return
-            if completion_error is not None:
-                await self._complete_step_and_turn(
-                    agent,
-                    turn_id,
-                    step_id,
-                    outcome="failed",
-                    reason=(
-                        "chat turn completion failed: "
-                        f"{completion_error.error_code or 'unknown error'}"
-                    ),
-                )
-                return
             for fingerprint, error_code in sorted(step_non_retryable_errors.items()):
                 count = non_retryable_errors.get(fingerprint, 0) + 1
                 non_retryable_errors[fingerprint] = count
-                if count >= 2:
+                if count >= 2 and not (finalizing and verified_artifacts):
                     await self._complete_step_and_turn(
                         agent,
                         turn_id,
@@ -383,6 +607,89 @@ class SessionAgentLoop:
                     turn_id=turn_id,
                 )
                 return
+        fallback = (
+            self.profile.completion_fallback(
+                item,
+                tuple(verified_artifacts.values()),
+            )
+            if self.profile.completion_fallback is not None
+            and verified_artifacts
+            else None
+        )
+        if (
+            fallback is not None
+            and fallback.name in completion_visible
+        ):
+            step_id = uuid.uuid4().hex
+            await agent.session.append(
+                AgentEventType.STEP_STARTED,
+                {"step_index": max_steps + 1, "runtime_fallback": True},
+                turn_id=turn_id,
+                step_id=step_id,
+            )
+            await agent.session.append(
+                AgentEventType.RUNTIME_NOTICE,
+                {
+                    "content": (
+                        "Runtime 正在提交已验证产物的部分完成结果，"
+                        "避免产物因步骤预算耗尽而丢失。"
+                    )
+                },
+                turn_id=turn_id,
+                step_id=step_id,
+            )
+            await agent.session.append(
+                AgentEventType.TOOL_CALLED,
+                {
+                    "tool_call_id": fallback.tool_use_id,
+                    "name": fallback.name,
+                    "arguments": _json_value(fallback.arguments),
+                    "runtime_fallback": True,
+                },
+                turn_id=turn_id,
+                step_id=step_id,
+            )
+            result = await self._execute_call(
+                agent,
+                fallback,
+                turn_id=turn_id,
+                step_id=step_id,
+                visible=set(completion_visible),
+                authorized=authorized,
+                item=item,
+                loadout=loadout,
+                tool_budget=tool_budget,
+            )
+            if not result.is_error:
+                await agent.session.append(
+                    AgentEventType.STEP_COMPLETED,
+                    {"status": "completed", "runtime_fallback": True},
+                    turn_id=turn_id,
+                    step_id=step_id,
+                )
+                content = result.content if isinstance(result.content, dict) else {}
+                await agent.session.append(
+                    AgentEventType.TURN_COMPLETED,
+                    {
+                        "outcome": str(
+                            content.get("outcome", "partially_completed")
+                        ),
+                        "reason": content.get("reason"),
+                        "runtime_fallback": True,
+                    },
+                    turn_id=turn_id,
+                )
+                return
+            await agent.session.append(
+                AgentEventType.STEP_COMPLETED,
+                {
+                    "status": "failed",
+                    "reason": result.error_code or "completion fallback failed",
+                    "runtime_fallback": True,
+                },
+                turn_id=turn_id,
+                step_id=step_id,
+            )
         projection = await agent.session.project()
         if projection.open_step_id is not None:
             await agent.session.append(
@@ -406,9 +713,9 @@ class SessionAgentLoop:
         step_id: str,
         visible: set[str],
         authorized: set[str] | None,
-        blocked_tools: set[str],
         item: AgentInboxItem,
         loadout: TurnToolLoadout,
+        tool_budget: _TurnToolBudget | None,
     ) -> list[ToolResult]:
         if self._can_run_in_parallel(calls):
             return list(
@@ -421,9 +728,9 @@ class SessionAgentLoop:
                             step_id=step_id,
                             visible=visible,
                             authorized=authorized,
-                            blocked_tools=blocked_tools,
                             item=item,
                             loadout=loadout,
+                            tool_budget=tool_budget,
                         )
                         for call in calls
                     )
@@ -439,9 +746,9 @@ class SessionAgentLoop:
                     step_id=step_id,
                     visible=visible,
                     authorized=authorized,
-                    blocked_tools=blocked_tools,
                     item=item,
                     loadout=loadout,
+                    tool_budget=tool_budget,
                 )
             )
         return results
@@ -455,9 +762,9 @@ class SessionAgentLoop:
         step_id: str,
         visible: set[str],
         authorized: set[str] | None,
-        blocked_tools: set[str],
         item: AgentInboxItem,
         loadout: TurnToolLoadout,
+        tool_budget: _TurnToolBudget | None,
     ) -> ToolResult:
         await agent.session.append(
             AgentEventType.TOOL_STARTED,
@@ -469,24 +776,38 @@ class SessionAgentLoop:
             step_id=step_id,
         )
         if call.name == "load_skill":
+            tool = None
             result = await self._load_skill(
                 call.arguments,
                 authorized,
-                blocked_tools=blocked_tools,
+                loadout=loadout,
             )
         else:
-            result = await self.tools.execute(
-                call.name,
-                self.profile.turn_policy.tool_context(
-                    item,
-                    role=self.profile.tool_role,
-                    run_id=turn_id,
-                    loadout=loadout,
-                ),
-                call.arguments,
-                tool_use_id=call.tool_use_id,
-                visible_tools=visible,
+            try:
+                tool = self.tools.get(call.name)
+            except ToolRegistryError:
+                tool = None
+            result = (
+                tool_budget.prepare(tool, call)
+                if tool_budget is not None and tool is not None
+                else None
             )
+            if result is None:
+                result = await self.tools.execute(
+                    call.name,
+                    self.profile.turn_policy.tool_context(
+                        item,
+                        role=self.profile.tool_role,
+                        run_id=turn_id,
+                        loadout=loadout,
+                    ),
+                    call.arguments,
+                    tool_use_id=call.tool_use_id,
+                    visible_tools=visible,
+                )
+                if tool_budget is not None and tool is not None:
+                    tool_budget.finish(tool, call, result)
+        model_content_limit = tool.model_content_max_chars if tool is not None else None
         await agent.session.append(
             (
                 AgentEventType.TOOL_FAILED
@@ -501,7 +822,12 @@ class SessionAgentLoop:
                     else ToolExecutionStatus.COMPLETED.value
                 ),
                 "result": _json_value(result.content),
-                "model_content": _json_value(_tool_content(result)),
+                "model_content": _json_value(
+                    _tool_content(
+                        result,
+                        max_chars=model_content_limit,
+                    )
+                ),
                 "error_code": result.error_code,
                 "retryable": result.retryable,
             },
@@ -625,7 +951,7 @@ class SessionAgentLoop:
         arguments: dict[str, Any],
         authorized: set[str] | None,
         *,
-        blocked_tools: set[str],
+        loadout: TurnToolLoadout,
     ) -> ToolResult:
         name = arguments.get("name")
         if not isinstance(name, str):
@@ -651,10 +977,29 @@ class SessionAgentLoop:
                 "skill_name": name,
                 "instruction": instruction,
                 "tool_names": [
-                    tool.name for tool in tools if tool.name not in blocked_tools
+                    tool.name
+                    for tool in tools
+                    if self.profile.tool_role in tool.allowed_roles
+                    and tool.required_capabilities.issubset(
+                        loadout.capabilities
+                    )
                 ],
             }
         )
+
+    def _completion_tools(self, loadout: TurnToolLoadout) -> frozenset[str]:
+        names = set()
+        for name in self.profile.completion_tools:
+            try:
+                tool = self.tools.get(name)
+            except ToolRegistryError:
+                continue
+            if self.profile.tool_role not in tool.allowed_roles:
+                continue
+            if not tool.required_capabilities.issubset(loadout.capabilities):
+                continue
+            names.add(name)
+        return frozenset(names)
 
 
 def _json_value(value: Any) -> Any:

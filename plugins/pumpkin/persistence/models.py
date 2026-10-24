@@ -181,6 +181,20 @@ class TaskCorrectionRow(Model):
         table = "pumpkin_task_corrections"
 
 
+class CorrectionViolationRow(Model):
+    id = fields.IntField(primary_key=True)
+    correction_id = fields.CharField(max_length=128, db_index=True)
+    revision = fields.IntField()
+    reason = fields.CharField(max_length=255)
+    violation_count = fields.IntField(default=0)
+    created_at = fields.DatetimeField(auto_now_add=True)
+    updated_at = fields.DatetimeField(auto_now=True)
+
+    class Meta:
+        table = "pumpkin_correction_violations"
+        unique_together = (("correction_id", "revision", "reason"),)
+
+
 class IdempotencyRow(Model):
     id = fields.IntField(primary_key=True)
     key = fields.CharField(max_length=255, unique=True)

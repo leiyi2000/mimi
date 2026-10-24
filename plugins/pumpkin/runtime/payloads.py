@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from core.domain import MessageRecord, TaskEvent, TaskHandoff
+from core.domain import (
+    MessageRecord,
+    TaskEvent,
+    TaskHandoff,
+    acceptance_criterion_id,
+)
 
 
 def task_started_text(goal: str) -> str:
@@ -95,6 +100,16 @@ def correction_payload(correction: Any) -> dict[str, Any]:
         "to_revision": correction.to_revision,
         "instruction": correction.instruction,
         "acceptance_criteria": list(correction.acceptance_criteria),
+        "acceptance_criteria_refs": [
+            {
+                "criterion_id": acceptance_criterion_id(
+                    correction.correction_id,
+                    index,
+                ),
+                "text": criterion,
+            }
+            for index, criterion in enumerate(correction.acceptance_criteria)
+        ],
         "rejected_artifact_ids": list(correction.rejected_artifact_ids),
         "violation_count": correction.violation_count,
     }

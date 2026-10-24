@@ -360,6 +360,150 @@ async def test_render_html_creates_verified_task_image_artifact(tmp_path):
     await runtime.store.close()
 
 
+class FakeMarkdownRenderer:
+    @staticmethod
+    def artifact_ids(markdown):
+        assert "travel report" in markdown
+        return ()
+
+    @staticmethod
+    def render(
+        markdown,
+        *,
+        images,
+        width,
+        device_pixel_ratio,
+        theme,
+    ):
+        assert markdown
+        assert images == {}
+        assert width == 1600
+        assert device_pixel_ratio == 2
+        assert theme.value == "dark"
+        return b"\x89PNG\r\n\x1a\nmarkdown"
+
+
+@pytest.mark.asyncio
+async def test_render_markdown_creates_verified_task_image_artifact(tmp_path):
+    config = replace(
+        PumpkinConfig.from_env(),
+        data_dir=str(tmp_path),
+        db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+    )
+    runtime = PumpkinRuntime(
+        config,
+        client=object(),
+        markdown_renderer=FakeMarkdownRenderer(),
+    )
+    await runtime.store.initialize(config.db_url)
+    runtime.task_runtime.runs["task-1"] = TaskHandoff(
+        task_id="task-1",
+        revision=1,
+        scope_id="group:1",
+        source_messages=(),
+        involved_people=(),
+        goal="生成旅行报告",
+        constraints=(),
+        requested_deliverables=(),
+        allowed_skills=(),
+    )
+
+    result = await runtime.registry.execute(
+        "render_markdown",
+        tool_context(run_id="task-run", task_id="task-1", revision=1),
+        {
+            "markdown": "# travel report",
+            "name": "travel-report.png",
+            "theme": "dark",
+            "idempotency_key": "markdown-1",
+        },
+    )
+
+    assert not result.is_error
+    assert result.content["format"] == "png"
+    assert result.content["theme"] == "dark"
+    assert result.artifacts[0].kind == "image"
+    assert result.artifacts[0].verified is True
+    assert result.artifacts[0].path
+    await runtime.store.close()
+
+
+class CapturingMarkdownRenderer:
+    artifact_id = ""
+
+    def artifact_ids(self, markdown):
+        assert self.artifact_id in markdown
+        return (self.artifact_id,)
+
+    def render(
+        self,
+        markdown,
+        *,
+        images,
+        width,
+        device_pixel_ratio,
+        theme,
+    ):
+        del markdown, width, device_pixel_ratio, theme
+        assert images == {
+            f"artifact://{self.artifact_id}": b"\x89PNG\r\n\x1a\nsource"
+        }
+        return b"\x89PNG\r\n\x1a\nmarkdown-with-image"
+
+
+@pytest.mark.asyncio
+async def test_render_markdown_resolves_current_task_image_artifact(tmp_path):
+    renderer = CapturingMarkdownRenderer()
+    config = replace(
+        PumpkinConfig.from_env(),
+        data_dir=str(tmp_path),
+        db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+    )
+    runtime = PumpkinRuntime(
+        config,
+        client=object(),
+        markdown_renderer=renderer,
+    )
+    await runtime.store.initialize(config.db_url)
+    runtime.task_runtime.runs["task-1"] = TaskHandoff(
+        task_id="task-1",
+        revision=1,
+        scope_id="group:1",
+        source_messages=(),
+        involved_people=(),
+        goal="生成带图旅行报告",
+        constraints=(),
+        requested_deliverables=(),
+        allowed_skills=(),
+    )
+    context = tool_context(
+        run_id="task-run",
+        task_id="task-1",
+        revision=1,
+    )
+    source = await runtime.write_artifact(
+        context,
+        filename="source.png",
+        kind="image",
+        content=b"\x89PNG\r\n\x1a\nsource",
+    )
+    renderer.artifact_id = source.artifact_id
+
+    result = await runtime.registry.execute(
+        "render_markdown",
+        context,
+        {
+            "markdown": f"![路线图](artifact://{source.artifact_id})",
+            "name": "travel-report.png",
+            "idempotency_key": "markdown-image-1",
+        },
+    )
+
+    assert not result.is_error
+    assert result.artifacts[0].artifact_id != source.artifact_id
+    await runtime.store.close()
+
+
 @pytest.mark.asyncio
 async def test_artifact_paths_are_immutable_for_repeated_names(tmp_path):
     config = replace(

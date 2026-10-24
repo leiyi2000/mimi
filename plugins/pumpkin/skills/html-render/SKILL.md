@@ -28,6 +28,12 @@ HTML 必须是自包含的 HTML/CSS 片段，不得包含脚本、事件处理�
 文件路径或网络 URL。需要引用当前任务已经验证的图片时，在 HTML 中使用
 `src="artifact://<artifact_id>"`；这些 Artifact 必须属于当前任务和 revision。
 
+图片来自公开网络 URL 时，任务必须同时获得 `web-search` 和 `html-render` 授权。先加载
+`web-search`，调用 `download_web_image` 下载并校验图片；再把返回的 Artifact ID 写成
+`src="artifact://<artifact_id>"`，或在 CSS 中写成
+`background-image: url("artifact://<artifact_id>")`。不要把原始 HTTP(S) URL 直接写入
+HTML，也不要用 `fetch_url` 读取图片二进制。
+
 渲染成功后，将返回的 Artifact ID 写入 `complete_task.artifact_ids`。Task Executor
 不能调用 `send_task_delivery`；Runtime 会把完成事件持久化到 Conversation Agent Inbox，
 再由 Conversation Agent 交付已验证 Artifact。不能把 HTML 源码当成交付完成，也不能

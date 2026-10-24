@@ -1,12 +1,24 @@
 from __future__ import annotations
 
 from core.config import PumpkinConfig
-from core.domain import AgentRole, ToolContext, ToolResult, TurnCapability
+from core.domain import (
+    AgentInboxItem,
+    AgentInboxSource,
+    AgentInboxStatus,
+    AgentInboxTarget,
+    AgentRole,
+    TaskEventType,
+    TaskStatus,
+    ToolContext,
+    ToolResult,
+    TurnCapability,
+)
 from core.plugins import ServiceKey
 from core.tools import Tool, ToolRegistry
 from runtime.app import PumpkinRuntime
 from runtime.reliability import ReliablePumpkinRuntime
 from runtime.tools import build_registry
+from runtime.turn_policy import ConversationTurnPolicy
 
 
 class ToolHost:
@@ -60,6 +72,40 @@ def test_conversation_reply_tools_are_builtin_runtime_protocols():
 
     assert registry.get("send_napcat_reply").skill_name is None
     assert registry.get("send_napcat_replies").skill_name is None
+
+
+def test_only_terminal_task_events_receive_delivery_capability():
+    policy = ConversationTurnPolicy()
+
+    def item(event_type: TaskEventType, status: TaskStatus) -> AgentInboxItem:
+        return AgentInboxItem(
+            item_id=f"{event_type.value}:{status.value}",
+            agent_id="conversation:group:1",
+            session_id="session:group:1",
+            scope_id="group:1",
+            sequence=1,
+            target=AgentInboxTarget.NEXT_TURN,
+            source_type=AgentInboxSource.TASK_EVENT,
+            payload={
+                "task_event": {
+                    "event_type": event_type.value,
+                    "status": status.value,
+                }
+            },
+            status=AgentInboxStatus.CLAIMED,
+        )
+
+    candidate_capabilities = policy.tool_loadout(
+        item(TaskEventType.ARTIFACT_READY, TaskStatus.RUNNING),
+        (),
+    ).capabilities
+    completed_capabilities = policy.tool_loadout(
+        item(TaskEventType.COMPLETED, TaskStatus.PARTIALLY_COMPLETED),
+        (),
+    ).capabilities
+
+    assert TurnCapability.TASK_DELIVERY not in candidate_capabilities
+    assert TurnCapability.TASK_DELIVERY in completed_capabilities
 
 
 async def test_tool_registry_enforces_required_turn_capabilities():

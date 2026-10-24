@@ -4,6 +4,8 @@ from core.domain import (
     AgentEventType,
     AgentInboxItem,
     AgentInboxSource,
+    TaskEventType,
+    TaskStatus,
     TurnCapability,
 )
 from core.tools import Tool
@@ -20,6 +22,12 @@ class ConversationTurnPolicy(DefaultTurnPolicy):
         }
     )
     _TASK_EVENT_CAPABILITIES = frozenset(
+        {
+            TurnCapability.TASK_READ,
+            TurnCapability.TASK_CORRECT,
+        }
+    )
+    _TERMINAL_TASK_EVENT_CAPABILITIES = frozenset(
         {
             TurnCapability.TASK_READ,
             TurnCapability.TASK_CORRECT,
@@ -52,6 +60,16 @@ class ConversationTurnPolicy(DefaultTurnPolicy):
         item: AgentInboxItem,
     ) -> frozenset[TurnCapability]:
         if item.source_type is AgentInboxSource.TASK_EVENT:
+            event = item.payload.get("task_event")
+            if isinstance(event, dict) and (
+                event.get("event_type") == TaskEventType.COMPLETED.value
+                and event.get("status")
+                in {
+                    TaskStatus.COMPLETED.value,
+                    TaskStatus.PARTIALLY_COMPLETED.value,
+                }
+            ):
+                return self._TERMINAL_TASK_EVENT_CAPABILITIES
             return self._TASK_EVENT_CAPABILITIES
         if item.payload.get("address_only_message") is True:
             return frozenset()

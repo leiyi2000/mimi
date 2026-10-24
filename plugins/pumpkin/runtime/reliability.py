@@ -27,37 +27,66 @@ class TurnReceiptDriver:
     async def run_turn(self, agent: Agent, item: AgentInboxItem) -> None:
         existing_events = await agent.session.events()
         first_sequence = existing_events[-1].sequence if existing_events else 0
+        terminal_turn_ids: set[str] = set()
         try:
-            await self.delegate.run_turn(agent, item)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            log.exception(
-                "conversation turn crashed item=%s error=%s",
-                item.item_id,
-                type(exc).__name__,
-            )
-            await self._record_failure(agent, item, type(exc).__name__)
+            try:
+                await self.delegate.run_turn(agent, item)
+            except asyncio.CancelledError:
+                projection = await agent.session.project()
+                if projection.open_turn_id is not None:
+                    self.runtime.reply_ledger.clear(projection.open_turn_id)
+                raise
+            except Exception as exc:
+                log.exception(
+                    "conversation turn crashed item=%s error=%s",
+                    item.item_id,
+                    type(exc).__name__,
+                )
+                await self._record_failure(agent, item, type(exc).__name__)
 
-        new_events = tuple(
-            event
-            for event in await agent.session.events()
-            if event.sequence > first_sequence
-        )
-        failed = next(
-            (
+            new_events = tuple(
                 event
-                for event in reversed(new_events)
-                if event.event_type is AgentEventType.TURN_FAILED
-            ),
-            None,
-        )
-        if failed is None:
-            return
-        await self.runtime.send_turn_failure_receipt(
-            item,
-            source_event_id=failed.turn_id or failed.event_id,
-        )
+                for event in await agent.session.events()
+                if event.sequence > first_sequence
+            )
+            terminal_turn_ids = {
+                event.turn_id
+                for event in new_events
+                if event.turn_id is not None
+                and event.event_type
+                in {
+                    AgentEventType.TURN_COMPLETED,
+                    AgentEventType.TURN_FAILED,
+                    AgentEventType.TURN_CANCELLED,
+                }
+            }
+            failed = next(
+                (
+                    event
+                    for event in reversed(new_events)
+                    if event.event_type is AgentEventType.TURN_FAILED
+                ),
+                None,
+            )
+            if failed is None:
+                return
+            if any(
+                event.event_type is AgentEventType.OUTBOX_SENT
+                and event.turn_id == failed.turn_id
+                for event in new_events
+            ):
+                log.warning(
+                    "failure receipt suppressed after confirmed reply item=%s",
+                    item.item_id,
+                )
+                return
+            await self.runtime.send_turn_failure_receipt(
+                item,
+                source_event_id=failed.turn_id or failed.event_id,
+            )
+        finally:
+            for turn_id in terminal_turn_ids:
+                self.runtime.reply_ledger.clear(turn_id)
 
     @staticmethod
     async def _record_failure(
@@ -130,4 +159,3 @@ class ReliablePumpkinRuntime(PumpkinRuntime):
                 result.error_code,
             )
             return
-        await self.sessions.renew(item.scope_id)

@@ -5,7 +5,10 @@ import ipaddress
 import json
 import re
 import socket
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
 
@@ -13,10 +16,25 @@ import httpx
 
 
 class WebProviderError(RuntimeError):
-    def __init__(self, code: str, *, retryable: bool = False) -> None:
+    def __init__(
+        self,
+        code: str,
+        *,
+        retryable: bool = False,
+        status_code: int | None = None,
+        retry_after: str | None = None,
+    ) -> None:
         super().__init__(code)
         self.code = code
         self.retryable = retryable
+        self.status_code = status_code
+        self.retry_after = retry_after
+
+
+class WebHttpOperation(StrEnum):
+    SEARCH = "search"
+    FETCH = "fetch"
+    IMAGE = "image"
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,7 +105,9 @@ class WebSearchProvider:
         max_fetch_bytes: int,
         max_image_bytes: int,
         max_fetch_chars: int,
+        max_host_concurrency: int = 2,
         client: httpx.AsyncClient | None = None,
+        trace: Callable[[str], None] | None = None,
     ) -> None:
         self.api_url = api_url.strip()
         self.api_key = api_key.strip() if api_key else None
@@ -99,7 +119,10 @@ class WebSearchProvider:
             min(max_image_bytes, 20 * 1024 * 1024),
         )
         self.max_fetch_chars = max(1_000, min(max_fetch_chars, 100_000))
+        self.max_host_concurrency = max(1, min(max_host_concurrency, 16))
         self._client = client
+        self._trace = trace
+        self._host_semaphores: dict[str, asyncio.Semaphore] = {}
 
     async def search(self, query: str) -> tuple[SearchResult, ...]:
         query = query.strip()
@@ -107,22 +130,27 @@ class WebSearchProvider:
             raise WebProviderError("SEARCH_NOT_CONFIGURED")
         if not 1 <= len(query) <= 300:
             raise WebProviderError("SEARCH_QUERY_INVALID")
+        started_at = time.monotonic()
         try:
             if self._client is not None:
-                response = await self._client.post(
-                    self.api_url,
-                    json={
-                        "query": query,
-                        "max_results": self.max_results,
-                        "zone": "cn",
-                        "language": "zh-CN",
-                    },
-                    headers=self._headers(),
-                )
+                async with self._host_semaphore(self.api_url):
+                    response = await self._client.post(
+                        self.api_url,
+                        json={
+                            "query": query,
+                            "max_results": self.max_results,
+                            "zone": "cn",
+                            "language": "zh-CN",
+                        },
+                        headers=self._headers(),
+                    )
             else:
-                async with httpx.AsyncClient(
-                    timeout=self.timeout, follow_redirects=False, trust_env=False
-                ) as client:
+                async with (
+                    httpx.AsyncClient(
+                        timeout=self.timeout, follow_redirects=False, trust_env=False
+                    ) as client,
+                    self._host_semaphore(self.api_url),
+                ):
                     response = await client.post(
                         self.api_url,
                         json={
@@ -134,13 +162,33 @@ class WebSearchProvider:
                         headers=self._headers(),
                     )
         except (httpx.HTTPError, TimeoutError) as exc:
-            raise WebProviderError("SEARCH_UNAVAILABLE", retryable=True) from exc
-        if response.status_code == 429:
-            raise WebProviderError("SEARCH_RATE_LIMITED", retryable=True)
-        if response.status_code >= 400:
-            raise WebProviderError(
-                "SEARCH_HTTP_ERROR", retryable=response.status_code >= 500
+            error = WebProviderError("SEARCH_UNAVAILABLE")
+            self._emit_http(
+                WebHttpOperation.SEARCH,
+                self.api_url,
+                started_at,
+                error=error,
             )
+            raise error from exc
+        if response.status_code >= 400:
+            error = self._http_error(
+                "SEARCH",
+                response.status_code,
+                response.headers.get("retry-after"),
+            )
+            self._emit_http(
+                WebHttpOperation.SEARCH,
+                self.api_url,
+                started_at,
+                error=error,
+            )
+            raise error
+        self._emit_http(
+            WebHttpOperation.SEARCH,
+            self.api_url,
+            started_at,
+            status_code=response.status_code,
+        )
         try:
             payload = response.json()
             if not isinstance(payload, dict):
@@ -182,21 +230,51 @@ class WebSearchProvider:
 
     async def fetch(self, url: str) -> FetchedPage:
         current = url.strip()
-        if self._client is not None:
-            return await self._fetch(self._client, current)
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=False, trust_env=False
-        ) as client:
-            return await self._fetch(client, current)
+        started_at = time.monotonic()
+        try:
+            if self._client is not None:
+                return await self._fetch(self._client, current)
+            async with httpx.AsyncClient(
+                timeout=self.timeout, follow_redirects=False, trust_env=False
+            ) as client:
+                return await self._fetch(client, current)
+        except WebProviderError as exc:
+            if exc.code in {
+                "FETCH_URL_INVALID",
+                "FETCH_DNS_FAILED",
+                "FETCH_PRIVATE_ADDRESS",
+            }:
+                self._emit_http(
+                    WebHttpOperation.FETCH,
+                    current,
+                    started_at,
+                    error=exc,
+                )
+            raise
 
     async def download_image(self, url: str) -> tuple[str, str, bytes]:
         current = url.strip()
-        if self._client is not None:
-            return await self._download_image(self._client, current)
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=False, trust_env=False
-        ) as client:
-            return await self._download_image(client, current)
+        started_at = time.monotonic()
+        try:
+            if self._client is not None:
+                return await self._download_image(self._client, current)
+            async with httpx.AsyncClient(
+                timeout=self.timeout, follow_redirects=False, trust_env=False
+            ) as client:
+                return await self._download_image(client, current)
+        except WebProviderError as exc:
+            if exc.code in {
+                "FETCH_URL_INVALID",
+                "FETCH_DNS_FAILED",
+                "FETCH_PRIVATE_ADDRESS",
+            }:
+                self._emit_http(
+                    WebHttpOperation.IMAGE,
+                    current,
+                    started_at,
+                    error=exc,
+                )
+            raise
 
     async def _download_image(
         self,
@@ -205,24 +283,43 @@ class WebSearchProvider:
     ) -> tuple[str, str, bytes]:
         for redirect_count in range(4):
             await self._validate_public_url(url)
+            started_at = time.monotonic()
+            status_code: int | None = None
+            emitted = False
             try:
-                async with client.stream(
-                    "GET",
-                    url,
-                    headers={
-                        "Accept": "image/avif,image/webp,image/apng,image/*",
-                        "User-Agent": "mimi-pumpkin/1.0",
-                    },
-                ) as response:
+                async with (
+                    self._host_semaphore(url),
+                    client.stream(
+                        "GET",
+                        url,
+                        headers={
+                            "Accept": "image/avif,image/webp,image/apng,image/*",
+                            "User-Agent": "mimi-pumpkin/1.0",
+                        },
+                    ) as response,
+                ):
+                    status_code = response.status_code
                     if response.status_code in {301, 302, 303, 307, 308}:
                         location = response.headers.get("location", "").strip()
                         if not location or redirect_count == 3:
-                            raise WebProviderError("FETCH_REDIRECT_REJECTED")
+                            raise WebProviderError(
+                                "FETCH_REDIRECT_REJECTED",
+                                status_code=response.status_code,
+                            )
+                        self._emit_http(
+                            WebHttpOperation.IMAGE,
+                            url,
+                            started_at,
+                            status_code=response.status_code,
+                        )
+                        emitted = True
                         url = urljoin(str(response.url), location)
                         continue
                     if response.status_code >= 400:
-                        raise WebProviderError(
-                            "FETCH_HTTP_ERROR", retryable=response.status_code >= 500
+                        raise self._http_error(
+                            "FETCH",
+                            response.status_code,
+                            response.headers.get("retry-after"),
                         )
                     content_type = (
                         response.headers.get("content-type", "")
@@ -243,34 +340,77 @@ class WebSearchProvider:
                         if len(body) + len(chunk) > self.max_image_bytes:
                             raise WebProviderError("FETCH_TOO_LARGE")
                         body.extend(chunk)
-                    return str(response.url), content_type, bytes(body)
-            except WebProviderError:
+                    final_url = str(response.url)
+                self._emit_http(
+                    WebHttpOperation.IMAGE,
+                    url,
+                    started_at,
+                    status_code=status_code,
+                )
+                return final_url, content_type, bytes(body)
+            except WebProviderError as exc:
+                if not emitted:
+                    self._emit_http(
+                        WebHttpOperation.IMAGE,
+                        url,
+                        started_at,
+                        status_code=status_code,
+                        error=exc,
+                    )
                 raise
             except (httpx.HTTPError, TimeoutError) as exc:
-                raise WebProviderError("FETCH_UNAVAILABLE", retryable=True) from exc
+                error = WebProviderError("FETCH_UNAVAILABLE")
+                self._emit_http(
+                    WebHttpOperation.IMAGE,
+                    url,
+                    started_at,
+                    error=error,
+                )
+                raise error from exc
         raise WebProviderError("FETCH_REDIRECT_REJECTED")
 
     async def _fetch(self, client: httpx.AsyncClient, url: str) -> FetchedPage:
         for redirect_count in range(4):
             await self._validate_public_url(url)
+            started_at = time.monotonic()
+            status_code: int | None = None
+            emitted = False
             try:
-                async with client.stream(
-                    "GET",
-                    url,
-                    headers={
-                        "Accept": "text/html,application/json,text/plain,application/xml",
-                        "User-Agent": "mimi-pumpkin/1.0",
-                    },
-                ) as response:
+                async with (
+                    self._host_semaphore(url),
+                    client.stream(
+                        "GET",
+                        url,
+                        headers={
+                            "Accept": (
+                                "text/html,application/json,text/plain,application/xml"
+                            ),
+                            "User-Agent": "mimi-pumpkin/1.0",
+                        },
+                    ) as response,
+                ):
+                    status_code = response.status_code
                     if response.status_code in {301, 302, 303, 307, 308}:
                         location = response.headers.get("location", "").strip()
                         if not location or redirect_count == 3:
-                            raise WebProviderError("FETCH_REDIRECT_REJECTED")
+                            raise WebProviderError(
+                                "FETCH_REDIRECT_REJECTED",
+                                status_code=response.status_code,
+                            )
+                        self._emit_http(
+                            WebHttpOperation.FETCH,
+                            url,
+                            started_at,
+                            status_code=response.status_code,
+                        )
+                        emitted = True
                         url = urljoin(str(response.url), location)
                         continue
                     if response.status_code >= 400:
-                        raise WebProviderError(
-                            "FETCH_HTTP_ERROR", retryable=response.status_code >= 500
+                        raise self._http_error(
+                            "FETCH",
+                            response.status_code,
+                            response.headers.get("retry-after"),
                         )
                     content_type = (
                         response.headers.get("content-type", "")
@@ -300,16 +440,114 @@ class WebSearchProvider:
                             raise WebProviderError("FETCH_TOO_LARGE")
                         body.extend(chunk)
                     encoding = self._encoding(response.headers.get("content-type", ""))
-                    return self._parse(
-                        str(response.url),
-                        content_type,
-                        bytes(body).decode(encoding, errors="replace"),
+                    final_url = str(response.url)
+                page = self._parse(
+                    final_url,
+                    content_type,
+                    bytes(body).decode(encoding, errors="replace"),
+                )
+                self._emit_http(
+                    WebHttpOperation.FETCH,
+                    url,
+                    started_at,
+                    status_code=status_code,
+                )
+                return page
+            except WebProviderError as exc:
+                if not emitted:
+                    self._emit_http(
+                        WebHttpOperation.FETCH,
+                        url,
+                        started_at,
+                        status_code=status_code,
+                        error=exc,
                     )
-            except WebProviderError:
                 raise
             except (httpx.HTTPError, TimeoutError) as exc:
-                raise WebProviderError("FETCH_UNAVAILABLE", retryable=True) from exc
+                error = WebProviderError("FETCH_UNAVAILABLE")
+                self._emit_http(
+                    WebHttpOperation.FETCH,
+                    url,
+                    started_at,
+                    error=error,
+                )
+                raise error from exc
         raise WebProviderError("FETCH_REDIRECT_REJECTED")
+
+    def _host_semaphore(self, url: str) -> asyncio.Semaphore:
+        host = (urlsplit(url).hostname or "").lower()
+        return self._host_semaphores.setdefault(
+            host,
+            asyncio.Semaphore(self.max_host_concurrency),
+        )
+
+    @staticmethod
+    def _http_error(
+        prefix: str,
+        status_code: int,
+        retry_after: str | None,
+    ) -> WebProviderError:
+        retryable = status_code in {408, 429} or 500 <= status_code <= 599
+        if status_code == 408:
+            suffix = "TIMEOUT"
+        elif status_code == 429:
+            suffix = "RATE_LIMITED"
+        elif status_code in {401, 403}:
+            suffix = "AUTH_FAILED"
+        elif status_code == 404:
+            suffix = "NOT_FOUND"
+        elif 500 <= status_code <= 599:
+            suffix = "UPSTREAM_ERROR"
+        else:
+            suffix = "HTTP_ERROR"
+        return WebProviderError(
+            f"{prefix}_{suffix}",
+            retryable=retryable,
+            status_code=status_code,
+            retry_after=retry_after,
+        )
+
+    def _emit_http(
+        self,
+        operation: WebHttpOperation,
+        url: str,
+        started_at: float,
+        *,
+        status_code: int | None = None,
+        error: WebProviderError | None = None,
+    ) -> None:
+        if self._trace is None:
+            return
+        retry_after = error.retry_after if error is not None else None
+        if retry_after is not None:
+            retry_after = retry_after.replace("\r", "").replace("\n", "")[:100]
+        event = {
+            "operation": operation.value,
+            "host": (urlsplit(url).hostname or "").lower(),
+            "status_code": (
+                error.status_code
+                if error is not None and error.status_code is not None
+                else status_code
+            ),
+            "duration_ms": max(
+                0,
+                round((time.monotonic() - started_at) * 1000),
+            ),
+            "retryable": error.retryable if error is not None else False,
+            "error_code": error.code if error is not None else None,
+            "retry_after": retry_after,
+        }
+        try:
+            self._trace(
+                "pumpkin_web_http "
+                + json.dumps(
+                    event,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+        except Exception:  # noqa: BLE001
+            return
 
     @staticmethod
     async def _validate_public_url(url: str) -> None:

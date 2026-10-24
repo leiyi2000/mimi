@@ -28,6 +28,53 @@ class ParticipationPhase(StrEnum):
     QUIET = "quiet"
 
 
+class ParticipationIntent(StrEnum):
+    DIRECT = "direct"
+    FOLLOW_UP = "follow_up"
+    EXPANSION = "expansion"
+    AMBIENT = "ambient"
+    STOP = "stop"
+
+
+class ParticipationAudience(StrEnum):
+    REQUESTER_ONLY = "requester_only"
+    GROUP_OPEN = "group_open"
+
+
+class ParticipationAction(StrEnum):
+    ACCEPT = "accept"
+    ARCHIVE_ONLY = "archive_only"
+    SLEEP = "sleep"
+
+
+class ParticipationReason(StrEnum):
+    EXPLICIT_DIRECT = "explicit_direct"
+    SAME_SENDER_FOLLOW_UP = "same_sender_follow_up"
+    REPLY_TO_ACCEPTED_TOPIC_MESSAGE = "reply_to_accepted_topic_message"
+    GROUP_OPEN_TOPIC = "group_open_topic"
+    DIFFERENT_SENDER = "different_sender"
+    FOLLOW_UP_BUDGET_EXHAUSTED = "follow_up_budget_exhausted"
+    FOLLOW_UP_WINDOW_EXPIRED = "follow_up_window_expired"
+    EXPANSION_BUDGET_EXHAUSTED = "expansion_budget_exhausted"
+    EXPANSION_WINDOW_EXPIRED = "expansion_window_expired"
+    INACTIVE_SESSION = "inactive_session"
+    MANUAL_SLEEP = "manual_sleep"
+    STOP_DIRECTIVE = "stop_directive"
+
+
+class ConversationDirective(StrEnum):
+    STOP = "stop"
+
+
+@dataclass(frozen=True, slots=True)
+class ParticipationDecision:
+    action: ParticipationAction
+    intent: ParticipationIntent
+    reason: ParticipationReason
+    remaining_budget: int
+    max_reply_messages: int
+
+
 class TaskStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
@@ -226,6 +273,12 @@ class ArtifactRef:
     path: str | None = None
 
 
+def acceptance_criterion_id(correction_id: str, index: int) -> str:
+    if not correction_id or index < 0:
+        raise ValueError("invalid acceptance criterion identity")
+    return f"{correction_id}:criterion:{index + 1}"
+
+
 @dataclass(frozen=True, slots=True)
 class TaskCorrection:
     correction_id: str
@@ -333,6 +386,8 @@ class ToolContext:
     revision: int | None = None
     task_context_mode: str = "on_request"
     address_only_message: bool = False
+    participation_intent: ParticipationIntent | None = None
+    max_reply_messages: int = 3
     inbox_source: AgentInboxSource | None = None
     capabilities: frozenset[TurnCapability] = frozenset()
 

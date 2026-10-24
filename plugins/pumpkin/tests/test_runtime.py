@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from dataclasses import replace
+from datetime import datetime, timedelta, UTC
 
 from core.config import PumpkinConfig
 from core.domain import (
@@ -11,6 +12,11 @@ from core.domain import (
     AgentRole,
     ModelMessage,
     ModelResponse,
+    ParticipationAction,
+    ParticipationAudience,
+    ParticipationIntent,
+    ParticipationPhase,
+    ParticipationReason,
     PersonRef,
     SessionState,
     TaskHandoff,
@@ -194,12 +200,54 @@ class CompletionFailureProvider:
                     "topic_state": "active",
                 },
             )
+        elif self.calls == 2:
+            call = ToolCall(
+                "complete-corrected",
+                "chat_turn_complete",
+                {
+                    "outcome": "replied",
+                    "sent_message_ids": ["101"],
+                    "topic_state": "active",
+                },
+            )
         else:
-            raise AssertionError("completion failure must terminate the turn")
+            raise AssertionError("corrected completion must terminate the turn")
         self.calls += 1
         yield ModelResponse(
             message=ModelMessage(role="assistant", content="", tool_calls=(call,)),
             request_id=f"completion-failure-{self.calls}",
+            provider="fake",
+            model="fake",
+        )
+
+
+class RepeatedCompletionFailureProvider:
+    def __init__(self):
+        self.calls = 0
+
+    async def stream(self, messages, tools, *, mode):
+        del messages, tools
+        assert mode == "chat"
+        if self.calls == 0:
+            call = ToolCall(
+                "send-reply",
+                "send_napcat_reply",
+                {"text": "第一条", "idempotency_key": "first-reply"},
+            )
+        else:
+            call = ToolCall(
+                f"complete-{self.calls}",
+                "chat_turn_complete",
+                {
+                    "outcome": "replied",
+                    "sent_message_ids": ["not-sent"],
+                    "topic_state": "active",
+                },
+            )
+        self.calls += 1
+        yield ModelResponse(
+            message=ModelMessage(role="assistant", content="", tool_calls=(call,)),
+            request_id=f"repeated-completion-failure-{self.calls}",
             provider="fake",
             model="fake",
         )
@@ -227,27 +275,41 @@ def private_event(message_id: int = 1):
     }
 
 
-def group_event(message_id: int, text: str):
+def group_event(
+    message_id: int,
+    text: str,
+    *,
+    sender_id: int = 7,
+    reply_to_message_id: str | None = None,
+):
+    message = []
+    if reply_to_message_id is not None:
+        message.append(
+            {"type": "reply", "data": {"id": reply_to_message_id}}
+        )
+    message.append({"type": "text", "data": {"text": text}})
     return {
         "message_type": "group",
         "time": int(time.time()),
         "self_id": 999,
         "message_id": message_id,
-        "user_id": 7,
+        "user_id": sender_id,
         "message_seq": message_id,
         "real_id": message_id,
         "group_id": 1,
-        "sender": {"user_id": 7, "nickname": "member"},
+        "sender": {"user_id": sender_id, "nickname": "member"},
         "raw_message": text,
-        "message": [{"type": "text", "data": {"text": text}}],
+        "message": message,
     }
 
 
-def test_force_sleep_command_is_only_plain_shut_up():
+def test_force_sleep_command_supports_configured_assistant_aliases():
     assert _is_force_sleep_command("闭嘴", "南瓜")
     assert _is_force_sleep_command("闭嘴！", "南瓜")
+    assert _is_force_sleep_command("南瓜退下", "南瓜")
+    assert _is_force_sleep_command("退下，南瓜！", "南瓜")
+    assert _is_force_sleep_command("别说了", "南瓜")
     assert not _is_force_sleep_command("强制关闭南瓜", "南瓜")
-    assert not _is_force_sleep_command("南瓜退下", "南瓜")
 
 
 def test_address_only_message_does_not_imply_task_intent():
@@ -320,7 +382,7 @@ async def test_user_message_cannot_load_task_delivery_tool(tmp_path):
     await runtime.close()
 
 
-async def test_chat_completion_failure_does_not_send_another_reply(tmp_path):
+async def test_chat_completion_failure_is_returned_for_model_correction(tmp_path):
     base = PumpkinConfig.from_env()
     config = replace(
         base,
@@ -342,12 +404,52 @@ async def test_chat_completion_failure_does_not_send_another_reply(tmp_path):
     await runtime.handle_event(group_event(1, "南瓜，你在吗"))
     await runtime.wait_for_idle(timeout=1)
 
-    assert provider.calls == 2
+    assert provider.calls == 3
+    assert len(client.sent) == 1
+    events = await runtime.store.list_agent_events(
+        "conversation:group:1:session"
+    )
+    assert any(
+        event.event_type.value == "tool.failed"
+        and event.payload["error_code"] == "SEND_NOT_CONFIRMED"
+        for event in events
+    )
+    assert events[-1].event_type.value == "turn.completed"
+    assert runtime.reply_ledger.message_ids(events[-1].turn_id or "") == ()
+    await runtime.close()
+
+
+async def test_repeated_chat_completion_failure_terminates_turn(tmp_path):
+    base = PumpkinConfig.from_env()
+    config = replace(
+        base,
+        assistant=replace(base.assistant, name="南瓜"),
+        activation=replace(base.activation, prefixes=("南瓜",)),
+        data_dir=str(tmp_path),
+        db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+    )
+    provider = RepeatedCompletionFailureProvider()
+    client = FakeClient()
+    runtime = PumpkinRuntime(
+        config,
+        client=client,
+        provider_chat=provider,
+        provider_task=provider,
+    )
+    await runtime.start()
+
+    await runtime.handle_event(group_event(1, "南瓜，你在吗"))
+    await runtime.wait_for_idle(timeout=1)
+
+    assert provider.calls == 3
     assert len(client.sent) == 1
     events = await runtime.store.list_agent_events(
         "conversation:group:1:session"
     )
     assert events[-1].event_type.value == "turn.failed"
+    assert events[-1].payload["reason"] == (
+        "repeated non-retryable tool error: SEND_NOT_CONFIRMED"
+    )
     await runtime.close()
 
 
@@ -713,7 +815,7 @@ async def test_chat_context_contains_structured_identity_and_recent_outbound(tmp
     await runtime.close()
 
 
-async def test_unaddressed_group_message_continues_active_chat_session(tmp_path):
+async def test_unaddressed_group_message_is_only_archived(tmp_path):
     base = PumpkinConfig.from_env()
     config = replace(
         base,
@@ -728,16 +830,511 @@ async def test_unaddressed_group_message_continues_active_chat_session(tmp_path)
     )
     await runtime.start()
     await runtime.sessions.activate("group:1", summary="", sender_id="7")
-    await runtime.handle_event(group_event(31, "我也补充一下"))
+    await runtime.handle_event(
+        group_event(31, "我也补充一下", sender_id=8)
+    )
     await runtime.wait_for_idle(timeout=1)
 
-    assert len(client.sent) == 1
+    assert len(client.sent) == 0
     archived = await runtime.store.get_archived_message("group:1", "31")
     assert archived is not None
     events = await runtime.store.list_agent_events(
         "conversation:group:1:session"
     )
-    assert events[-1].event_type.value == "turn.completed"
+    assert events == ()
+    await runtime.close()
+
+
+async def test_same_sender_follow_up_budget_accepts_only_two_turns(tmp_path):
+    base = PumpkinConfig.from_env()
+    config = replace(
+        base,
+        assistant=replace(base.assistant, name="南瓜"),
+        activation=replace(base.activation, prefixes=("南瓜",)),
+        data_dir=str(tmp_path),
+        db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+    )
+    client = FakeClient()
+    runtime = PumpkinRuntime(
+        config,
+        client=client,
+        provider_chat=ChatProvider(),
+    )
+    await runtime.start()
+
+    await runtime.handle_event(group_event(32, "南瓜，在吗"))
+    await runtime.wait_for_idle(timeout=1)
+    await runtime.handle_event(group_event(33, "第一句补充"))
+    await runtime.wait_for_idle(timeout=1)
+    await runtime.handle_event(group_event(34, "第二句补充"))
+    await runtime.wait_for_idle(timeout=1)
+    await runtime.handle_event(group_event(35, "第三句补充"))
+    await runtime.wait_for_idle(timeout=1)
+
+    assert len(client.sent) == 3
+    row = await runtime.store.get_session("group:1")
+    assert row is not None
+    assert row.cooling_message_count == 2
+    assert row.participation_phase == ParticipationPhase.COOLING.value
+    events = await runtime.store.list_agent_events(
+        "conversation:group:1:session"
+    )
+    assert sum(item.event_type.value == "turn.started" for item in events) == 3
+    await runtime.close()
+
+
+async def test_other_member_reply_to_accepted_message_is_expansion(tmp_path):
+    base = PumpkinConfig.from_env()
+    runtime = PumpkinRuntime(
+        replace(
+            base,
+            data_dir=str(tmp_path),
+            db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+        ),
+        client=FakeClient(),
+    )
+    await runtime.start()
+    now = datetime.now(UTC)
+    direct = runtime.adapter.adapt(
+        group_event(36, "南瓜，在吗", sender_id=7)
+    )
+    direct_decision = await runtime.sessions.decide_participation(
+        direct,
+        direct=True,
+        now=now,
+    )
+    before = await runtime.store.get_session("group:1")
+    assert direct_decision.intent is ParticipationIntent.DIRECT
+    assert before is not None
+
+    expansion = runtime.adapter.adapt(
+        group_event(
+            37,
+            "我也想补充",
+            sender_id=8,
+            reply_to_message_id="36",
+        )
+    )
+    decision = await runtime.sessions.decide_participation(
+        expansion,
+        direct=False,
+        now=now + timedelta(seconds=1),
+    )
+
+    after = await runtime.store.get_session("group:1")
+    assert decision.action is ParticipationAction.ACCEPT
+    assert decision.intent is ParticipationIntent.EXPANSION
+    assert (
+        decision.reason
+        is ParticipationReason.REPLY_TO_ACCEPTED_TOPIC_MESSAGE
+    )
+    assert decision.max_reply_messages == 1
+    assert after is not None
+    assert after.cooling_message_count == 1
+    assert after.expires_at == before.expires_at
+    await runtime.close()
+
+
+async def test_group_open_allows_bounded_expansion_without_reset(tmp_path):
+    base = PumpkinConfig.from_env()
+    runtime = PumpkinRuntime(
+        replace(
+            base,
+            data_dir=str(tmp_path),
+            db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+        ),
+        client=FakeClient(),
+    )
+    await runtime.start()
+    now = datetime.now(UTC)
+    await runtime.sessions.activate(
+        "group:1",
+        summary="direct",
+        now=now,
+        sender_id="7",
+        message_id="wake",
+        explicit_wake=True,
+    )
+    before = await runtime.store.get_session("group:1")
+    assert before is not None
+
+    completion = await runtime.chat_tools.chat_turn_complete(
+        ToolContext(
+            scope_id="group:1",
+            sender_id="7",
+            message_id="wake",
+            sender_name="member",
+            agent_role=AgentRole.CHAT,
+            run_id="open-group-topic",
+        ),
+        {
+            "outcome": "ignored",
+            "sent_message_ids": [],
+            "topic_state": "active",
+            "topic_audience": ParticipationAudience.GROUP_OPEN.value,
+        },
+    )
+    opened = await runtime.store.get_session("group:1")
+    assert not completion.is_error
+    assert opened is not None
+    assert opened.expires_at == before.expires_at
+    assert opened.activated_at == before.activated_at
+    assert opened.cooling_message_count == 0
+
+    decision = await runtime.sessions.decide_participation(
+        runtime.adapter.adapt(
+            group_event(38, "我来回答", sender_id=8)
+        ),
+        direct=False,
+        now=now + timedelta(seconds=1),
+    )
+
+    assert decision.action is ParticipationAction.ACCEPT
+    assert decision.intent is ParticipationIntent.EXPANSION
+    assert decision.reason is ParticipationReason.GROUP_OPEN_TOPIC
+    await runtime.close()
+
+
+async def test_follow_up_and_expansion_consume_one_shared_budget(tmp_path):
+    base = PumpkinConfig.from_env()
+    runtime = PumpkinRuntime(
+        replace(
+            base,
+            data_dir=str(tmp_path),
+            db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+        ),
+        client=FakeClient(),
+    )
+    await runtime.start()
+    now = datetime.now(UTC)
+    await runtime.sessions.activate(
+        "group:1",
+        summary="direct",
+        now=now,
+        sender_id="7",
+        message_id="wake",
+        explicit_wake=True,
+    )
+
+    follow_up = await runtime.sessions.decide_participation(
+        runtime.adapter.adapt(
+            group_event(49, "先补充一句", sender_id=7)
+        ),
+        direct=False,
+        now=now + timedelta(seconds=1),
+    )
+    expansion = await runtime.sessions.decide_participation(
+        runtime.adapter.adapt(
+            group_event(
+                50,
+                "另一位加入",
+                sender_id=8,
+                reply_to_message_id="wake",
+            )
+        ),
+        direct=False,
+        now=now + timedelta(seconds=2),
+    )
+    exhausted = await runtime.sessions.decide_participation(
+        runtime.adapter.adapt(
+            group_event(
+                51,
+                "继续扩散",
+                sender_id=9,
+                reply_to_message_id="50",
+            )
+        ),
+        direct=False,
+        now=now + timedelta(seconds=3),
+    )
+
+    assert follow_up.intent is ParticipationIntent.FOLLOW_UP
+    assert follow_up.remaining_budget == 1
+    assert expansion.intent is ParticipationIntent.EXPANSION
+    assert expansion.remaining_budget == 0
+    assert exhausted.action is ParticipationAction.ARCHIVE_ONLY
+    assert (
+        exhausted.reason
+        is ParticipationReason.EXPANSION_BUDGET_EXHAUSTED
+    )
+    await runtime.close()
+
+
+async def test_topic_active_alone_does_not_open_or_refresh_topic(tmp_path):
+    base = PumpkinConfig.from_env()
+    runtime = PumpkinRuntime(
+        replace(
+            base,
+            data_dir=str(tmp_path),
+            db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+        ),
+        client=FakeClient(),
+    )
+    await runtime.start()
+    now = datetime.now(UTC)
+    await runtime.sessions.activate(
+        "group:1",
+        summary="direct",
+        now=now,
+        sender_id="7",
+        message_id="wake",
+        explicit_wake=True,
+    )
+    before = await runtime.store.get_session("group:1")
+    assert before is not None
+
+    completion = await runtime.chat_tools.chat_turn_complete(
+        ToolContext(
+            scope_id="group:1",
+            sender_id="7",
+            message_id="wake",
+            sender_name="member",
+            agent_role=AgentRole.CHAT,
+            run_id="active-only",
+        ),
+        {
+            "outcome": "ignored",
+            "sent_message_ids": [],
+            "topic_state": "active",
+        },
+    )
+    decision = await runtime.sessions.decide_participation(
+        runtime.adapter.adapt(
+            group_event(39, "只是顺着时间发言", sender_id=8)
+        ),
+        direct=False,
+        now=now + timedelta(seconds=1),
+    )
+
+    after = await runtime.store.get_session("group:1")
+    assert not completion.is_error
+    assert decision.action is ParticipationAction.ARCHIVE_ONLY
+    assert decision.reason is ParticipationReason.DIFFERENT_SENDER
+    assert after is not None
+    assert after.expires_at == before.expires_at
+    assert after.cooling_message_count == 0
+    await runtime.close()
+
+
+async def test_concurrent_follow_ups_cannot_overspend_budget(tmp_path):
+    base = PumpkinConfig.from_env()
+    runtime = PumpkinRuntime(
+        replace(
+            base,
+            data_dir=str(tmp_path),
+            db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+        ),
+        client=FakeClient(),
+    )
+    await runtime.start()
+    await runtime.sessions.activate(
+        "group:1",
+        summary="direct",
+        sender_id="7",
+        explicit_wake=True,
+    )
+    messages = [
+        runtime.adapter.adapt(group_event(message_id, f"补充 {message_id}"))
+        for message_id in (41, 42, 43)
+    ]
+
+    decisions = await asyncio.gather(
+        *(
+            runtime.sessions.decide_participation(
+                message,
+                direct=False,
+            )
+            for message in messages
+        )
+    )
+
+    assert sum(
+        decision.action is ParticipationAction.ACCEPT
+        for decision in decisions
+    ) == 2
+    row = await runtime.store.get_session("group:1")
+    assert row is not None
+    assert row.cooling_message_count == 2
+    await runtime.close()
+
+
+async def test_concurrent_expansions_share_follow_up_budget(tmp_path):
+    base = PumpkinConfig.from_env()
+    runtime = PumpkinRuntime(
+        replace(
+            base,
+            data_dir=str(tmp_path),
+            db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+        ),
+        client=FakeClient(),
+    )
+    await runtime.start()
+    await runtime.sessions.activate(
+        "group:1",
+        summary="direct",
+        sender_id="7",
+        message_id="wake",
+        explicit_wake=True,
+    )
+    messages = [
+        runtime.adapter.adapt(
+            group_event(
+                message_id,
+                f"扩散 {message_id}",
+                sender_id=sender_id,
+                reply_to_message_id="wake",
+            )
+        )
+        for message_id, sender_id in ((45, 8), (46, 9), (47, 10))
+    ]
+
+    decisions = await asyncio.gather(
+        *(
+            runtime.sessions.decide_participation(
+                message,
+                direct=False,
+            )
+            for message in messages
+        )
+    )
+
+    assert sum(
+        decision.action is ParticipationAction.ACCEPT
+        for decision in decisions
+    ) == 2
+    assert all(
+        decision.intent
+        in {ParticipationIntent.EXPANSION, ParticipationIntent.AMBIENT}
+        for decision in decisions
+    )
+    assert any(
+        decision.reason
+        is ParticipationReason.EXPANSION_BUDGET_EXHAUSTED
+        for decision in decisions
+    )
+    row = await runtime.store.get_session("group:1")
+    assert row is not None
+    assert row.cooling_message_count == 2
+    await runtime.close()
+
+
+async def test_same_sender_follow_up_outside_window_is_ambient(tmp_path):
+    base = PumpkinConfig.from_env()
+    runtime = PumpkinRuntime(
+        replace(
+            base,
+            data_dir=str(tmp_path),
+            db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+        ),
+        client=FakeClient(),
+    )
+    await runtime.start()
+    now = datetime.now(UTC)
+    await runtime.sessions.activate(
+        "group:1",
+        summary="direct",
+        now=now
+        - timedelta(
+            seconds=base.activation.direct_follow_up_window_seconds + 1
+        ),
+        sender_id="7",
+        explicit_wake=True,
+    )
+    message = runtime.adapter.adapt(group_event(44, "过了一会儿的补充"))
+
+    decision = await runtime.sessions.decide_participation(
+        message,
+        direct=False,
+        now=now,
+    )
+
+    assert decision.action is ParticipationAction.ARCHIVE_ONLY
+    assert decision.intent is ParticipationIntent.AMBIENT
+    await runtime.close()
+
+
+async def test_expansion_outside_direct_window_is_ambient(tmp_path):
+    base = PumpkinConfig.from_env()
+    runtime = PumpkinRuntime(
+        replace(
+            base,
+            data_dir=str(tmp_path),
+            db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+        ),
+        client=FakeClient(),
+    )
+    await runtime.start()
+    now = datetime.now(UTC)
+    await runtime.sessions.activate(
+        "group:1",
+        summary="direct",
+        now=now
+        - timedelta(
+            seconds=base.activation.direct_follow_up_window_seconds + 1
+        ),
+        sender_id="7",
+        message_id="wake",
+        explicit_wake=True,
+    )
+    message = runtime.adapter.adapt(
+        group_event(
+            48,
+            "过了一会儿才加入",
+            sender_id=8,
+            reply_to_message_id="wake",
+        )
+    )
+
+    decision = await runtime.sessions.decide_participation(
+        message,
+        direct=False,
+        now=now,
+    )
+
+    assert decision.action is ParticipationAction.ARCHIVE_ONLY
+    assert decision.intent is ParticipationIntent.AMBIENT
+    assert decision.reason is ParticipationReason.EXPANSION_WINDOW_EXPIRED
+    await runtime.close()
+
+
+async def test_reply_to_assistant_message_is_direct(tmp_path):
+    base = PumpkinConfig.from_env()
+    config = replace(
+        base,
+        assistant=replace(base.assistant, name="南瓜"),
+        activation=replace(base.activation, prefixes=("南瓜",)),
+        data_dir=str(tmp_path),
+        db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+    )
+    client = FakeClient()
+    runtime = PumpkinRuntime(
+        config,
+        client=client,
+        provider_chat=ChatProvider(),
+    )
+    await runtime.start()
+    await runtime.store.save_outbound_message(
+        scope_id="group:1",
+        message_ids=("assistant-1",),
+        text="上一条回复",
+        segments=(),
+        source="chat",
+        idempotency_key="assistant-message",
+    )
+
+    await runtime.handle_event(
+        group_event(
+            36,
+            "接着这个说",
+            reply_to_message_id="assistant-1",
+        )
+    )
+    await runtime.wait_for_idle(timeout=1)
+
+    assert len(client.sent) == 1
+    row = await runtime.store.get_session("group:1")
+    assert row is not None
+    assert row.cooling_message_count == 0
     await runtime.close()
 
 
@@ -988,6 +1585,95 @@ async def test_short_chat_replies_are_sent_as_separate_messages(tmp_path):
     await runtime.close()
 
 
+async def test_follow_up_turn_allows_only_one_reply_message(tmp_path):
+    base = PumpkinConfig.from_env()
+    config = replace(
+        base,
+        data_dir=str(tmp_path),
+        db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+    )
+    client = FakeClient()
+    runtime = PumpkinRuntime(config, client=client)
+    await runtime.start()
+    context = ToolContext(
+        scope_id="group:1",
+        sender_id="7",
+        message_id="message-1",
+        sender_name="member",
+        agent_role=AgentRole.CHAT,
+        run_id="follow-up-limit",
+        participation_intent=ParticipationIntent.FOLLOW_UP,
+        max_reply_messages=1,
+    )
+
+    batch = await runtime.chat_tools.send_chat_replies(
+        context,
+        {
+            "messages": ["第一条", "第二条"],
+            "idempotency_key": "too-many-follow-up-replies",
+        },
+    )
+    assert batch.is_error
+    assert batch.error_code == "REPLY_BUDGET_EXCEEDED"
+    assert client.sent == []
+
+    first = await runtime.chat_tools.send_chat_reply(
+        context,
+        {"text": "只回复这一条", "idempotency_key": "follow-up-first"},
+    )
+    second = await runtime.chat_tools.send_chat_reply(
+        context,
+        {"text": "不能再发", "idempotency_key": "follow-up-second"},
+    )
+
+    assert not first.is_error
+    assert second.is_error
+    assert second.error_code == "REPLY_BUDGET_EXCEEDED"
+    assert len(client.sent) == 1
+    await runtime.close()
+
+
+async def test_outbound_chat_reply_does_not_extend_session_expiry(tmp_path):
+    base = PumpkinConfig.from_env()
+    config = replace(
+        base,
+        data_dir=str(tmp_path),
+        db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+    )
+    runtime = PumpkinRuntime(config, client=FakeClient())
+    await runtime.start()
+    activated_at = datetime(2026, 10, 23, tzinfo=UTC)
+    await runtime.sessions.activate(
+        "group:1",
+        summary="direct",
+        now=activated_at,
+        sender_id="7",
+        explicit_wake=True,
+    )
+    before = await runtime.store.get_session("group:1")
+    assert before is not None
+
+    result = await runtime.chat_tools.send_chat_reply(
+        ToolContext(
+            scope_id="group:1",
+            sender_id="7",
+            message_id="message-1",
+            sender_name="member",
+            agent_role=AgentRole.CHAT,
+            run_id="no-outbound-renew",
+            participation_intent=ParticipationIntent.DIRECT,
+            max_reply_messages=2,
+        ),
+        {"text": "收到", "idempotency_key": "no-outbound-renew"},
+    )
+
+    after = await runtime.store.get_session("group:1")
+    assert not result.is_error
+    assert after is not None
+    assert after.expires_at == before.expires_at
+    await runtime.close()
+
+
 async def test_partial_chat_batch_records_confirmed_messages(tmp_path):
     class PartialClient(FakeClient):
         def __init__(self):
@@ -1112,6 +1798,85 @@ async def test_chat_idempotency_is_isolated_by_scope(tmp_path):
     assert [scope for scope, _message in client.sent] == ["1", "2"]
     assert len(await runtime.store.recent_outbound_messages("group:1")) == 1
     assert len(await runtime.store.recent_outbound_messages("group:2")) == 1
+    await runtime.close()
+
+
+async def test_chat_completion_reports_exact_current_turn_message_ids(tmp_path):
+    base = PumpkinConfig.from_env()
+    runtime = PumpkinRuntime(
+        replace(
+            base,
+            data_dir=str(tmp_path),
+            db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+        ),
+        client=FakeClient(),
+    )
+    await runtime.start()
+    context = ToolContext(
+        scope_id="group:1",
+        sender_id="7",
+        message_id="message-1",
+        sender_name="member",
+        agent_role=AgentRole.CHAT,
+        run_id="completion-check",
+    )
+    runtime.reply_ledger.record(context.run_id, ["101", "102"])
+
+    result = await runtime.chat_tools.chat_turn_complete(
+        context,
+        {
+            "outcome": "replied",
+            "sent_message_ids": ["102", "previous-turn"],
+            "topic_state": "active",
+        },
+    )
+
+    assert result.is_error
+    assert result.error_code == "SEND_NOT_CONFIRMED"
+    assert result.content == {
+        "message": (
+            "sent_message_ids must exactly match messages confirmed "
+            "for the current turn"
+        ),
+        "submitted_message_ids": ["102", "previous-turn"],
+        "confirmed_message_ids": ["101", "102"],
+        "unknown_message_ids": ["previous-turn"],
+        "missing_message_ids": ["101"],
+    }
+    assert runtime.reply_ledger.message_ids(context.run_id) == ("101", "102")
+
+    empty = await runtime.chat_tools.chat_turn_complete(
+        context,
+        {
+            "outcome": "replied",
+            "sent_message_ids": [],
+            "topic_state": "active",
+        },
+    )
+    assert empty.is_error
+    assert empty.content["missing_message_ids"] == ["101", "102"]
+
+    ignored = await runtime.chat_tools.chat_turn_complete(
+        context,
+        {
+            "outcome": "ignored",
+            "sent_message_ids": ["101", "102"],
+            "topic_state": "active",
+        },
+    )
+    assert ignored.is_error
+    assert ignored.error_code == "SEND_NOT_CONFIRMED"
+
+    completed = await runtime.chat_tools.chat_turn_complete(
+        context,
+        {
+            "outcome": "replied",
+            "sent_message_ids": ["101", "102"],
+            "topic_state": "active",
+        },
+    )
+    assert not completed.is_error
+    assert runtime.reply_ledger.message_ids(context.run_id) == ()
     await runtime.close()
 
 

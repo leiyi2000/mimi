@@ -51,7 +51,9 @@ def test_time_defaults_are_bounded_for_interactive_runtime(monkeypatch):
     config = PumpkinConfig.from_env()
 
     assert config.activation.session_ttl_seconds == 900
-    assert config.model_chat.request_timeout_seconds == 15
+    assert config.activation.direct_follow_up_window_seconds == 120
+    assert config.activation.follow_up_turn_budget == 2
+    assert config.model_chat.request_timeout_seconds == 60
     assert config.model_task.request_timeout_seconds == 90
     assert config.model_chat.reasoning_effort is ReasoningEffort.LOW
     assert config.model_task.reasoning_effort is ReasoningEffort.MAX

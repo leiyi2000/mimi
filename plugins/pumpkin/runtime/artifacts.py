@@ -19,6 +19,7 @@ from core.domain import (
     TaskStatus,
     ToolContext,
     ToolResult,
+    acceptance_criterion_id,
 )
 from core.tasking import TaskService, TaskStateError
 from persistence.repositories import ArtifactStore
@@ -164,6 +165,15 @@ class ArtifactService:
             scope_id=scope_id,
             artifact_ids=artifact_ids,
         )
+        if require_delivery_ready and any(
+            row.delivery_status != ArtifactDeliveryStatus.DELIVERY_READY.value
+            for row in assessments
+        ):
+            return CorrectionViolation(
+                correction_id="delivery-readiness",
+                reasons=("not_delivery_ready",),
+                violation_count=1,
+            )
         corrections = await self.store.list_corrections(
             task_id,
             through_revision=revision,
@@ -192,30 +202,22 @@ class ArtifactService:
                     reasons.append("strategy")
                 if assessment.delivery_status == ArtifactDeliveryStatus.REJECTED.value:
                     reasons.append("rejected")
-                if (
-                    require_delivery_ready
-                    and assessment.delivery_status
-                    != ArtifactDeliveryStatus.DELIVERY_READY.value
-                ):
-                    reasons.append("not_delivery_ready")
             if reasons:
-                violation_count = await self.store.record_correction_violation(
-                    correction.correction_id
-                )
+                scoped_reasons = tuple(sorted(set(reasons)))
+                violation_counts = []
+                for reason in scoped_reasons:
+                    violation_counts.append(
+                        await self.store.record_correction_violation(
+                            correction.correction_id,
+                            revision=revision,
+                            reason=reason,
+                        )
+                    )
                 return CorrectionViolation(
                     correction_id=correction.correction_id,
-                    reasons=tuple(dict.fromkeys(reasons)),
-                    violation_count=violation_count,
+                    reasons=scoped_reasons,
+                    violation_count=max(violation_counts),
                 )
-        if require_delivery_ready and any(
-            row.delivery_status != ArtifactDeliveryStatus.DELIVERY_READY.value
-            for row in assessments
-        ):
-            return CorrectionViolation(
-                correction_id="delivery-readiness",
-                reasons=("not_delivery_ready",),
-                violation_count=1,
-            )
         return None
 
     async def acceptance_criteria_gate(
@@ -231,14 +233,21 @@ class ArtifactService:
             through_revision=revision,
         ):
             missing = tuple(
-                item
-                for item in correction.acceptance_criteria
-                if item.strip() not in submitted
+                criterion
+                for index, criterion in enumerate(correction.acceptance_criteria)
+                if criterion.strip() not in submitted
+                and acceptance_criterion_id(
+                    correction.correction_id,
+                    index,
+                )
+                not in submitted
             )
             if not missing:
                 continue
             count = await self.store.record_correction_violation(
-                correction.correction_id
+                correction.correction_id,
+                revision=revision,
+                reason="acceptance_criteria",
             )
             return await self.correction_violation_result(
                 task_id=task_id,

@@ -6,6 +6,7 @@ from typing import Any
 from core.domain import (
     OutboxStatus,
     TaskEventType,
+    TaskStatus,
     ToolContext,
     ToolResult,
 )
@@ -57,6 +58,14 @@ class DeliveryService:
             or row.revision != revision
         ):
             return _error("delivery scope or revision mismatch", "SCOPE_MISMATCH")
+        if TaskStatus(row.status) not in {
+            TaskStatus.COMPLETED,
+            TaskStatus.PARTIALLY_COMPLETED,
+        }:
+            return _error(
+                "task delivery requires a completed task revision",
+                "TASK_NOT_TERMINAL",
+            )
         text = str(arguments.get("text", "")).strip()
         artifact_ids = tuple(str(item) for item in arguments.get("artifacts", []))
         if not text and not artifact_ids:

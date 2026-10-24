@@ -19,3 +19,8 @@
 | [Pumpkin Harness Agent 重构](20261022-pumpkin-harness-agent/design.md) | - | - | implemented |
 | [Pumpkin 完全对齐 DeepSeek Harness](20261023-pumpkin-harness-alignment/design.md) | - | - | implemented |
 | [Pumpkin 按 Agent 角色配置思考深度](20261023-pumpkin-role-reasoning-effort/design.md) | - | - | implemented |
+| [Pumpkin Turn 失败恢复](20261023-pumpkin-turn-failure-recovery/design.md) | - | - | implemented |
+| [Pumpkin 安静参与与有界话题扩散](20261023-pumpkin-quiet-participation/design.md) | - | - | implemented |
+| [Pumpkin 任务性能与 Web 访问治理](20261023-pumpkin-task-performance/design.md) | - | - | implemented |
+| [Pumpkin 任务交付与纠正门禁](20261023-pumpkin-delivery-gating/design.md) | - | - | implemented |
+| [Pumpkin Markdown 图片渲染](20261024-pumpkin-markdown-render/design.md) | - | - | implemented |

@@ -11,6 +11,7 @@ from core.domain import (
     MessageRecord,
     MessageSegment,
     MessageSegmentType,
+    ParticipationAudience,
     ToolContext,
     ToolResult,
 )
@@ -320,6 +321,9 @@ class ChatToolService:
                 tuple(str(item) for item in cached.get("message_ids", [])),
             )
             return ok(cached)
+        budget_error = self._reply_budget_error(context, requested_count=1)
+        if budget_error is not None:
+            return budget_error
         media_error = await self._media_reply_error(context)
         if media_error is not None:
             return media_error
@@ -345,7 +349,6 @@ class ChatToolService:
         }
         await self.store.idempotency_put(key, content)
         self.reply_ledger.record(context.run_id, result.content["message_ids"])
-        await self.sessions.renew(context.scope_id)
         return ok(content)
 
     async def send_chat_replies(
@@ -392,6 +395,12 @@ class ChatToolService:
         ]
         self.reply_ledger.record(context.run_id, message_ids)
         next_index = int(progress.get("next_index", 0))
+        budget_error = self._reply_budget_error(
+            context,
+            requested_count=len(messages) - next_index,
+        )
+        if budget_error is not None:
+            return budget_error
         attempts = {
             str(index): int(count)
             for index, count in dict(progress.get("attempts", {})).items()
@@ -453,8 +462,31 @@ class ChatToolService:
             "rendered_as_image": False,
         }
         await self.store.idempotency_put(key, content)
-        await self.sessions.renew(context.scope_id)
         return ok(content)
+
+    def _reply_budget_error(
+        self,
+        context: ToolContext,
+        *,
+        requested_count: int,
+    ) -> ToolResult | None:
+        already_sent = len(self.reply_ledger.message_ids(context.run_id))
+        if already_sent + requested_count <= context.max_reply_messages:
+            return None
+        return error(
+            {
+                "message": "reply message limit exceeded for this turn",
+                "participation_intent": (
+                    context.participation_intent.value
+                    if context.participation_intent is not None
+                    else None
+                ),
+                "max_reply_messages": context.max_reply_messages,
+                "already_sent": already_sent,
+                "requested_count": requested_count,
+            },
+            "REPLY_BUDGET_EXCEEDED",
+        )
 
     async def _media_reply_error(self, context: ToolContext) -> ToolResult | None:
         if context.message_id is None:
@@ -530,24 +562,62 @@ class ChatToolService:
     ) -> ToolResult:
         outcome = str(arguments["outcome"])
         topic_state = str(arguments.get("topic_state", ""))
-        ids = tuple(str(item) for item in arguments.get("sent_message_ids", []))
-        sent = set(self.reply_ledger.message_ids(context.run_id))
-        if outcome == "replied" and not set(ids).issubset(sent):
-            return error(
-                "reply completion references unsent messages",
-                "SEND_NOT_CONFIRMED",
-            )
         if outcome not in {"replied", "ignored", "failed"}:
             return error("invalid chat outcome", "INVALID_OUTCOME")
         if topic_state not in {"active", "ended"}:
             return error("invalid topic state", "INVALID_TOPIC_STATE")
+        raw_audience = arguments.get("topic_audience")
+        try:
+            topic_audience = (
+                ParticipationAudience(str(raw_audience))
+                if raw_audience is not None
+                else None
+            )
+        except ValueError:
+            return error("invalid topic audience", "INVALID_TOPIC_AUDIENCE")
+        ids = tuple(str(item) for item in arguments.get("sent_message_ids", []))
+        confirmed_ids = self.reply_ledger.message_ids(context.run_id)
+        confirmed = set(confirmed_ids)
+        submitted = set(ids)
+        if ids != confirmed_ids or (outcome == "replied") != bool(confirmed_ids):
+            return error(
+                {
+                    "message": (
+                        "sent_message_ids must exactly match messages confirmed "
+                        "for the current turn"
+                    ),
+                    "submitted_message_ids": list(ids),
+                    "confirmed_message_ids": list(confirmed_ids),
+                    "unknown_message_ids": [
+                        message_id
+                        for message_id in ids
+                        if message_id not in confirmed
+                    ],
+                    "missing_message_ids": [
+                        message_id
+                        for message_id in confirmed_ids
+                        if message_id not in submitted
+                    ],
+                },
+                "SEND_NOT_CONFIRMED",
+            )
         if topic_state == "ended":
             await self.sessions.end_topic(context.scope_id)
+        elif topic_audience is not None:
+            await self.sessions.set_topic_audience(
+                context.scope_id,
+                topic_audience,
+            )
         self.reply_ledger.clear(context.run_id)
         return ok(
             {
                 "outcome": outcome,
                 "topic_state": topic_state,
+                "topic_audience": (
+                    topic_audience.value
+                    if topic_audience is not None
+                    else None
+                ),
                 "message_ids": list(ids),
                 "reason": arguments.get("reason"),
             }

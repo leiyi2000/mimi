@@ -143,13 +143,22 @@ class AgentInboxRepositoryMixin:
     ) -> AgentInboxItem | None:
         lock = self._inbox_locks.setdefault(agent_id, asyncio.Lock())
         async with lock:
-            query = AgentInboxRow.filter(
+            user_query = AgentInboxRow.filter(
                 agent_id=agent_id,
                 status=AgentInboxStatus.PENDING.value,
+                source_type=AgentInboxSource.USER_MESSAGE.value,
             )
             if target is not None:
-                query = query.filter(target=target.value)
-            row = await query.order_by("sequence").first()
+                user_query = user_query.filter(target=target.value)
+            row = await user_query.order_by("sequence").first()
+            if row is None:
+                query = AgentInboxRow.filter(
+                    agent_id=agent_id,
+                    status=AgentInboxStatus.PENDING.value,
+                )
+                if target is not None:
+                    query = query.filter(target=target.value)
+                row = await query.order_by("sequence").first()
             if row is None:
                 return None
             claimed_at = datetime.now(UTC)
