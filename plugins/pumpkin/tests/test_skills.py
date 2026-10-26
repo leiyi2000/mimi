@@ -34,6 +34,7 @@ def registry():
         ("execute_code", "code-execution", frozenset({AgentRole.TASK})),
         ("generate_image", "image-render", frozenset({AgentRole.TASK})),
         ("generate_audio", "audio-render", frozenset({AgentRole.TASK})),
+        ("save_default_voice", "audio-render", frozenset({AgentRole.TASK})),
         ("render_html", "html-render", frozenset({AgentRole.TASK})),
         ("render_markdown", "markdown-render", frozenset({AgentRole.TASK})),
     ):

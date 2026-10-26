@@ -23,6 +23,7 @@ from core.domain import (
     ToolResult,
 )
 from core.tools import Tool, ToolRegistry
+from providers.audio import GeneratedAudio
 from providers.media import FetchedMedia
 from runtime.app import PumpkinRuntime
 from providers.text_image import LONG_REPLY_TEXT_LIMIT
@@ -43,6 +44,20 @@ def tool_context(
         run_id=run_id,
         task_id=task_id,
         revision=revision,
+    )
+
+
+def task_handoff(task_id: str = "task-1") -> TaskHandoff:
+    return TaskHandoff(
+        task_id=task_id,
+        revision=1,
+        scope_id="group:1",
+        source_messages=(),
+        involved_people=(),
+        goal="生成语音",
+        constraints=(),
+        requested_deliverables=(),
+        allowed_skills=("audio-render",),
     )
 
 
@@ -789,4 +804,68 @@ async def test_inspect_message_media_transcribes_voice(tmp_path):
 
     assert not result.is_error
     assert result.content["transcription"] == "语音内容"
+    await runtime.store.close()
+
+
+@pytest.mark.asyncio
+async def test_audio_tools_save_and_apply_global_voice_profile(tmp_path):
+    base = PumpkinConfig.from_env()
+    config = replace(
+        base,
+        data_dir=str(tmp_path),
+        db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+        audio=replace(
+            base.audio,
+            provider="minimax",
+            api_base_url="https://api.test/v1",
+            api_key="test-key",
+            model="speech-2.8-hd",
+        ),
+    )
+    runtime = PumpkinRuntime(config, client=object())
+    await runtime.store.initialize(config.db_url)
+    runtime.task_runtime.runs["task-1"] = task_handoff()
+    runtime.audio_provider.synthesize = AsyncMock(
+        return_value=GeneratedAudio(
+            data=b"ID3audio",
+            content_type="audio/mpeg",
+            extension="mp3",
+        )
+    )
+    context = tool_context(run_id="task-run", task_id="task-1", revision=1)
+
+    saved = await runtime.registry.execute(
+        "save_default_voice",
+        context,
+        {
+            "voice_id": None,
+            "timbre_weights": [
+                {"voice_id": "male-qn-qingse", "weight": 60},
+                {"voice_id": "female-shaonv", "weight": 40},
+            ],
+            "voice_modify": {
+                "pitch": -20,
+                "intensity": -10,
+                "timbre": 25,
+                "sound_effects": "robotic",
+            },
+            "idempotency_key": "save-default-voice",
+        },
+    )
+    generated = await runtime.registry.execute(
+        "generate_audio",
+        context,
+        {
+            "text": "测试默认音色",
+            "idempotency_key": "generate-with-default-voice",
+        },
+    )
+
+    assert not saved.is_error
+    assert not generated.is_error
+    assert (tmp_path / "voice_profile.json").exists()
+    kwargs = runtime.audio_provider.synthesize.await_args.kwargs
+    assert kwargs["voice_id"] is None
+    assert [item.weight for item in kwargs["timbre_weights"]] == [60, 40]
+    assert kwargs["voice_modify"].sound_effects.value == "robotic"
     await runtime.store.close()

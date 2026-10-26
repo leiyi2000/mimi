@@ -4,7 +4,14 @@ from typing import ClassVar
 
 import pytest
 
-from providers.audio import AudioProvider, AudioTranscriptionProvider
+from providers.audio import (
+    AudioProvider,
+    AudioProviderError,
+    AudioTranscriptionProvider,
+    TimbreWeight,
+    VoiceEffect,
+    VoiceModification,
+)
 from providers.image import ImageProvider
 
 
@@ -102,6 +109,103 @@ async def test_audio_provider_decodes_hex_audio(monkeypatch):
     assert audio.extension == "mp3"
     assert audio.data.startswith(b"ID3")
     assert FakeClient.requests[0][1]["output_format"] == "hex"
+
+
+@pytest.mark.asyncio
+async def test_audio_provider_supports_voice_modification_and_timbre_mix(monkeypatch):
+    FakeClient.requests = []
+    monkeypatch.setattr("providers.audio.httpx.AsyncClient", FakeClient)
+    provider = AudioProvider(
+        api_base_url="https://api.test/v1",
+        api_key="test-key",
+        model="speech-2.8-hd",
+        timeout=5,
+        max_text_chars=10000,
+    )
+
+    await provider.synthesize(
+        "测试",
+        voice_id=None,
+        timbre_weights=(
+            TimbreWeight("male-qn-qingse", 60),
+            TimbreWeight("female-shaonv", 40),
+        ),
+        voice_modify=VoiceModification(
+            pitch=-20,
+            intensity=-10,
+            timbre=25,
+            sound_effects=VoiceEffect.SPACIOUS_ECHO,
+        ),
+    )
+
+    payload = FakeClient.requests[0][1]
+    assert payload["voice_setting"]["voice_id"] == ""
+    assert payload["timbre_weights"] == [
+        {"voice_id": "male-qn-qingse", "weight": 60},
+        {"voice_id": "female-shaonv", "weight": 40},
+    ]
+    assert payload["voice_modify"] == {
+        "pitch": -20,
+        "intensity": -10,
+        "timbre": 25,
+        "sound_effects": "spacious_echo",
+    }
+
+
+@pytest.mark.asyncio
+async def test_audio_provider_rejects_voice_selection_conflict(monkeypatch):
+    FakeClient.requests = []
+    monkeypatch.setattr("providers.audio.httpx.AsyncClient", FakeClient)
+    provider = AudioProvider(
+        api_base_url="https://api.test/v1",
+        api_key="test-key",
+        model="speech-2.8-hd",
+        timeout=5,
+        max_text_chars=10000,
+    )
+
+    with pytest.raises(AudioProviderError) as exc_info:
+        await provider.synthesize(
+            "测试",
+            voice_id="male-qn-qingse",
+            timbre_weights=(
+                TimbreWeight("male-qn-qingse", 60),
+                TimbreWeight("female-shaonv", 40),
+            ),
+        )
+
+    assert exc_info.value.code == "AUDIO_VOICE_SELECTION_CONFLICT"
+    assert FakeClient.requests == []
+
+
+@pytest.mark.asyncio
+async def test_audio_provider_preserves_minimax_business_failure(monkeypatch):
+    class BusinessFailureClient(FakeClient):
+        async def post(self, url, *, headers, json=None, data=None, files=None):
+            del url, headers, json, data, files
+            return FakeResponse(
+                {
+                    "data": None,
+                    "base_resp": {
+                        "status_code": 2061,
+                        "status_msg": "plan not supported",
+                    },
+                }
+            )
+
+    monkeypatch.setattr("providers.audio.httpx.AsyncClient", BusinessFailureClient)
+    provider = AudioProvider(
+        api_base_url="https://api.test/v1",
+        api_key="test-key",
+        model="speech-2.8-hd",
+        timeout=5,
+        max_text_chars=10000,
+    )
+
+    with pytest.raises(AudioProviderError) as exc_info:
+        await provider.synthesize("测试")
+
+    assert exc_info.value.code == "AUDIO_SYNTHESIS_FAILED"
 
 
 @pytest.mark.asyncio
