@@ -168,6 +168,8 @@ class ChatToolService:
                 "MEDIA_CONTENT_UNSUPPORTED": "媒体格式暂不支持查看。",
                 "MEDIA_UNSUPPORTED": "指定的消息段不是可查看的媒体类型。",
                 "MEDIA_TOO_LARGE": "媒体超过允许的大小限制。",
+                "MEDIA_PIXEL_LIMIT_EXCEEDED": "图片尺寸超过允许的范围。",
+                "MEDIA_CONVERSION_FAILED": "图片处理失败，请稍后重试。",
                 "MEDIA_TIMEOUT": "读取媒体超时，请稍后重试。",
                 "MEDIA_PRIVATE_ADDRESS": "媒体地址不允许访问私有网络。",
             }

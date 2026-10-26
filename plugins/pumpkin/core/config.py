@@ -28,6 +28,7 @@ DEFAULT_CHAT_MAX_TOKENS = 4096
 DEFAULT_TASK_MAX_TOKENS = 8192
 DEFAULT_WEB_MODEL_CONTENT_CHARS = 8_000
 DEFAULT_WEB_HOST_CONCURRENCY = 2
+DEFAULT_WEB_IMAGE_MAX_BYTES = 20 * 1024 * 1024
 
 
 def _csv(value: str) -> tuple[str, ...]:
@@ -168,7 +169,7 @@ class WebConfig:
     timeout_seconds: float = DEFAULT_WEB_TIMEOUT_SECONDS
     max_results: int = 8
     max_fetch_bytes: int = 1_048_576
-    max_image_bytes: int = 5 * 1024 * 1024
+    max_image_bytes: int = DEFAULT_WEB_IMAGE_MAX_BYTES
     max_fetch_chars: int = 30_000
     max_model_content_chars: int = DEFAULT_WEB_MODEL_CONTENT_CHARS
     max_host_concurrency: int = DEFAULT_WEB_HOST_CONCURRENCY
@@ -444,7 +445,7 @@ class PumpkinConfig:
                 max_image_bytes=int(
                     os.getenv(
                         "PUMPKIN_IMAGE_FETCH_MAX_BYTES",
-                        str(5 * 1024 * 1024),
+                        str(DEFAULT_WEB_IMAGE_MAX_BYTES),
                     )
                 ),
                 max_fetch_chars=int(os.getenv("PUMPKIN_FETCH_MAX_CHARS", "30000")),

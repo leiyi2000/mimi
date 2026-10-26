@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from providers.web import WebProviderError, WebSearchProvider
-from sandbox.app import execute, validate_script
+from sandbox.app import MAX_FILE_BYTES, MAX_TOTAL_FILE_BYTES, execute, validate_script
 
 
 def test_code_runner_allows_standard_imports_and_file_operations():
@@ -27,6 +27,20 @@ print("ok")
     assert [item["name"] for item in result["files"]] == ["result.json"]
 
 
+def test_code_runner_collects_file_larger_than_previous_limit():
+    script = """
+with open("large.bin", "wb") as handle:
+    handle.truncate(6 * 1024 * 1024)
+"""
+
+    result = execute(script, 5)
+
+    assert MAX_FILE_BYTES == 20 * 1024 * 1024
+    assert MAX_TOTAL_FILE_BYTES == 20 * 1024 * 1024
+    assert result["truncated"] is False
+    assert [item["name"] for item in result["files"]] == ["large.bin"]
+
+
 @pytest.mark.asyncio
 async def test_search_provider_requires_explicit_api_key():
     provider = WebSearchProvider(
@@ -44,7 +58,7 @@ async def test_search_provider_requires_explicit_api_key():
 
 @pytest.mark.asyncio
 async def test_image_download_has_a_separate_size_limit(monkeypatch):
-    body = b"x" * (2 * 1024 * 1024)
+    body = b"x" * (6 * 1024 * 1024)
 
     def respond(request: httpx.Request) -> httpx.Response:
         content_type = (
@@ -69,7 +83,7 @@ async def test_image_download_has_a_separate_size_limit(monkeypatch):
             timeout=1,
             max_results=3,
             max_fetch_bytes=1024 * 1024,
-            max_image_bytes=5 * 1024 * 1024,
+            max_image_bytes=20 * 1024 * 1024,
             max_fetch_chars=1_000,
             client=client,
         )

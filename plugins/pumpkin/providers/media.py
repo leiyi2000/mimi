@@ -4,10 +4,12 @@ import asyncio
 import ipaddress
 import socket
 from dataclasses import dataclass
+from io import BytesIO
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 import httpx
+from PIL import Image, UnidentifiedImageError
 
 
 class MediaProviderError(RuntimeError):
@@ -27,6 +29,8 @@ class FetchedMedia:
 class MessageMediaProvider:
     """Fetch media referenced by an archived NapCat message on demand."""
 
+    _MAX_IMAGE_DIMENSION = 16_384
+    _MAX_IMAGE_PIXELS = 25_000_000
     _SUPPORTED_SEGMENTS = frozenset({"image", "mface", "file", "record"})
     _IMAGE_TYPES = frozenset(
         {"image/gif", "image/jpeg", "image/png", "image/webp"}
@@ -143,8 +147,17 @@ class MessageMediaProvider:
                             response.headers.get("content-type", ""),
                             bytes(body),
                         )
+                        content = bytes(body)
+                        if content_type == "image/gif":
+                            content, content_type = await asyncio.to_thread(
+                                self._normalize_image,
+                                content,
+                                content_type,
+                            )
+                        if len(content) > self.max_bytes:
+                            raise MediaProviderError("MEDIA_TOO_LARGE")
                         return FetchedMedia(
-                            bytes(body), content_type, str(response.url)
+                            content, content_type, str(response.url)
                         )
         except MediaProviderError:
             raise
@@ -214,6 +227,57 @@ class MessageMediaProvider:
         if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
             return "image/webp"
         raise MediaProviderError("MEDIA_CONTENT_UNSUPPORTED")
+
+    @classmethod
+    def _normalize_image(
+        cls,
+        content: bytes,
+        content_type: str,
+    ) -> tuple[bytes, str]:
+        if content_type != "image/gif":
+            return content, content_type
+        try:
+            with Image.open(BytesIO(content)) as image:
+                if image.format != "GIF":
+                    raise MediaProviderError("MEDIA_CONTENT_UNSUPPORTED")
+                width, height = image.size
+                if (
+                    width <= 0
+                    or height <= 0
+                    or width > cls._MAX_IMAGE_DIMENSION
+                    or height > cls._MAX_IMAGE_DIMENSION
+                    or width * height > cls._MAX_IMAGE_PIXELS
+                ):
+                    raise MediaProviderError("MEDIA_PIXEL_LIMIT_EXCEEDED")
+                image.seek(0)
+                image.load()
+                mode = (
+                    "RGBA"
+                    if "A" in image.getbands() or "transparency" in image.info
+                    else "RGB"
+                )
+                first_frame = image.convert(mode)
+        except MediaProviderError:
+            raise
+        except Image.DecompressionBombError as exc:
+            raise MediaProviderError("MEDIA_PIXEL_LIMIT_EXCEEDED") from exc
+        except (
+            EOFError,
+            OSError,
+            SyntaxError,
+            UnidentifiedImageError,
+            ValueError,
+        ) as exc:
+            raise MediaProviderError("MEDIA_CONTENT_UNSUPPORTED") from exc
+
+        output = BytesIO()
+        try:
+            first_frame.save(output, format="PNG")
+        except (OSError, ValueError) as exc:
+            raise MediaProviderError("MEDIA_CONVERSION_FAILED") from exc
+        finally:
+            first_frame.close()
+        return output.getvalue(), "image/png"
 
     @staticmethod
     def _is_http_url(value: str) -> bool:

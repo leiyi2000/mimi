@@ -24,4 +24,6 @@
 | [Pumpkin 任务性能与 Web 访问治理](20261023-pumpkin-task-performance/design.md) | - | - | implemented |
 | [Pumpkin 任务交付与纠正门禁](20261023-pumpkin-delivery-gating/design.md) | - | - | implemented |
 | [Pumpkin Markdown 图片渲染](20261024-pumpkin-markdown-render/design.md) | - | - | implemented |
+| [Pumpkin GIF 首帧读取](20261026-pumpkin-gif-first-frame/design.md) | - | - | implemented |
+| [Pumpkin 图片与代码产物上限](20261026-pumpkin-artifact-size-limits/design.md) | - | - | implemented |
 | [Pumpkin 音色调整](20261026-pumpkin-voice-adjustment/design.md) | - | - | implemented |

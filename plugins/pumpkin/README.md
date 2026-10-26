@@ -57,7 +57,7 @@ Pumpkin 是 Mimi 的 QQ 群聊和私聊 AI 插件。每条消息先写入
 | `PUMPKIN_TASK_WEB_SEARCH_LIMIT`、`PUMPKIN_TASK_WEB_FETCH_LIMIT`、`PUMPKIN_TASK_WEB_IMAGE_LIMIT` | 单个 Task Turn 的搜索、抓页和图片下载上限，默认 4、8、4 |
 | `PUMPKIN_CHAT_FALLBACK_BASE_URLS`、`PUMPKIN_TASK_FALLBACK_BASE_URLS` | 逗号分隔的备用端点 |
 | `PUMPKIN_SEARCH_API_URL`、`PUMPKIN_SEARCH_API_KEY` | 可选网页搜索服务，未配置时明确返回未配置 |
-| `PUMPKIN_FETCH_MAX_BYTES`、`PUMPKIN_IMAGE_FETCH_MAX_BYTES` | 网页正文与网页图片的独立下载上限，默认分别为 1 MiB 和 5 MiB |
+| `PUMPKIN_FETCH_MAX_BYTES`、`PUMPKIN_IMAGE_FETCH_MAX_BYTES` | 网页正文与网页图片的独立下载上限，默认分别为 1 MiB 和 20 MiB |
 | `PUMPKIN_WEB_MODEL_CONTENT_MAX_CHARS`、`PUMPKIN_WEB_HOST_CONCURRENCY` | 模型可见单页 Web 结果上限和同 host HTTP 并发，默认 8000 字符、2 并发 |
 | `PUMPKIN_CODE_RUNNER_URL`、`PUMPKIN_CODE_RUNNER_TOKEN` | 独立代码沙箱服务，默认使用 Compose 内部地址 |
 | `PUMPKIN_IMAGE_PROVIDER`、`PUMPKIN_IMAGE_API_BASE_URL`、`PUMPKIN_IMAGE_API_KEY`、`PUMPKIN_IMAGE_MODEL` | 可选图片生成适配器 |
@@ -87,7 +87,8 @@ revision 的图片 Artifact，公网图片需先经过下载校验。代码执�
 对应 Skill 不会进入 SkillCatalog。长文本图片使用完整 CJK 字体，避免因字体子集缺字导致
 文字错位或空白。`media-inspection` 也是按需 Skill，模型只有在需要理解
 图片时才会现场读取当前作用域的媒体引用；不做后台预下载，引用过期时返回明确错误。引用
-消息和合并转发会有限深度解析，超过深度或节点预算会保留截断标记。
+消息和合并转发会有限深度解析，超过深度或节点预算会保留截断标记。GIF 图片和动态扩展
+表情在交给模型前只提取首帧并转换为 PNG，避免把完整动画编码进模型请求。
 
 音频合成支持已有 MiniMax 音色、语速、音量、音调、情绪、声音质感与效果器，并可按权重
 混合 2 至 4 个已有音色。南瓜使用一套全局默认音色，明确要求设为默认时原子写入
