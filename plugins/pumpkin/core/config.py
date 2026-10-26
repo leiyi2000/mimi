@@ -6,8 +6,9 @@ from enum import StrEnum
 
 
 DEFAULT_SESSION_TTL_SECONDS = 900
-DEFAULT_DIRECT_FOLLOW_UP_WINDOW_SECONDS = 120
-DEFAULT_FOLLOW_UP_TURN_BUDGET = 2
+DEFAULT_TOPIC_MAX_LIFETIME_SECONDS = 900
+DEFAULT_DIRECT_FOLLOW_UP_WINDOW_SECONDS = 300
+DEFAULT_FOLLOW_UP_TURN_BUDGET = 6
 DEFAULT_CHAT_TIMEOUT_SECONDS = 60.0
 DEFAULT_TASK_TIMEOUT_SECONDS = 90.0
 DEFAULT_TASK_INTAKE_TIMEOUT_SECONDS = 60.0
@@ -96,6 +97,7 @@ class ActivationConfig:
     mention_required: bool = False
     auto_activate_group: bool = False
     session_ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS
+    topic_max_lifetime_seconds: int = DEFAULT_TOPIC_MAX_LIFETIME_SECONDS
     direct_follow_up_window_seconds: int = (
         DEFAULT_DIRECT_FOLLOW_UP_WINDOW_SECONDS
     )
@@ -108,6 +110,8 @@ class ActivationConfig:
     def __post_init__(self) -> None:
         if self.session_ttl_seconds <= 0:
             raise ValueError("session_ttl_seconds must be positive")
+        if self.topic_max_lifetime_seconds <= 0:
+            raise ValueError("topic_max_lifetime_seconds must be positive")
         if self.direct_follow_up_window_seconds <= 0:
             raise ValueError(
                 "direct_follow_up_window_seconds must be positive"
@@ -284,6 +288,12 @@ class PumpkinConfig:
                     os.getenv(
                         "PUMPKIN_SESSION_TTL_SECONDS",
                         str(DEFAULT_SESSION_TTL_SECONDS),
+                    )
+                ),
+                topic_max_lifetime_seconds=int(
+                    os.getenv(
+                        "PUMPKIN_TOPIC_MAX_LIFETIME_SECONDS",
+                        str(DEFAULT_TOPIC_MAX_LIFETIME_SECONDS),
                     )
                 ),
                 direct_follow_up_window_seconds=int(

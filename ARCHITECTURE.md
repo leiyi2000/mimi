@@ -121,10 +121,11 @@ Pumpkin 每个 QQ scope 只有一个长期 Conversation Agent。`runtime/ingress
 独立负责任务调度、并发、revision 过期、取消和恢复；Task Executor 只执行任务并登记
 Artifact，不直接发送 QQ 消息。Task Executor 最后两个模型步骤只允许终态工具；步骤耗尽
 但已有已验证 Artifact 时，由 Runtime 以可审计的部分完成事件保留现有交付物。
-群聊参与资格由 Ingress 和 `ChatSessionService` 共同执行：明确唤醒重置同成员短窗口预算，
-预算内追问进入 Inbox；其他成员回复已接受的话题消息，或模型显式开放 `group_open` 受众时，
-可在同一窗口和共享预算内作为扩散进入 Inbox。仅时间相邻的普通群消息仍只归档。助手出站
-消息和模型的 active 话题信号不续期、不开放受众、不增加预算。
+群聊参与资格由 Ingress 和 `ChatSessionService` 共同执行：明确唤醒重置话题起点、同成员
+追问滑动窗口和共享预算；被接受的追问或扩散刷新 5 分钟空闲窗口，但不能突破 15 分钟话题
+硬上限。其他成员回复已接受的话题消息，或模型显式开放 `group_open` 受众时，可在同一窗口
+和共享预算内作为扩散进入 Inbox。仅时间相邻的普通群消息仍只归档。助手出站消息和模型的
+active 话题信号不续期、不开放受众、不增加预算。
 `runtime/artifacts.py` 负责 Artifact 校验、原子写入、来源指纹和纠正门禁。聊天回复和
 确定性任务终态通知统一写入 Outbox，再由唯一 sender 发送。候选 Artifact 事件不具备
 交付 capability；只有完成或部分完成的终态 revision 才能交付。纠正验收条件使用稳定 ID

@@ -1,7 +1,7 @@
 ---
 status: implemented
 owner: Mimi maintainers
-updated: 2026-10-23
+updated: 2026-10-24
 commits: []
 ---
 
@@ -60,32 +60,34 @@ commits: []
 
 ```text
 DIRECT
-  -> ENGAGED (follow-up budget = 2)
+  -> ENGAGED (follow-up budget = 6)
 
 ENGAGED + FOLLOW_UP
   -> 消耗 1 budget
+  -> 刷新 5 分钟空闲窗口
   -> budget > 0: ENGAGED
   -> budget = 0: COOLING
 
 ENGAGED + EXPANSION
   -> 仅结构化回复链或 group_open 可接受
-  -> 消耗同一 budget，不重置窗口或 TTL
+  -> 消耗同一 budget 并刷新空闲窗口
 
 COOLING + FOLLOW_UP/EXPANSION/AMBIENT
   -> 只归档，不入队
   -> QUIET
 
 任意状态 + DIRECT
-  -> ENGAGED，重置 budget
+  -> ENGAGED，重置话题起点、空闲窗口和 budget
 
-任意状态 + STOP/超时/topic ended
+任意状态 + STOP/空闲超时/15 分钟硬上限/topic ended
   -> QUIET
 ```
 
 默认参数：
 
-- `direct_follow_up_window_seconds = 120`
-- `follow_up_turn_budget = 2`
+- `direct_follow_up_window_seconds = 300`
+- `topic_max_lifetime_seconds = 900`
+- `follow_up_turn_budget = 6`
 - `ambient_turn_budget = 0`
 - `quiet_after_ignored_ambient = true`
 
@@ -95,10 +97,10 @@ COOLING + FOLLOW_UP/EXPANSION/AMBIENT
 
 ### 5.1 TTL
 
-`expires_at` 只由以下用户动作更新：
-
-- `DIRECT`；
-- 被策略接受的 `FOLLOW_UP`。
+`DIRECT` 写入 `activated_at` 作为话题硬起点，并把同一时间写入参与上下文中的
+`last_activity_at`。被策略接受的 `FOLLOW_UP` 或 `EXPANSION` 只刷新
+`last_activity_at`；决策同时校验 5 分钟空闲窗口和 15 分钟硬上限。旧会话上下文没有
+`last_activity_at` 时回退到 `activated_at`，不需要数据库迁移。
 
 以下动作不再续期：
 
@@ -107,7 +109,7 @@ COOLING + FOLLOW_UP/EXPANSION/AMBIENT
 - Task Event 通知；
 - 普通 `AMBIENT` 消息。
 
-因此南瓜不能通过自己的回复维持 ACTIVE。
+因此南瓜不能通过自己的回复维持 ACTIVE，持续追问也不能让单次话题无限延长。
 
 ### 5.2 模型终止信号
 
@@ -172,7 +174,7 @@ remaining_budget: int
 会话需要补充：
 
 - `last_direct_sender_id`
-- `last_direct_at`
+- `last_activity_at`
 - `follow_up_budget_remaining`
 - `topic_audience`
 - 有界的 `accepted_message_ids` 回复链
@@ -205,17 +207,19 @@ remaining_budget: int
 
 ## 10. 验收用例
 
-1. @南瓜后连续两条同成员补充消息可进入 Agent，第三条只归档。
+1. @南瓜后同一成员最多 6 个自然追问 Turn 可进入 Agent，第 7 个只归档。
 2. @南瓜后其他成员讨论无关话题，不进入 Agent。
 3. 回复南瓜上一条消息视为 DIRECT；回复已接受的用户话题消息视为 EXPANSION。
 4. 模型显式提交 `group_open` 后，其他成员可在剩余共享预算内加入。
-5. 仅提交 `topic_state=active` 不开放话题、不补预算、不续期。
-6. 南瓜连续发送回复不会延长 `expires_at`。
-7. “退下南瓜”等 STOP 指令立即进入安静状态。
-8. 安静后普通消息不唤醒；@南瓜可重新唤醒。
-9. FOLLOW_UP 和 EXPANSION 最多发送一条，DIRECT 默认最多两条。
-10. 私聊行为保持不变。
-11. 决策日志包含 intent/action/reason，不包含消息正文。
+5. 被接受的 FOLLOW_UP 或 EXPANSION 刷新 5 分钟空闲窗口，普通消息不刷新。
+6. 话题持续活跃超过 15 分钟后仍停止自然接续，明确唤醒可重置。
+7. 仅提交 `topic_state=active` 不开放话题、不补预算、不续期。
+8. 南瓜连续发送回复不会延长 `expires_at`。
+9. “退下南瓜”等 STOP 指令立即进入安静状态。
+10. 安静后普通消息不唤醒；@南瓜可重新唤醒。
+11. FOLLOW_UP 和 EXPANSION 最多发送一条，DIRECT 默认最多两条。
+12. 私聊行为保持不变。
+13. 决策日志包含 intent/action/reason，不包含消息正文。
 
 ## 11. 非目标
 

@@ -55,6 +55,7 @@ class ParticipationReason(StrEnum):
     DIFFERENT_SENDER = "different_sender"
     FOLLOW_UP_BUDGET_EXHAUSTED = "follow_up_budget_exhausted"
     FOLLOW_UP_WINDOW_EXPIRED = "follow_up_window_expired"
+    TOPIC_MAX_LIFETIME_EXPIRED = "topic_max_lifetime_expired"
     EXPANSION_BUDGET_EXHAUSTED = "expansion_budget_exhausted"
     EXPANSION_WINDOW_EXPIRED = "expansion_window_expired"
     INACTIVE_SESSION = "inactive_session"

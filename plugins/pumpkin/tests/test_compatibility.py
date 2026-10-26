@@ -37,6 +37,9 @@ def test_assistant_name_is_also_the_group_wake_prefix(monkeypatch):
 def test_time_defaults_are_bounded_for_interactive_runtime(monkeypatch):
     for name in (
         "PUMPKIN_SESSION_TTL_SECONDS",
+        "PUMPKIN_TOPIC_MAX_LIFETIME_SECONDS",
+        "PUMPKIN_DIRECT_FOLLOW_UP_WINDOW_SECONDS",
+        "PUMPKIN_FOLLOW_UP_TURN_BUDGET",
         "PUMPKIN_CHAT_TIMEOUT_SECONDS",
         "PUMPKIN_TASK_TIMEOUT_SECONDS",
         "PUMPKIN_SINGLE_TASK_TIMEOUT_SECONDS",
@@ -51,8 +54,9 @@ def test_time_defaults_are_bounded_for_interactive_runtime(monkeypatch):
     config = PumpkinConfig.from_env()
 
     assert config.activation.session_ttl_seconds == 900
-    assert config.activation.direct_follow_up_window_seconds == 120
-    assert config.activation.follow_up_turn_budget == 2
+    assert config.activation.topic_max_lifetime_seconds == 900
+    assert config.activation.direct_follow_up_window_seconds == 300
+    assert config.activation.follow_up_turn_budget == 6
     assert config.model_chat.request_timeout_seconds == 60
     assert config.model_task.request_timeout_seconds == 90
     assert config.model_chat.reasoning_effort is ReasoningEffort.LOW

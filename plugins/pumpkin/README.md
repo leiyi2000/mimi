@@ -21,9 +21,10 @@ Pumpkin 是 Mimi 的 QQ 群聊和私聊 AI 插件。每条消息先写入
   已有确认回复时保留内部失败事实，但不再补发相互矛盾的失败提示。
 - 模型上下文保留当前 Turn 和最近 4 个已结束 Turn；完整 Session Event 仍持久化用于恢复。
 - 群聊只在 `@` 助手、使用助手名前缀或回复助手消息时明确激活。同一成员可在默认
-  120 秒内继续追问；其他成员只有回复已接受的话题消息，或模型显式将话题标为
-  `group_open` 时才能加入。追问和扩散共用默认两轮预算，扩散每轮最多回复一条；仅时间
-  相邻的普通群消息仍只归档。`topic_state=active` 不会开放话题、增加预算或延长会话。
+  5 分钟滑动窗口内继续追问；其他成员只有回复已接受的话题消息，或模型显式将话题标为
+  `group_open` 时才能加入。被接受的话题消息会刷新滑动窗口，但整个话题最长 15 分钟；
+  追问和扩散共用默认 6 Turn 预算，扩散每轮最多回复一条。仅时间相邻的普通群消息仍只
+  归档。`topic_state=active` 不会开放话题、增加预算或刷新窗口。
 - `闭嘴`、`别说了`、`助手名退下` 和 `退下助手名` 会把当前作用域写入持久休眠状态；
   重启不会自动解除，直到下一次明确唤醒。助手自己的回复、任务确认和失败回执不会延长
   会话 TTL。
@@ -48,7 +49,7 @@ Pumpkin 是 Mimi 的 QQ 群聊和私聊 AI 插件。每条消息先写入
 | `PUMPKIN_MODEL_BASE_URL`、`PUMPKIN_MODEL_API_KEY` | OpenAI-compatible 端点 |
 | `PUMPKIN_CHAT_REASONING_EFFORT`、`PUMPKIN_TASK_REASONING_EFFORT` | MiniMax M3.1 Flash 思考深度；默认聊天 `low`、任务 `max` |
 | `PUMPKIN_CHAT_MAX_TOKENS`、`PUMPKIN_TASK_MAX_TOKENS` | 单次模型生成预算，包含 thinking；默认聊天 `4096`、任务 `8192` |
-| `PUMPKIN_DIRECT_FOLLOW_UP_WINDOW_SECONDS`、`PUMPKIN_FOLLOW_UP_TURN_BUDGET` | 明确唤醒后同一成员的追问窗口和 Turn 预算；默认 120 秒、2 Turn |
+| `PUMPKIN_DIRECT_FOLLOW_UP_WINDOW_SECONDS`、`PUMPKIN_TOPIC_MAX_LIFETIME_SECONDS`、`PUMPKIN_FOLLOW_UP_TURN_BUDGET` | 话题空闲滑动窗口、单次话题硬上限和共享 Turn 预算；默认 300 秒、900 秒、6 Turn |
 | `PUMPKIN_STOP_ALIASES` | 可选的逗号分隔停止参与别名；默认包含 `闭嘴`、`别说了` 和动态助手名组合 |
 | `PUMPKIN_CHAT_TIMEOUT_SECONDS`、`PUMPKIN_TASK_TIMEOUT_SECONDS` | 单次聊天和任务模型请求超时；聊天默认 60 秒且超时不重试 |
 | `PUMPKIN_SINGLE_TASK_TIMEOUT_SECONDS` | 单个任务总执行时限 |

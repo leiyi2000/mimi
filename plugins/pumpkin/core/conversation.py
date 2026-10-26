@@ -30,21 +30,24 @@ class ParticipationContext:
     summary: str
     audience: ParticipationAudience
     accepted_message_ids: tuple[str, ...]
+    last_activity_at: datetime | None
 
     def with_accepted_message(
         self,
         message_id: str | None,
+        accepted_at: datetime,
     ) -> ParticipationContext:
-        if not message_id:
-            return self
         message_ids = tuple(
             item for item in self.accepted_message_ids if item != message_id
-        ) + (message_id,)
+        )
+        if message_id:
+            message_ids += (message_id,)
         return ParticipationContext(
             last_direct_sender_id=self.last_direct_sender_id,
             summary=self.summary,
             audience=self.audience,
             accepted_message_ids=message_ids[-_ACCEPTED_TOPIC_MESSAGE_LIMIT:],
+            last_activity_at=accepted_at,
         )
 
     def with_audience(
@@ -56,6 +59,7 @@ class ParticipationContext:
             summary=self.summary,
             audience=audience,
             accepted_message_ids=self.accepted_message_ids,
+            last_activity_at=self.last_activity_at,
         )
 
     def serialize(self) -> str:
@@ -65,6 +69,11 @@ class ParticipationContext:
                 "summary": self.summary,
                 "audience": self.audience.value,
                 "accepted_message_ids": list(self.accepted_message_ids),
+                "last_activity_at": (
+                    self.last_activity_at.isoformat()
+                    if self.last_activity_at is not None
+                    else None
+                ),
             },
             ensure_ascii=True,
             separators=(",", ":"),
@@ -76,12 +85,14 @@ class ParticipationContext:
         sender_id: str | None,
         summary: str,
         message_id: str | None,
+        active_at: datetime,
     ) -> ParticipationContext:
         return cls(
             last_direct_sender_id=sender_id,
             summary=summary,
             audience=ParticipationAudience.REQUESTER_ONLY,
             accepted_message_ids=(message_id,) if message_id else (),
+            last_activity_at=active_at,
         )
 
     @classmethod
@@ -110,6 +121,7 @@ class ParticipationContext:
             )
         except ValueError:
             audience = ParticipationAudience.REQUESTER_ONLY
+        last_activity_at = _parse_datetime(payload.get("last_activity_at"))
         return cls(
             last_direct_sender_id=(
                 str(sender_id) if sender_id is not None else None
@@ -117,7 +129,17 @@ class ParticipationContext:
             summary=str(payload.get("summary", value)),
             audience=audience,
             accepted_message_ids=message_ids[-_ACCEPTED_TOPIC_MESSAGE_LIMIT:],
+            last_activity_at=last_activity_at,
         )
+
+
+def _parse_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return _aware(datetime.fromisoformat(value))
+    except ValueError:
+        return None
 
 
 def _text_for(message: InboundMessage) -> str:
@@ -250,6 +272,7 @@ class ChatSessionService:
                 sender_id,
                 summary,
                 message_id,
+                now,
             ).serialize(),
             participation_phase=ParticipationPhase.ENGAGED,
             cooling_message_count=0,
@@ -357,6 +380,14 @@ class ChatSessionService:
         if (
             direct_at is None
             or now - direct_at
+            > timedelta(seconds=self.config.topic_max_lifetime_seconds)
+        ):
+            return self._archive_only(
+                ParticipationReason.TOPIC_MAX_LIFETIME_EXPIRED
+            )
+        last_activity_at = participation.last_activity_at or direct_at
+        if (
+            now - last_activity_at
             > timedelta(seconds=self.config.direct_follow_up_window_seconds)
         ):
             return self._archive_only(expired_reason)
@@ -365,18 +396,17 @@ class ChatSessionService:
             return self._archive_only(exhausted_reason)
         consumed += 1
         remaining = max(0, self.config.follow_up_turn_budget - consumed)
-        participation = participation.with_accepted_message(message.message_id)
+        participation = participation.with_accepted_message(
+            message.message_id,
+            now,
+        )
         await self.store.save_session(
             scope_id=message.scope_id,
             session_id=row.session_id,
             state=SessionState.ACTIVE,
             activated_at=direct_at,
             last_sent_at=_aware(row.last_sent_at),
-            expires_at=(
-                now + timedelta(seconds=self.config.session_ttl_seconds)
-                if intent is ParticipationIntent.FOLLOW_UP
-                else _aware(row.expires_at)
-            ),
+            expires_at=_aware(row.expires_at),
             summary=participation.serialize(),
             participation_phase=(
                 ParticipationPhase.ENGAGED
@@ -470,6 +500,7 @@ class ChatSessionService:
                 sender_id,
                 summary,
                 message_id,
+                now,
             ).serialize(),
             participation_phase=ParticipationPhase.ENGAGED,
             cooling_message_count=0,

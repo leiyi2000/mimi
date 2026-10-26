@@ -850,7 +850,11 @@ async def test_same_sender_follow_up_budget_accepts_only_two_turns(tmp_path):
     config = replace(
         base,
         assistant=replace(base.assistant, name="南瓜"),
-        activation=replace(base.activation, prefixes=("南瓜",)),
+        activation=replace(
+            base.activation,
+            prefixes=("南瓜",),
+            follow_up_turn_budget=2,
+        ),
         data_dir=str(tmp_path),
         db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
     )
@@ -1000,6 +1004,10 @@ async def test_follow_up_and_expansion_consume_one_shared_budget(tmp_path):
     runtime = PumpkinRuntime(
         replace(
             base,
+            activation=replace(
+                base.activation,
+                follow_up_turn_budget=2,
+            ),
             data_dir=str(tmp_path),
             db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
         ),
@@ -1121,6 +1129,10 @@ async def test_concurrent_follow_ups_cannot_overspend_budget(tmp_path):
     runtime = PumpkinRuntime(
         replace(
             base,
+            activation=replace(
+                base.activation,
+                follow_up_turn_budget=2,
+            ),
             data_dir=str(tmp_path),
             db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
         ),
@@ -1163,6 +1175,10 @@ async def test_concurrent_expansions_share_follow_up_budget(tmp_path):
     runtime = PumpkinRuntime(
         replace(
             base,
+            activation=replace(
+                base.activation,
+                follow_up_turn_budget=2,
+            ),
             data_dir=str(tmp_path),
             db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
         ),
@@ -1250,6 +1266,197 @@ async def test_same_sender_follow_up_outside_window_is_ambient(tmp_path):
 
     assert decision.action is ParticipationAction.ARCHIVE_ONLY
     assert decision.intent is ParticipationIntent.AMBIENT
+    await runtime.close()
+
+
+async def test_accepted_follow_up_refreshes_idle_window(tmp_path):
+    base = PumpkinConfig.from_env()
+    runtime = PumpkinRuntime(
+        replace(
+            base,
+            activation=replace(
+                base.activation,
+                session_ttl_seconds=1200,
+                topic_max_lifetime_seconds=900,
+                direct_follow_up_window_seconds=300,
+            ),
+            data_dir=str(tmp_path),
+            db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+        ),
+        client=FakeClient(),
+    )
+    await runtime.start()
+    started_at = datetime.now(UTC)
+    await runtime.sessions.activate(
+        "group:1",
+        summary="direct",
+        now=started_at,
+        sender_id="7",
+        explicit_wake=True,
+    )
+
+    first = await runtime.sessions.decide_participation(
+        runtime.adapter.adapt(group_event(440, "第一次追问")),
+        direct=False,
+        now=started_at + timedelta(seconds=299),
+    )
+    second = await runtime.sessions.decide_participation(
+        runtime.adapter.adapt(group_event(441, "第二次追问")),
+        direct=False,
+        now=started_at + timedelta(seconds=598),
+    )
+
+    assert first.action is ParticipationAction.ACCEPT
+    assert second.action is ParticipationAction.ACCEPT
+    assert second.reason is ParticipationReason.SAME_SENDER_FOLLOW_UP
+    await runtime.close()
+
+
+async def test_topic_hard_lifetime_stops_continuous_follow_ups(tmp_path):
+    base = PumpkinConfig.from_env()
+    runtime = PumpkinRuntime(
+        replace(
+            base,
+            activation=replace(
+                base.activation,
+                session_ttl_seconds=1800,
+                topic_max_lifetime_seconds=900,
+                direct_follow_up_window_seconds=300,
+            ),
+            data_dir=str(tmp_path),
+            db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+        ),
+        client=FakeClient(),
+    )
+    await runtime.start()
+    started_at = datetime.now(UTC)
+    await runtime.sessions.activate(
+        "group:1",
+        summary="direct",
+        now=started_at,
+        sender_id="7",
+        explicit_wake=True,
+    )
+
+    for index, seconds in enumerate((295, 590, 885), start=1):
+        decision = await runtime.sessions.decide_participation(
+            runtime.adapter.adapt(
+                group_event(450 + index, f"持续追问 {index}")
+            ),
+            direct=False,
+            now=started_at + timedelta(seconds=seconds),
+        )
+        assert decision.action is ParticipationAction.ACCEPT
+
+    expired = await runtime.sessions.decide_participation(
+        runtime.adapter.adapt(group_event(460, "超过硬上限")),
+        direct=False,
+        now=started_at + timedelta(seconds=901),
+    )
+
+    assert expired.action is ParticipationAction.ARCHIVE_ONLY
+    assert (
+        expired.reason
+        is ParticipationReason.TOPIC_MAX_LIFETIME_EXPIRED
+    )
+    await runtime.close()
+
+
+async def test_unrelated_group_message_does_not_refresh_idle_window(tmp_path):
+    base = PumpkinConfig.from_env()
+    runtime = PumpkinRuntime(
+        replace(
+            base,
+            activation=replace(
+                base.activation,
+                session_ttl_seconds=1200,
+                topic_max_lifetime_seconds=900,
+                direct_follow_up_window_seconds=300,
+            ),
+            data_dir=str(tmp_path),
+            db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+        ),
+        client=FakeClient(),
+    )
+    await runtime.start()
+    started_at = datetime.now(UTC)
+    await runtime.sessions.activate(
+        "group:1",
+        summary="direct",
+        now=started_at,
+        sender_id="7",
+        explicit_wake=True,
+    )
+
+    unrelated = await runtime.sessions.decide_participation(
+        runtime.adapter.adapt(
+            group_event(470, "路过插一句", sender_id=8)
+        ),
+        direct=False,
+        now=started_at + timedelta(seconds=250),
+    )
+    expired = await runtime.sessions.decide_participation(
+        runtime.adapter.adapt(group_event(471, "原发起人回来追问")),
+        direct=False,
+        now=started_at + timedelta(seconds=301),
+    )
+
+    assert unrelated.reason is ParticipationReason.DIFFERENT_SENDER
+    assert expired.reason is ParticipationReason.FOLLOW_UP_WINDOW_EXPIRED
+    await runtime.close()
+
+
+async def test_explicit_wake_resets_topic_lifetime_and_budget(tmp_path):
+    base = PumpkinConfig.from_env()
+    runtime = PumpkinRuntime(
+        replace(
+            base,
+            activation=replace(
+                base.activation,
+                session_ttl_seconds=1800,
+                topic_max_lifetime_seconds=900,
+                direct_follow_up_window_seconds=300,
+            ),
+            data_dir=str(tmp_path),
+            db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+        ),
+        client=FakeClient(),
+    )
+    await runtime.start()
+    started_at = datetime.now(UTC)
+    await runtime.sessions.activate(
+        "group:1",
+        summary="direct",
+        now=started_at,
+        sender_id="7",
+        explicit_wake=True,
+    )
+    accepted = await runtime.sessions.decide_participation(
+        runtime.adapter.adapt(group_event(480, "先追问一次")),
+        direct=False,
+        now=started_at + timedelta(seconds=299),
+    )
+    reset_at = started_at + timedelta(seconds=901)
+    reset = await runtime.sessions.decide_participation(
+        runtime.adapter.adapt(group_event(481, "南瓜，重新开始")),
+        direct=True,
+        now=reset_at,
+    )
+    follow_up = await runtime.sessions.decide_participation(
+        runtime.adapter.adapt(group_event(482, "新的追问")),
+        direct=False,
+        now=reset_at + timedelta(seconds=299),
+    )
+
+    row = await runtime.store.get_session("group:1")
+    assert accepted.action is ParticipationAction.ACCEPT
+    assert reset.action is ParticipationAction.ACCEPT
+    assert reset.remaining_budget == 6
+    assert follow_up.action is ParticipationAction.ACCEPT
+    assert follow_up.remaining_budget == 5
+    assert row is not None
+    assert row.activated_at == reset_at
+    assert row.cooling_message_count == 1
     await runtime.close()
 
 

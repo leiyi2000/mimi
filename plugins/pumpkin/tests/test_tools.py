@@ -313,7 +313,7 @@ class FakeHtmlRenderer:
         assert html
         assert images == {}
         assert width == 1600
-        assert device_pixel_ratio == 2
+        assert device_pixel_ratio == 1
         return b"\x89PNG\r\n\x1a\nhtml"
 
 

@@ -28,6 +28,11 @@ HTML 必须是自包含的 HTML/CSS 片段，不得包含脚本、事件处理�
 文件路径或网络 URL。需要引用当前任务已经验证的图片时，在 HTML 中使用
 `src="artifact://<artifact_id>"`；这些 Artifact 必须属于当前任务和 revision。
 
+`width` 是最终 PNG 的像素宽度，默认设备像素比为 1，因此也是 CSS 布局视口宽度。根元素
+优先使用 `width: 100%`；若写固定像素宽度，不得超过 `width / device_pixel_ratio`，否则
+右侧内容会落在渲染视口之外。除非同时按比例缩小 CSS 布局宽度，不要把
+`device_pixel_ratio` 设为 2。
+
 图片来自公开网络 URL 时，任务必须同时获得 `web-search` 和 `html-render` 授权。先加载
 `web-search`，调用 `download_web_image` 下载并校验图片；再把返回的 Artifact ID 写成
 `src="artifact://<artifact_id>"`，或在 CSS 中写成

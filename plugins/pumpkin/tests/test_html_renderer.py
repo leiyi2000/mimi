@@ -2,7 +2,11 @@ import base64
 
 import pytest
 
-from providers.html import HtmlRenderError, HtmlRenderer
+from providers.html import (
+    DEFAULT_HTML_RENDER_DEVICE_PIXEL_RATIO,
+    HtmlRenderError,
+    HtmlRenderer,
+)
 from providers.fonts import (
     EMOJI_FONT_NAME,
     EMOJI_FONT_PATH,
@@ -23,6 +27,10 @@ def test_html_renderer_returns_png():
     )
 
     assert image.startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_html_renderer_default_width_matches_css_viewport():
+    assert DEFAULT_HTML_RENDER_DEVICE_PIXEL_RATIO == 1
 
 
 def test_cjk_font_asset_is_available():
