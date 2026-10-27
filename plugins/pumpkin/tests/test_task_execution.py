@@ -71,6 +71,7 @@ class TaskProvider:
                     {
                         "source_message_ids": ["1"],
                         "goal": "完成一件可验证的事情",
+                        "acknowledgement": "好，我来处理。",
                         "requested_deliverables": [],
                         "allowed_skills": [],
                         "idempotency_key": "create-1",
@@ -159,7 +160,9 @@ async def test_task_agent_delivery_and_completion_are_scoped(tmp_path):
     assert tasks[0].status is TaskStatus.COMPLETED
     assert provider.calls["chat"] == 3, provider.chat_sources
     assert [str(item[0]) for item in client.sent] == ["8", "8"]
-    assert "完成一件可验证的事情" in getattr(client.sent[0][1][-1], "text", "")
+    acknowledgement = getattr(client.sent[0][1][-1], "text", "")
+    assert acknowledgement == "好，我来处理。"
+    assert "完成一件可验证的事情" not in acknowledgement
     delivery_types = [
         getattr(segment, "_type", "") for segment in client.sent[1][1]
     ]

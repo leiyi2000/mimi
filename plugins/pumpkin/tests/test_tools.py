@@ -171,6 +171,64 @@ async def test_tool_registry_validates_nested_items_and_enum_before_handler():
 
 
 @pytest.mark.asyncio
+async def test_tool_registry_enforces_string_length_constraints():
+    called = False
+
+    async def handler(context, arguments):
+        nonlocal called
+        del context, arguments
+        called = True
+        return ToolResult(content={"ok": True})
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            name="short_text",
+            description="test",
+            input_schema={
+                "type": "object",
+                "required": ["text"],
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4,
+                    },
+                },
+            },
+            handler=handler,
+        )
+    )
+
+    empty = await registry.execute(
+        "short_text",
+        tool_context(run_id="run-short"),
+        {"text": ""},
+    )
+    long = await registry.execute(
+        "short_text",
+        tool_context(run_id="run-long"),
+        {"text": "12345"},
+    )
+
+    assert empty.error_code == "INVALID_TOOL_ARGUMENTS"
+    assert long.error_code == "INVALID_TOOL_ARGUMENTS"
+    assert not called
+
+
+def test_create_task_requires_a_short_natural_acknowledgement():
+    runtime = PumpkinRuntime(PumpkinConfig.from_env(), client=object())
+    schema = runtime.registry.get("create_task").input_schema
+
+    assert "acknowledgement" in schema["required"]
+    assert schema["properties"]["acknowledgement"] == {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 40,
+    }
+
+
+@pytest.mark.asyncio
 async def test_tool_registry_rejects_a_role_outside_the_tool_loadout():
     called = False
 

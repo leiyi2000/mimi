@@ -136,9 +136,11 @@ Conversation Agent 和 Task Executor 共用一个 `PUMPKIN_MAX_STEPS`，默认�
 发送消息 ID。完成工具校验失败但本 Turn 已经存在成功发送时，AgentLoop 必须终止当前
 Turn，不能继续生成新的副作用回复。
 
-任务确认支持由 Conversation Agent 提供的短句。解释失败、进度和下一步时，使用
-`send_napcat_replies` 一次发送 1-3 条短消息，每条只表达一个事实，避免长文本进入
-图片渲染链路和无法确认的时间承诺。
+任务确认由 Conversation Agent 在创建任务时提供一句短口语，只确认开始处理，不完整复述
+请求，不解释工具、执行步骤或投递位置，也不承诺完成时间。Runtime 不得把面向 Task
+Executor 的内部 `goal` 用作用户文案；防御性处理空白确认时只发送不含任务内容的确定性
+短兜底。解释失败、进度和下一步时，使用 `send_napcat_replies` 一次发送 1-3 条短消息，
+每条只表达一个事实，避免长文本进入图片渲染链路和无法确认的时间承诺。
 
 长文本和 HTML 渲染统一加载完整 CJK 字体以及单色 Emoji fallback。测试样本覆盖长破折号、
 中文标点和常用 Emoji；彩色 Emoji 字体不作为运行时依赖，避免当前渲染器对彩色字体支持

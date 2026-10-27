@@ -136,6 +136,9 @@ class SlowManagerProvider:
 
 
 class TaskCreatingProvider:
+    def __init__(self, acknowledgement: str = "我先整理一下。"):
+        self.acknowledgement = acknowledgement
+
     async def stream(self, messages, tools, *, mode):
         del messages, tools
         assert mode == "chat"
@@ -151,7 +154,7 @@ class TaskCreatingProvider:
                             "source_message_ids": ["6"],
                             "goal": "整理路线",
                             "allowed_skills": [],
-                            "acknowledgement": "我先整理一下。",
+                            "acknowledgement": self.acknowledgement,
                             "idempotency_key": "create-route-task",
                         },
                     ),
@@ -779,7 +782,39 @@ async def test_chat_can_acknowledge_before_task_execution_finishes(tmp_path):
         await asyncio.wait_for(task_provider.started.wait(), timeout=1)
 
         assert len(client.sent) == 1
+        assert getattr(client.sent[0][1][-1], "text", "") == "我先整理一下。"
         assert runtime.task_runtime.execution_tasks()
+    finally:
+        task_provider.release.set()
+        await runtime.close()
+
+
+async def test_task_acknowledgement_fallback_never_exposes_internal_goal(tmp_path):
+    base = PumpkinConfig.from_env()
+    config = replace(
+        base,
+        assistant=replace(base.assistant, name="南瓜"),
+        activation=replace(base.activation, prefixes=("南瓜",)),
+        data_dir=str(tmp_path),
+        db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+    )
+    client = FakeClient()
+    task_provider = BlockingTaskProvider()
+    runtime = PumpkinRuntime(
+        config,
+        client=client,
+        provider_chat=TaskCreatingProvider(acknowledgement="   "),
+        provider_task=task_provider,
+    )
+    await runtime.start()
+
+    try:
+        await runtime.handle_event(group_event(6, "南瓜，帮我整理路线"))
+        await asyncio.wait_for(task_provider.started.wait(), timeout=1)
+
+        sent_text = getattr(client.sent[0][1][-1], "text", "")
+        assert sent_text == "好，等我一下。"
+        assert "整理路线" not in sent_text
     finally:
         task_provider.release.set()
         await runtime.close()

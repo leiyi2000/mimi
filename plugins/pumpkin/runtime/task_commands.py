@@ -182,12 +182,7 @@ class TaskCommandService:
             await self.task_service.create(handoff)
         except (ValueError, TaskStateError) as exc:
             return error(str(exc), "TASK_CREATE_FAILED")
-        acknowledgement_text = str(arguments.get("acknowledgement") or "").strip()
-        started_text = (
-            acknowledgement_text[:80]
-            if acknowledgement_text
-            else task_started_text(handoff.goal)
-        )
+        started_text = task_started_text(arguments.get("acknowledgement"))
         acknowledgement = await self.outbox.submit(
             idempotency_key=f"task-started:{key}",
             scope_id=context.scope_id,

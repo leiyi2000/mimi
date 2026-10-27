@@ -166,9 +166,9 @@ Chat 和 Task Manager 两个消费者。Conversation Agent 根据上下文决定
   能发送回复；读取失败也保留尝试事实，以便明确告知用户失败原因。
 
 任务生命周期工具是 Conversation Profile 的内建协议，不进入 Skill 目录或 Task Executor
-的 `allowed_skills`。创建任务成功后，Runtime 使用稳定幂等键立即写入并发送结合任务目标
-的 Outbox 开始确认，然后结束当前 Conversation Turn；不等待 TaskExecutor，也不允许模型
-在同一 Turn 再更新任务或重复确认。
+的 `allowed_skills`。创建任务成功后，Runtime 使用稳定幂等键立即写入并发送 Conversation
+Agent 提供的简短自然确认，且不得把内部任务 `goal` 作为用户文案，然后结束当前
+Conversation Turn；不等待 TaskExecutor，也不允许模型在同一 Turn 再更新任务或重复确认。
 
 `task.event` 输入只用于表达已经持久化的任务事实。该 Turn 的工具面由程序移除
 `create_task` 和 `update_task`，避免失败、完成或发送结果未知事件被模型解释成新任务或

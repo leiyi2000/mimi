@@ -4,6 +4,7 @@ from typing import Any, Protocol
 
 from core.domain import AgentRole, ToolContext, ToolResult, TurnCapability
 from core.tools import TraceCallback, Tool, ToolRegistry
+from runtime.payloads import TASK_ACKNOWLEDGEMENT_MAX_CHARS
 
 
 class ChatToolHost(Protocol):
@@ -457,14 +458,16 @@ def build_registry(
     register(
         "create_task",
         "为需要延后执行或生成可交付结果的请求创建一个单一任务；普通聊天和状态查询不使用。"
-        "allowed_skills 只填写 Task Executor 可用的执行 Skill。acknowledgement 可提供一句"
-        "自然确认；创建成功后 Runtime 负责发送确认并结束当前 Conversation Turn，不要"
-        "再次发送确认。",
+        "allowed_skills 只填写 Task Executor 可用的执行 Skill。acknowledgement 必须是"
+        "一句简短自然的即时消息，只确认开始处理，不完整复述请求，不解释工具、执行步骤或"
+        "投递位置，也不承诺完成时间。创建成功后 Runtime 负责发送确认并结束当前 "
+        "Conversation Turn，不要再次发送确认。",
         {
             "type": "object",
             "required": [
                 "source_message_ids",
                 "goal",
+                "acknowledgement",
                 "allowed_skills",
                 "idempotency_key",
             ],
@@ -476,7 +479,8 @@ def build_registry(
                 "goal": {"type": "string"},
                 "acknowledgement": {
                     "type": "string",
-                    "maxLength": 80,
+                    "minLength": 1,
+                    "maxLength": TASK_ACKNOWLEDGEMENT_MAX_CHARS,
                 },
                 "constraints": {"type": "array", "items": {"type": "string"}},
                 "requested_deliverables": {

@@ -9,11 +9,15 @@ from core.domain import (
     acceptance_criterion_id,
 )
 
+TASK_ACKNOWLEDGEMENT_MAX_CHARS = 40
+TASK_STARTED_FALLBACK_TEXT = "好，等我一下。"
 
-def task_started_text(goal: str) -> str:
-    normalized = " ".join(goal.split())
-    visible_goal = normalized if len(normalized) <= 48 else f"{normalized[:47]}…"
-    return f"好，我先去处理这件事，弄好直接发你：{visible_goal}"
+
+def task_started_text(acknowledgement: Any) -> str:
+    normalized = " ".join(str(acknowledgement or "").split())
+    if not normalized or len(normalized) > TASK_ACKNOWLEDGEMENT_MAX_CHARS:
+        return TASK_STARTED_FALLBACK_TEXT
+    return normalized
 
 
 def task_requester_id(row: Any) -> str | None:

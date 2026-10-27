@@ -295,8 +295,15 @@ class ToolRegistry:
         path: str,
     ) -> str | None:
         expected = definition.get("type")
-        if expected == "string" and not isinstance(value, str):
-            return f"argument {path} must be string"
+        if expected == "string":
+            if not isinstance(value, str):
+                return f"argument {path} must be string"
+            minimum = definition.get("minLength")
+            if isinstance(minimum, int) and len(value) < minimum:
+                return f"argument {path} must contain at least {minimum} characters"
+            maximum = definition.get("maxLength")
+            if isinstance(maximum, int) and len(value) > maximum:
+                return f"argument {path} must contain at most {maximum} characters"
         if expected == "integer" and (
             isinstance(value, bool) or not isinstance(value, int)
         ):
