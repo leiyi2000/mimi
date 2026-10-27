@@ -101,6 +101,21 @@ class StickerSendRow(Model):
         table = "pumpkin_sticker_sends"
 
 
+class StickerRemovalRow(Model):
+    id = fields.IntField(primary_key=True)
+    removal_id = fields.CharField(max_length=128, unique=True)
+    content_sha256 = fields.CharField(max_length=64, unique=True)
+    perceptual_hash = fields.CharField(max_length=64, db_index=True)
+    sticker_id = fields.CharField(max_length=128, null=True, db_index=True)
+    requester_id = fields.CharField(max_length=128)
+    scope_id = fields.CharField(max_length=255, db_index=True)
+    source_message_id = fields.CharField(max_length=128)
+    created_at = fields.DatetimeField(auto_now_add=True)
+
+    class Meta:
+        table = "pumpkin_sticker_removals"
+
+
 class OutboundMessageRow(Model):
     id = fields.IntField(primary_key=True)
     outbound_id = fields.CharField(max_length=128, unique=True)

@@ -738,6 +738,68 @@ async def test_inspect_message_media_reads_image_inside_forward(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_inspect_message_media_reads_image_inside_reply(tmp_path):
+    runtime = PumpkinRuntime(PumpkinConfig.from_env(), client=object())
+    await runtime.store.initialize(f"sqlite://{tmp_path / 'pumpkin.db'}")
+    await runtime.store.archive(
+        InboundMessage(
+            message_id="reply-message",
+            conversation_type=ConversationType.GROUP,
+            scope_id="group:1",
+            sender_id="7",
+            sender_name="member",
+            segments=(
+                MessageSegment(
+                    MessageSegmentType.REPLY,
+                    data={
+                        "id": "quoted-message",
+                        "quoted": {
+                            "message_id": "quoted-message",
+                            "segments": [
+                                {
+                                    "type": "text",
+                                    "data": {"text": "看看这个"},
+                                },
+                                {
+                                    "type": "image",
+                                    "data": {
+                                        "url": "https://cdn.test/quoted.gif"
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                ),
+                MessageSegment(MessageSegmentType.TEXT, text="这是什么"),
+            ),
+            received_at=datetime.now(UTC),
+            is_self=False,
+            raw_text="[CQ:reply,id=quoted-message]这是什么",
+            group_id="1",
+            reply_to_message_id="quoted-message",
+        )
+    )
+
+    class Media:
+        async def fetch(self, segment_type, data):
+            assert segment_type == "image"
+            assert data["url"].endswith("quoted.gif")
+            return FetchedMedia(b"GIF89aquoted", "image/gif", data["url"])
+
+    runtime.chat_tools.media_provider = Media()
+    result = await runtime.chat_tools.inspect_message_media(
+        tool_context(run_id="reply-run"),
+        {"message_id": "reply-message", "segment_path": [0, 1]},
+    )
+
+    assert not result.is_error
+    assert result.content["segment_index"] == 0
+    assert result.content["segment_path"] == [0, 1]
+    assert result.images[0]["data"].startswith("R0lG")
+    await runtime.store.close()
+
+
+@pytest.mark.asyncio
 async def test_image_reply_requires_current_turn_media_inspection(tmp_path):
     runtime = PumpkinRuntime(PumpkinConfig.from_env(), client=object())
     await runtime.store.initialize(f"sqlite://{tmp_path / 'pumpkin.db'}")

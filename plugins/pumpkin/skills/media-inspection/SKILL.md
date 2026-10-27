@@ -25,8 +25,9 @@ priority: 90
 
 只有在当前上下文明确需要理解媒体内容时才查看媒体。Conversation Agent 先使用
 `search_group_messages` 或当前消息上下文取得 `message_id` 和媒体位置；普通顶层媒体使用
-`segment_index`，合并转发内的媒体使用 `segment_path`（例如
-`[0, 1, 0]` 表示顶层第 0 段、第 1 个转发节点、第 0 个节点内段）。
+`segment_index`，引用或合并转发内的媒体使用 `segment_path`。例如 `[0, 1]` 表示
+顶层第 0 个引用段中引用内容的第 1 段；`[0, 1, 0]` 表示顶层第 0 个转发段、
+第 1 个转发节点、第 0 个节点内段。引用与转发嵌套时继续按当前容器逐层追加索引。
 Task Executor 只能使用当前任务源消息中的引用，再调用 `inspect_message_media`。
 不能传入任意 URL、文件路径或其他作用域的消息。
 

@@ -6,6 +6,7 @@ import os
 import tempfile
 import uuid
 from collections import Counter
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -16,6 +17,7 @@ from PIL import Image, UnidentifiedImageError
 
 from core.domain import (
     MessageRecord,
+    MessageSegmentType,
     OutboxStatus,
     StickerAsset,
     StickerAssetStatus,
@@ -74,6 +76,7 @@ class StickerService:
         self.idempotency_key = idempotency_key
         self._wake = asyncio.Event()
         self._state_lock = asyncio.Lock()
+        self._asset_lock = asyncio.Lock()
         self._worker: asyncio.Task[None] | None = None
         self._closing = False
         self._failure: BaseException | None = None
@@ -207,21 +210,33 @@ class StickerService:
             return
 
         content_sha256 = hashlib.sha256(fetched.content).hexdigest()
-        duplicate = await self.store.get_sticker_by_hash(
-            content_sha256,
-            perceptual_hash,
-        )
+        async with self._asset_lock:
+            if await self.store.is_sticker_removed(
+                content_sha256,
+                perceptual_hash,
+            ):
+                await self.store.finish_sticker_candidate(
+                    candidate.candidate_id,
+                    status=StickerCandidateStatus.REJECTED.value,
+                    error_code="STICKER_REMOVED_BY_REQUEST",
+                )
+                return
+            duplicate = await self.store.get_sticker_by_hash(
+                content_sha256,
+                perceptual_hash,
+            )
+            if duplicate is not None:
+                duplicate = await self.store.record_sticker_seen(
+                    duplicate.sticker_id,
+                    scope_id=candidate.scope_id,
+                    seen_at=datetime.now(UTC),
+                )
+                await self.store.finish_sticker_candidate(
+                    candidate.candidate_id,
+                    status=StickerCandidateStatus.ACCEPTED.value,
+                    asset_id=duplicate.sticker_id,
+                )
         if duplicate is not None:
-            duplicate = await self.store.record_sticker_seen(
-                duplicate.sticker_id,
-                scope_id=candidate.scope_id,
-                seen_at=datetime.now(UTC),
-            )
-            await self.store.finish_sticker_candidate(
-                candidate.candidate_id,
-                status=StickerCandidateStatus.ACCEPTED.value,
-                asset_id=duplicate.sticker_id,
-            )
             if duplicate.status is StickerAssetStatus.STAGED:
                 await self._promote_asset(duplicate)
             return
@@ -256,27 +271,59 @@ class StickerService:
             return
         sticker_id = uuid.uuid4().hex
         staged_path = self.root / "staged" / f"{sticker_id}{extension}"
-        await asyncio.to_thread(_atomic_write, staged_path, fetched.content)
-        try:
-            asset = await self.store.create_sticker_asset(
-                sticker_id=sticker_id,
-                content_sha256=content_sha256,
-                perceptual_hash=perceptual_hash,
-                content_type=fetched.content_type,
-                file_extension=extension,
-                relative_path=self._relative(staged_path),
-                classification=classification,
-                scope_id=candidate.scope_id,
-                seen_at=datetime.now(UTC),
+        async with self._asset_lock:
+            if await self.store.is_sticker_removed(
+                content_sha256,
+                perceptual_hash,
+            ):
+                await self.store.finish_sticker_candidate(
+                    candidate.candidate_id,
+                    status=StickerCandidateStatus.REJECTED.value,
+                    error_code="STICKER_REMOVED_BY_REQUEST",
+                )
+                return
+            duplicate = await self.store.get_sticker_by_hash(
+                content_sha256,
+                perceptual_hash,
             )
-        except BaseException:
-            staged_path.unlink(missing_ok=True)
-            raise
-        await self.store.finish_sticker_candidate(
-            candidate.candidate_id,
-            status=StickerCandidateStatus.ACCEPTED.value,
-            asset_id=asset.sticker_id,
-        )
+            if duplicate is not None:
+                duplicate = await self.store.record_sticker_seen(
+                    duplicate.sticker_id,
+                    scope_id=candidate.scope_id,
+                    seen_at=datetime.now(UTC),
+                )
+                await self.store.finish_sticker_candidate(
+                    candidate.candidate_id,
+                    status=StickerCandidateStatus.ACCEPTED.value,
+                    asset_id=duplicate.sticker_id,
+                )
+                asset = duplicate
+            else:
+                await asyncio.to_thread(
+                    _atomic_write,
+                    staged_path,
+                    fetched.content,
+                )
+                try:
+                    asset = await self.store.create_sticker_asset(
+                        sticker_id=sticker_id,
+                        content_sha256=content_sha256,
+                        perceptual_hash=perceptual_hash,
+                        content_type=fetched.content_type,
+                        file_extension=extension,
+                        relative_path=self._relative(staged_path),
+                        classification=classification,
+                        scope_id=candidate.scope_id,
+                        seen_at=datetime.now(UTC),
+                    )
+                except BaseException:
+                    staged_path.unlink(missing_ok=True)
+                    raise
+                await self.store.finish_sticker_candidate(
+                    candidate.candidate_id,
+                    status=StickerCandidateStatus.ACCEPTED.value,
+                    asset_id=asset.sticker_id,
+                )
         await self._promote_asset(asset)
         await self._prune_staged()
 
@@ -312,6 +359,16 @@ class StickerService:
         return False
 
     async def _promote_asset(self, candidate: StickerAsset) -> bool:
+        async with self._asset_lock:
+            current = await self.store.get_sticker(candidate.sticker_id)
+            if (
+                current is None
+                or current.status is not StickerAssetStatus.STAGED
+            ):
+                return False
+            return await self._promote_asset_locked(current)
+
+    async def _promote_asset_locked(self, candidate: StickerAsset) -> bool:
         active = await self.store.list_active_stickers()
         now = datetime.now(UTC)
         active_path = self.root / "active" / (
@@ -365,6 +422,11 @@ class StickerService:
 
     async def reconcile_files(self) -> None:
         for asset in await self.store.list_sticker_assets():
+            if asset.status is StickerAssetStatus.REMOVED:
+                matches = tuple(self.root.glob(f"**/{asset.sticker_id}.*"))
+                for match in matches:
+                    await asyncio.to_thread(_unlink_file, match)
+                continue
             expected = self._absolute(asset.relative_path)
             if expected.exists():
                 continue
@@ -453,6 +515,20 @@ class StickerService:
                 "reply message limit exceeded for this turn",
                 "REPLY_BUDGET_EXCEEDED",
             )
+        async with self._asset_lock:
+            return await self._send_sticker_locked(
+                context,
+                sticker_id=sticker_id,
+                key=key,
+            )
+
+    async def _send_sticker_locked(
+        self,
+        context: ToolContext,
+        *,
+        sticker_id: str,
+        key: str,
+    ) -> ToolResult:
         asset = await self.store.get_sticker(sticker_id)
         if asset is None or asset.status is not StickerAssetStatus.ACTIVE:
             return error("sticker is not active", "STICKER_NOT_ACTIVE")
@@ -510,6 +586,137 @@ class StickerService:
         }
         await self.store.idempotency_put(key, content)
         self.reply_ledger.record(context.run_id, item.message_ids)
+        return ok(content)
+
+    async def remove_quoted_sticker(
+        self,
+        context: ToolContext,
+        arguments: dict[str, Any],
+    ) -> ToolResult:
+        key = self.idempotency_key(
+            context,
+            "sticker-removal",
+            str(arguments["idempotency_key"]),
+        )
+        cached = await self.store.idempotency_get(key)
+        if cached is not None:
+            return ok(cached)
+        if context.message_id is None or context.sender_id is None:
+            return error(
+                "a quoted group message is required",
+                "STICKER_REMOVAL_QUOTE_REQUIRED",
+            )
+        source = await self.store.get_archived_message(
+            context.scope_id,
+            context.message_id,
+        )
+        if source is None or source.message.group_id is None:
+            return error(
+                "a quoted group message is required",
+                "STICKER_REMOVAL_QUOTE_REQUIRED",
+            )
+        replies = tuple(
+            segment
+            for segment in source.message.segments
+            if segment.type is MessageSegmentType.REPLY
+        )
+        if len(replies) != 1:
+            return error(
+                "a single quoted message is required",
+                "STICKER_REMOVAL_QUOTE_REQUIRED",
+            )
+        quoted = replies[0].data.get("quoted")
+        if not isinstance(quoted, Mapping):
+            return error(
+                "quoted message is unavailable",
+                "STICKER_REMOVAL_SOURCE_UNAVAILABLE",
+            )
+        quoted_message_id = str(quoted.get("message_id") or "")
+        raw_segments = quoted.get("segments")
+        if not quoted_message_id or not isinstance(raw_segments, list):
+            return error(
+                "quoted message is unavailable",
+                "STICKER_REMOVAL_SOURCE_UNAVAILABLE",
+            )
+        media = [
+            (index, item)
+            for index, item in enumerate(raw_segments)
+            if isinstance(item, Mapping)
+            and item.get("type")
+            in {
+                MessageSegmentType.IMAGE.value,
+                MessageSegmentType.MFACE.value,
+            }
+        ]
+        if not media:
+            return error(
+                "quoted message has no removable sticker",
+                "STICKER_REMOVAL_MEDIA_REQUIRED",
+            )
+        if len(media) != 1:
+            return error(
+                "quoted message has multiple removable media items",
+                "STICKER_REMOVAL_TARGET_AMBIGUOUS",
+            )
+        segment_index, item = media[0]
+        data = item.get("data")
+        if not isinstance(data, Mapping):
+            return error(
+                "quoted media is unavailable",
+                "STICKER_REMOVAL_SOURCE_UNAVAILABLE",
+            )
+        try:
+            fetched = await self.media_provider.fetch(
+                str(item["type"]),
+                dict(data),
+                preserve_animation=True,
+            )
+            perceptual_hash, _preview = await asyncio.to_thread(
+                _image_preview,
+                fetched.content,
+            )
+        except MediaProviderError as exc:
+            return error(
+                "quoted media could not be read",
+                exc.code,
+                retryable=exc.retryable,
+            )
+        except (KeyError, ValueError):
+            return error(
+                "quoted media is invalid",
+                "STICKER_MEDIA_INVALID",
+            )
+        content_sha256 = hashlib.sha256(fetched.content).hexdigest()
+        async with self._asset_lock:
+            asset, created = await self.store.remove_sticker(
+                content_sha256=content_sha256,
+                perceptual_hash=perceptual_hash,
+                requester_id=context.sender_id,
+                scope_id=context.scope_id,
+                source_message_id=quoted_message_id,
+                segment_index=segment_index,
+                removed_at=datetime.now(UTC),
+            )
+        if asset is not None:
+            path = self._absolute(asset.relative_path)
+            try:
+                await asyncio.to_thread(_unlink_file, path)
+            except OSError:
+                return error(
+                    "sticker was disabled but its file cleanup is pending",
+                    "STICKER_REMOVAL_CLEANUP_FAILED",
+                    retryable=True,
+                )
+        outcome = (
+            "blocked_only"
+            if asset is None
+            else "removed"
+            if created
+            else "already_removed"
+        )
+        content = {"removed": True, "outcome": outcome}
+        await self.store.idempotency_put(key, content)
+        await self.wake()
         return ok(content)
 
     def _relative(self, path: Path) -> str:
@@ -619,6 +826,13 @@ def _atomic_move(source: Path, target: Path) -> None:
     _fsync_directory(target.parent)
     if source.parent != target.parent:
         _fsync_directory(source.parent)
+
+
+def _unlink_file(path: Path) -> None:
+    if not path.exists():
+        return
+    path.unlink()
+    _fsync_directory(path.parent)
 
 
 def _fsync_directory(path: Path) -> None:

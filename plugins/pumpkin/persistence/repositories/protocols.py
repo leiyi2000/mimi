@@ -248,6 +248,24 @@ class StickerRepository(Protocol):
 
     async def get_sticker(self, sticker_id: str) -> StickerAsset | None: ...
 
+    async def is_sticker_removed(
+        self,
+        content_sha256: str,
+        perceptual_hash: str,
+    ) -> bool: ...
+
+    async def remove_sticker(
+        self,
+        *,
+        content_sha256: str,
+        perceptual_hash: str,
+        requester_id: str,
+        scope_id: str,
+        source_message_id: str,
+        segment_index: int,
+        removed_at: datetime,
+    ) -> tuple[StickerAsset | None, bool]: ...
+
     async def get_sticker_send_for_run(self, run_id: str) -> Any | None: ...
 
     async def record_sticker_send(

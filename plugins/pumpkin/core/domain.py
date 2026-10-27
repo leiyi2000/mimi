@@ -260,6 +260,7 @@ class StickerAssetStatus(StrEnum):
     ACTIVE = "active"
     ARCHIVED = "archived"
     QUARANTINED = "quarantined"
+    REMOVED = "removed"
 
 
 @dataclass(frozen=True, slots=True)

@@ -38,6 +38,10 @@ class StickerToolHost(Protocol):
         self, context: ToolContext, arguments: dict[str, Any]
     ) -> ToolResult: ...
 
+    async def remove_quoted_sticker(
+        self, context: ToolContext, arguments: dict[str, Any]
+    ) -> ToolResult: ...
+
 
 class TaskToolHost(Protocol):
     async def create_task(
@@ -358,7 +362,8 @@ def build_registry(
     register(
         "inspect_message_media",
         "按需查看当前作用域消息中的图片、文件或语音媒体。普通媒体使用 segment_index；"
-        "合并转发内的媒体使用 segment_path，例如 [0, 1, 0] 表示顶层第 0 段、"
+        "引用消息内的媒体使用 segment_path，例如 [0, 1] 表示顶层第 0 个引用段、"
+        "引用内容的第 1 段；合并转发使用 [0, 1, 0] 表示顶层第 0 段、"
         "第 1 个转发节点、第 0 个节点内段；链接失效或格式不支持时返回明确错误。",
         {
             "type": "object",
@@ -429,6 +434,24 @@ def build_registry(
             },
         },
         sticker.send_sticker,
+        skill_name="sticker-reply",
+        read_only=False,
+        idempotency_required=True,
+        allowed_roles=frozenset({AgentRole.CHAT}),
+        required_capabilities=frozenset({TurnCapability.STICKER_REPLY}),
+    )
+    register(
+        "remove_quoted_sticker",
+        "移除当前消息所引用的单个表情包。群内任何用户都可请求；目标完全由 Runtime "
+        "解析，不接受 sticker_id 或消息 ID。",
+        {
+            "type": "object",
+            "required": ["idempotency_key"],
+            "properties": {
+                "idempotency_key": {"type": "string"},
+            },
+        },
+        sticker.remove_quoted_sticker,
         skill_name="sticker-reply",
         read_only=False,
         idempotency_required=True,

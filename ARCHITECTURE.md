@@ -143,7 +143,9 @@ Pumpkin 在消息归档后把群聊顶层 `image` 和 `mface` 段登记为持久
 隐私过滤和文件原子写入。跨群共享活跃库最多 50 个；满库后按北京时间每天最多替换
 10 个，旧资产移动到日期归档目录。收集不改变群聊参与决策。Conversation Agent 通过
 `sticker-reply` Skill 查询受控元数据并使用 `sticker_id` 发送，不能构造媒体路径或
-`mface` 参数；发送继续经过 Outbox、Turn capability 和回复预算。
+`mface` 参数；发送继续经过 Outbox、Turn capability 和回复预算。群内成员也可引用单个
+原始媒体请求全局移除；Runtime 只从当前引用解析目标，写入哈希墓碑并清理资产文件，
+防止后台重新收集。
 
 Pumpkin 音频能力在启动时选择 `MinimaxAudioProvider` 或
 `QwenLocalAudioProvider`。MiniMax Provider 访问云端 TTS；Qwen Provider 通过 HTTP 访问

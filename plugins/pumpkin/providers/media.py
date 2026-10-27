@@ -136,26 +136,40 @@ class MessageMediaProvider:
         segment = record.message.segments[top_index]
         offset = 1
         while offset < len(segment_path):
-            if offset + 1 >= len(segment_path):
+            if segment.type is MessageSegmentType.REPLY:
+                quoted = segment.data.get("quoted")
+                if not isinstance(quoted, Mapping):
+                    raise MediaProviderError("MEDIA_SEGMENT_PATH_INVALID")
+                children = quoted.get("segments")
+                child_index = segment_path[offset]
+                offset += 1
+            elif segment.type is MessageSegmentType.FORWARD:
+                if offset + 1 >= len(segment_path):
+                    raise MediaProviderError("MEDIA_SEGMENT_PATH_INVALID")
+                node_index = segment_path[offset]
+                child_index = segment_path[offset + 1]
+                messages = segment.data.get("messages")
+                if (
+                    not isinstance(messages, list)
+                    or not 0 <= node_index < len(messages)
+                ):
+                    raise MediaProviderError("MEDIA_SEGMENT_NOT_FOUND")
+                node = messages[node_index]
+                if not isinstance(node, Mapping):
+                    raise MediaProviderError("MEDIA_SEGMENT_PATH_INVALID")
+                children = node.get("segments")
+                offset += 2
+            else:
                 raise MediaProviderError("MEDIA_SEGMENT_PATH_INVALID")
-            if segment.type is not MessageSegmentType.FORWARD:
-                raise MediaProviderError("MEDIA_SEGMENT_PATH_INVALID")
-            node_index = segment_path[offset]
-            child_index = segment_path[offset + 1]
-            messages = segment.data.get("messages")
-            if not isinstance(messages, list) or not 0 <= node_index < len(messages):
-                raise MediaProviderError("MEDIA_SEGMENT_NOT_FOUND")
-            node = messages[node_index]
-            if not isinstance(node, Mapping):
-                raise MediaProviderError("MEDIA_SEGMENT_PATH_INVALID")
-            children = node.get("segments")
-            if not isinstance(children, list) or not 0 <= child_index < len(children):
+            if (
+                not isinstance(children, list)
+                or not 0 <= child_index < len(children)
+            ):
                 raise MediaProviderError("MEDIA_SEGMENT_NOT_FOUND")
             child = children[child_index]
             if not isinstance(child, Mapping):
                 raise MediaProviderError("MEDIA_SEGMENT_PATH_INVALID")
             segment = cls._nested_segment(child)
-            offset += 2
         return segment
 
     @staticmethod

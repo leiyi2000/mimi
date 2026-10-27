@@ -19,6 +19,7 @@ from core.domain import (
 from persistence.models import (
     StickerAssetRow,
     StickerCandidateRow,
+    StickerRemovalRow,
     StickerReplacementRow,
     StickerSendRow,
 )
@@ -276,6 +277,112 @@ class StickerRepositoryMixin:
     async def get_sticker(self, sticker_id: str) -> StickerAsset | None:
         row = await StickerAssetRow.get_or_none(sticker_id=sticker_id)
         return self._asset(row) if row is not None else None
+
+    async def is_sticker_removed(
+        self,
+        content_sha256: str,
+        perceptual_hash: str,
+    ) -> bool:
+        if await StickerRemovalRow.filter(
+            content_sha256=content_sha256
+        ).exists():
+            return True
+        return await StickerRemovalRow.filter(
+            perceptual_hash=perceptual_hash
+        ).exists()
+
+    async def remove_sticker(
+        self,
+        *,
+        content_sha256: str,
+        perceptual_hash: str,
+        requester_id: str,
+        scope_id: str,
+        source_message_id: str,
+        segment_index: int,
+        removed_at: datetime,
+    ) -> tuple[StickerAsset | None, bool]:
+        async with self._sticker_lock:
+            async with in_transaction() as connection:
+                removal = (
+                    await StickerRemovalRow.filter(
+                        content_sha256=content_sha256
+                    )
+                    .using_db(connection)
+                    .first()
+                )
+                if removal is None:
+                    removal = (
+                        await StickerRemovalRow.filter(
+                            perceptual_hash=perceptual_hash
+                        )
+                        .using_db(connection)
+                        .first()
+                    )
+                asset_row = (
+                    await StickerAssetRow.filter(
+                        content_sha256=content_sha256
+                    )
+                    .using_db(connection)
+                    .first()
+                )
+                if asset_row is None:
+                    asset_row = (
+                        await StickerAssetRow.filter(
+                            perceptual_hash=perceptual_hash
+                        )
+                        .using_db(connection)
+                        .first()
+                    )
+                created = removal is None
+                if removal is None:
+                    removal = await StickerRemovalRow.create(
+                        removal_id=uuid.uuid4().hex,
+                        content_sha256=content_sha256,
+                        perceptual_hash=perceptual_hash,
+                        sticker_id=(
+                            asset_row.sticker_id
+                            if asset_row is not None
+                            else None
+                        ),
+                        requester_id=requester_id,
+                        scope_id=scope_id,
+                        source_message_id=source_message_id,
+                        using_db=connection,
+                    )
+                if asset_row is not None:
+                    asset_row.status = StickerAssetStatus.REMOVED.value
+                    asset_row.archived_at = removed_at
+                    await asset_row.save(using_db=connection)
+                    if removal.sticker_id is None:
+                        removal.sticker_id = asset_row.sticker_id
+                        await removal.save(
+                            using_db=connection,
+                            update_fields=["sticker_id"],
+                        )
+                    await StickerCandidateRow.filter(
+                        asset_id=asset_row.sticker_id
+                    ).using_db(connection).exclude(
+                        status=StickerCandidateStatus.REJECTED.value
+                    ).update(
+                        status=StickerCandidateStatus.REJECTED.value,
+                        error_code="STICKER_REMOVED_BY_REQUEST",
+                        claimed_at=None,
+                        next_attempt_at=None,
+                    )
+                await StickerCandidateRow.filter(
+                    source_message_id=source_message_id,
+                    segment_index=segment_index,
+                ).using_db(connection).update(
+                    status=StickerCandidateStatus.REJECTED.value,
+                    error_code="STICKER_REMOVED_BY_REQUEST",
+                    claimed_at=None,
+                    next_attempt_at=None,
+                )
+            return (
+                self._asset(asset_row) if asset_row is not None else None,
+                created,
+            )
 
     async def get_sticker_send_for_run(self, run_id: str):
         return await StickerSendRow.get_or_none(run_id=run_id)

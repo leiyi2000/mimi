@@ -143,14 +143,12 @@ def _parse_datetime(value: object) -> datetime | None:
 
 
 def _text_for(message: InboundMessage) -> str:
-    text = message.raw_text.strip()
     parts = [
         segment.text
         for segment in message.segments
         if segment.type is MessageSegmentType.TEXT and segment.text
     ]
-    if not text:
-        text = "".join(parts).strip()
+    text = "".join(parts).strip() or message.raw_text.strip()
     annotations: list[str] = []
     for segment in message.segments:
         data = segment.data

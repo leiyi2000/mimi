@@ -281,6 +281,9 @@ search_stickers(category, tags?, limit?)
 
 send_sticker(sticker_id, idempotency_key)
   -> Outbox send result
+
+remove_quoted_sticker(idempotency_key)
+  -> removed | already_removed | blocked_only
 ```
 
 `search_stickers` 只查询 `ACTIVE` 资产，最多返回 8 个候选：
@@ -321,6 +324,12 @@ Skill 指导 Agent：
 这些是 Agent 的语义选择原则；安静参与、Turn capability、回复预算和 Outbox 幂等仍由
 Runtime 强制执行。
 
+`remove_quoted_sticker` 不接受 `sticker_id`、消息 ID、路径或媒体 URL。Runtime 从当前
+群消息已展开的引用载荷中解析唯一顶层 `image` 或 `mface`，下载后使用与收集链路相同的
+内容及感知哈希定位资产。群内任何成员都可以请求移除，不要求其为原消息发送者。匹配资产
+进入不可发送的 `REMOVED` 终态并清理文件；媒体尚未入库时也会写入哈希墓碑，后续 worker
+在分类前直接拒绝，防止同一或近似内容重新进入跨群共享库。
+
 ## 11. 工具与能力边界
 
 新增 `TurnCapability.STICKER_REPLY`。`ConversationTurnPolicy` 仅对
@@ -328,9 +337,9 @@ Runtime 强制执行。
 Executor、地址为空的控制 Turn 和未被参与策略接受的普通群聊都不能加载或执行
 `send_sticker`。
 
-`search_stickers` 是只读工具，但仍只属于 `sticker-reply` Skill。`send_sticker` 是写
-工具，要求幂等键并由工具执行层再次检查 `STICKER_REPLY` capability。模型即使手工构造
-工具调用也不能绕过权限。
+`search_stickers` 是只读工具，但仍只属于 `sticker-reply` Skill。`send_sticker` 和
+`remove_quoted_sticker` 是写工具，要求幂等键并由工具执行层再次检查 `STICKER_REPLY`
+capability。模型即使手工构造工具调用也不能绕过权限或指定任意删除目标。
 
 ## 12. 失败语义
 
@@ -404,7 +413,7 @@ Provider 和数据库。`wait_for_idle()` 在测试中同时等待 worker 与 Ou
 ## 16. 非目标
 
 - 不为表情包新增聊天命令或管理页面；
-- 不让 Agent 浏览归档、删除资产或修改分类；
+- 不让 Agent 浏览归档、按任意资产 ID 删除或修改分类；
 - 不从私聊、历史数据库全量回扫或其他插件目录收集媒体；
 - 不允许表情收集唤醒 Conversation Agent；
 - 不让分类模型直接选择被替换资产；

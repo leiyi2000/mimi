@@ -101,6 +101,9 @@ Pumpkin 会在后台从所有群聊的顶层 `image` 和 `mface` 消息段收集
 Conversation Agent。Conversation Agent 可按需加载 `sticker-reply` Skill，根据受控
 分类检索 `sticker_id` 并发送一个合适的表情；Task Event、Task Executor 和未被参与策略
 接受的普通群消息无权发送。表情与文字共用当前 Turn 的回复条数预算，并统一经过 Outbox。
+群内任何成员都可以引用一条只含单个图片或扩展表情的原消息，要求 Pumpkin 从共享库移除
+对应表情。移除目标由 Runtime 从引用消息解析，Agent 不能指定任意资产；删除后保留哈希
+墓碑，防止相同或近似内容被后台重新收集。
 
 音频合成可选择 MiniMax 或宿主机上的 Qwen3-TTS 本地服务。MiniMax 支持已有音色、语速、
 音量、音调、情绪、声音质感、效果器及 2 至 4 个音色混合；Qwen 固定输出 WAV，支持

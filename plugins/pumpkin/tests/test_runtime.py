@@ -1304,6 +1304,58 @@ async def test_same_sender_follow_up_outside_window_is_ambient(tmp_path):
     await runtime.close()
 
 
+async def test_reply_with_structured_wake_prefix_is_direct_outside_window(
+    tmp_path,
+):
+    base = PumpkinConfig.from_env()
+    assistant_name = "assistant-alias"
+    runtime = PumpkinRuntime(
+        replace(
+            base,
+            assistant=replace(base.assistant, name=assistant_name),
+            activation=replace(base.activation, prefixes=(assistant_name,)),
+            data_dir=str(tmp_path),
+            db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+        ),
+        client=FakeClient(),
+    )
+    await runtime.start()
+    now = datetime.now(UTC)
+    await runtime.sessions.activate(
+        "group:1",
+        summary="direct",
+        now=now
+        - timedelta(
+            seconds=base.activation.direct_follow_up_window_seconds + 1
+        ),
+        sender_id="7",
+        explicit_wake=True,
+    )
+    event = group_event(
+        45,
+        f"{assistant_name}介绍下这个项目可以干啥",
+        reply_to_message_id="unrelated-message",
+    )
+    event["raw_message"] = (
+        f"[CQ:reply,id=unrelated-message]{assistant_name}"
+        "介绍下这个项目可以干啥"
+    )
+    message = runtime.adapter.adapt(event)
+
+    wake = runtime.sessions.is_wake(message, "999")
+    decision = await runtime.sessions.decide_participation(
+        message,
+        direct=wake,
+        now=now,
+    )
+
+    assert wake
+    assert decision.action is ParticipationAction.ACCEPT
+    assert decision.intent is ParticipationIntent.DIRECT
+    assert decision.reason is ParticipationReason.EXPLICIT_DIRECT
+    await runtime.close()
+
+
 async def test_accepted_follow_up_refreshes_idle_window(tmp_path):
     base = PumpkinConfig.from_env()
     runtime = PumpkinRuntime(

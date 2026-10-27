@@ -113,10 +113,9 @@ class ChatToolService:
                     for item in raw_path
                 )
                 or (segment_index is not None and segment_index != raw_path[0])
-                or (len(raw_path) - 1) % 2 != 0
             ):
                 return error(
-                    "媒体路径无效，应为顶层段索引及成对的节点、段索引。",
+                    "媒体路径无效，应从顶层段索引开始逐层定位引用或转发内容。",
                     "MEDIA_ARGUMENT_INVALID",
                 )
             segment_path = tuple(raw_path)

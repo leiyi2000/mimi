@@ -145,6 +145,66 @@ def _message(
     )
 
 
+def _removal_message(
+    message_id: str,
+    *,
+    quoted_message_id: str,
+    quoted_sender_id: str = "7",
+    media_count: int = 1,
+) -> InboundMessage:
+    return InboundMessage(
+        message_id=message_id,
+        conversation_type=ConversationType.GROUP,
+        scope_id="group:1",
+        sender_id="7",
+        sender_name="member",
+        segments=(
+            MessageSegment(
+                MessageSegmentType.REPLY,
+                data={
+                    "id": quoted_message_id,
+                    "quoted": {
+                        "message_id": quoted_message_id,
+                        "sender_id": quoted_sender_id,
+                        "sender_name": "member",
+                        "segments": [
+                            {
+                                "type": "mface",
+                                "text": "",
+                                "data": {
+                                    "url": (
+                                        f"https://cdn.test/{quoted_message_id}.png"
+                                    )
+                                },
+                            }
+                            for _index in range(media_count)
+                        ],
+                    },
+                },
+            ),
+            MessageSegment(MessageSegmentType.TEXT, text="删掉这个表情"),
+        ),
+        received_at=datetime.now(UTC),
+        is_self=False,
+        raw_text="[回复]删掉这个表情",
+        group_id="1",
+        reply_to_message_id=quoted_message_id,
+    )
+
+
+def _context(message_id: str) -> ToolContext:
+    return ToolContext(
+        scope_id="group:1",
+        sender_id="7",
+        message_id=message_id,
+        sender_name="member",
+        agent_role=AgentRole.CHAT,
+        run_id=f"run-{message_id}",
+        max_reply_messages=2,
+        capabilities=frozenset({TurnCapability.STICKER_REPLY}),
+    )
+
+
 @pytest.mark.asyncio
 async def test_collector_activates_group_sticker_and_deduplicates(
     store,
@@ -333,6 +393,132 @@ async def test_sticker_send_uses_outbox_and_enforces_one_per_turn(
 
 
 @pytest.mark.asyncio
+async def test_any_group_member_can_remove_quoted_active_sticker(
+    store,
+    tmp_path,
+):
+    content = _png((30, 40, 50))
+    media = Media(content)
+    service = _service(store, tmp_path, media=media)
+    await service.start()
+    try:
+        original = await store.archive(_message("original"))
+        await service.enqueue(original)
+        await service.when_idle()
+        asset = (await store.list_active_stickers())[0]
+        path = tmp_path / asset.relative_path
+        assert path.is_file()
+
+        removal = _removal_message(
+            "remove-message",
+            quoted_message_id="original",
+            quoted_sender_id="8",
+        )
+        await store.archive(removal)
+        result = await service.remove_quoted_sticker(
+            _context(removal.message_id),
+            {"idempotency_key": "remove-1"},
+        )
+
+        assert not result.is_error
+        assert result.content == {"removed": True, "outcome": "removed"}
+        assert not path.exists()
+        assert await store.list_active_stickers() == ()
+        removed = await store.get_sticker(asset.sticker_id)
+        assert removed is not None
+        assert removed.status is StickerAssetStatus.REMOVED
+
+        repeated = await service.remove_quoted_sticker(
+            _context(removal.message_id),
+            {"idempotency_key": "remove-2"},
+        )
+        assert repeated.content["outcome"] == "already_removed"
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_any_group_member_can_remove_quoted_sticker(
+    store,
+    tmp_path,
+):
+    media = Media(_png((30, 40, 50)))
+    service = _service(store, tmp_path, media=media)
+    removal = _removal_message(
+        "remove-message",
+        quoted_message_id="original",
+        quoted_sender_id="8",
+    )
+    await store.archive(removal)
+    try:
+        result = await service.remove_quoted_sticker(
+            _context(removal.message_id),
+            {"idempotency_key": "remove-1"},
+        )
+
+        assert not result.is_error
+        assert result.content["outcome"] == "blocked_only"
+        assert media.calls == 1
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_sticker_removal_tombstone_blocks_later_collection(
+    store,
+    tmp_path,
+):
+    content = _png((60, 70, 80))
+    media = Media(content)
+    classifier = Classifier()
+    service = _service(
+        store,
+        tmp_path,
+        media=media,
+        classifier=classifier,
+    )
+    await service.start()
+    try:
+        removal = _removal_message(
+            "remove-message",
+            quoted_message_id="original",
+        )
+        await store.archive(removal)
+        result = await service.remove_quoted_sticker(
+            _context(removal.message_id),
+            {"idempotency_key": "remove-1"},
+        )
+        assert result.content["outcome"] == "blocked_only"
+
+        original = await store.archive(_message("original"))
+        await service.enqueue(original)
+        await service.when_idle()
+
+        assert await store.list_active_stickers() == ()
+        assert classifier.calls == 0
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_sticker_removal_rejects_ambiguous_quote(store, tmp_path):
+    service = _service(store, tmp_path)
+    removal = _removal_message(
+        "remove-message",
+        quoted_message_id="original",
+        media_count=2,
+    )
+    await store.archive(removal)
+
+    result = await service.remove_quoted_sticker(
+        _context(removal.message_id),
+        {"idempotency_key": "remove-1"},
+    )
+
+    assert result.error_code == "STICKER_REMOVAL_TARGET_AMBIGUOUS"
+
+
+@pytest.mark.asyncio
 async def test_registry_blocks_sticker_send_without_turn_capability():
     class Host:
         def __getattr__(self, name):
@@ -356,3 +542,17 @@ async def test_registry_blocks_sticker_send_without_turn_capability():
     )
 
     assert result.error_code == "TOOL_CAPABILITY_NOT_AUTHORIZED"
+
+    removal = await registry.execute(
+        "remove_quoted_sticker",
+        ToolContext(
+            scope_id="group:1",
+            sender_id="7",
+            message_id="message-1",
+            sender_name="member",
+            agent_role=AgentRole.CHAT,
+            run_id="run-1",
+        ),
+        {"idempotency_key": "remove-1"},
+    )
+    assert removal.error_code == "TOOL_CAPABILITY_NOT_AUTHORIZED"
