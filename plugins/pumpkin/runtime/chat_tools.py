@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import base64
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from core.conversation import ChatSessionService
 from core.domain import (
     AgentRole,
-    MessageRecord,
-    MessageSegment,
     MessageSegmentType,
     ParticipationAudience,
     ToolContext,
@@ -141,10 +138,14 @@ class ChatToolService:
         record = await self.store.get_archived_message(context.scope_id, message_id)
         if record is None:
             return error("找不到当前作用域内的消息。", "MEDIA_MESSAGE_NOT_FOUND")
-        segment, path_error = self._resolve_media_segment(record, segment_path)
-        if path_error is not None:
-            return error(path_error[0], path_error[1])
-        assert segment is not None
+        try:
+            segment = MessageMediaProvider.resolve_segment(record, segment_path)
+        except MediaProviderError as exc:
+            messages = {
+                "MEDIA_SEGMENT_NOT_FOUND": "媒体段索引超出范围。",
+                "MEDIA_SEGMENT_PATH_INVALID": "媒体路径无效。",
+            }
+            return error(messages.get(exc.code, "媒体路径无效。"), exc.code)
         if segment.type.value not in {"image", "mface", "file", "record"}:
             return error(
                 {
@@ -239,68 +240,6 @@ class ChatToolService:
             ),
         )
 
-    @staticmethod
-    def _resolve_media_segment(
-        record: MessageRecord,
-        segment_path: tuple[int, ...],
-    ) -> tuple[MessageSegment | None, tuple[str, str] | None]:
-        if not segment_path:
-            return None, ("媒体段索引为空。", "MEDIA_SEGMENT_NOT_FOUND")
-        top_index = segment_path[0]
-        if not 0 <= top_index < len(record.message.segments):
-            return None, ("媒体段索引超出范围。", "MEDIA_SEGMENT_NOT_FOUND")
-        segment = record.message.segments[top_index]
-        offset = 1
-        while offset < len(segment_path):
-            if segment.type is not MessageSegmentType.FORWARD:
-                return None, (
-                    "媒体路径中的上级段不是合并转发。",
-                    "MEDIA_SEGMENT_PATH_INVALID",
-                )
-            node_index = segment_path[offset]
-            child_index = segment_path[offset + 1]
-            messages = segment.data.get("messages")
-            if not isinstance(messages, list) or not 0 <= node_index < len(messages):
-                return None, (
-                    "转发节点索引超出范围。",
-                    "MEDIA_SEGMENT_NOT_FOUND",
-                )
-            node = messages[node_index]
-            if not isinstance(node, Mapping):
-                return None, (
-                    "转发节点格式无效。",
-                    "MEDIA_SEGMENT_PATH_INVALID",
-                )
-            children = node.get("segments")
-            if not isinstance(children, list) or not 0 <= child_index < len(children):
-                return None, (
-                    "转发节点中的媒体段索引超出范围。",
-                    "MEDIA_SEGMENT_NOT_FOUND",
-                )
-            child = children[child_index]
-            if not isinstance(child, Mapping):
-                return None, (
-                    "转发媒体段格式无效。",
-                    "MEDIA_SEGMENT_PATH_INVALID",
-                )
-            segment = ChatToolService._nested_segment(child)
-            offset += 2
-        return segment, None
-
-    @staticmethod
-    def _nested_segment(value: Mapping[str, Any]) -> MessageSegment:
-        raw_type = str(value.get("type") or MessageSegmentType.UNKNOWN.value)
-        try:
-            segment_type = MessageSegmentType(raw_type)
-        except ValueError:
-            segment_type = MessageSegmentType.UNKNOWN
-        data = value.get("data")
-        return MessageSegment(
-            type=segment_type,
-            text=str(value.get("text") or ""),
-            data=dict(data) if isinstance(data, Mapping) else {},
-        )
-
     async def send_chat_reply(
         self,
         context: ToolContext,
@@ -313,7 +252,10 @@ class ChatToolService:
         if not isinstance(segments, list) or len(segments) > 12:
             return error("invalid reply segments", "INVALID_REPLY_SEGMENTS")
         for item in segments:
-            if not isinstance(item, dict) or not isinstance(item.get("type"), str):
+            if (
+                not isinstance(item, dict)
+                or item.get("type") not in {"text", "at", "face"}
+            ):
                 return error("invalid reply segment", "INVALID_REPLY_SEGMENTS")
         key = self.idempotency_key(context, "chat", str(arguments["idempotency_key"]))
         cached = await self.store.idempotency_get(key)

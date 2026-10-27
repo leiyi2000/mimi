@@ -107,7 +107,8 @@ main / config
 | APEX 用户绑定与资产 | APEX 插件 | `data/mini/plugins/apex/data/` |
 | LOL 端游/手游独立用户绑定、唯一共享会话、设备 profile、QIMEI36 | LOL 插件 | `data/mini/plugins/lol/data/` |
 | 群消息、撤回事件与下载图片 | Yasuo 插件 | `data/mini/plugins/yasuo/data/` |
-| Agent Inbox、Session Event、任务、Artifact 与 Outbox | Pumpkin 插件 | `data/mini/plugins/pumpkin/data/` |
+| Agent Inbox、Session Event、任务、Artifact、Outbox 与表情资产 | Pumpkin 插件 | `data/mini/plugins/pumpkin/data/` |
+| Qwen 克隆音色档案与模型权重 | 宿主机 Qwen3-TTS 服务 | 外部服务运行目录 |
 | QIMEI 所需固定 APK | QIMEI 服务 | `data/qimei/` |
 | 网易云 Cookie | Music 插件 | 配置的数据文件 |
 
@@ -136,6 +137,20 @@ active 话题信号不续期、不开放受众、不增加预算。
 `runtime/turn_policy.py` 按强类型 Inbox 来源生成每轮 capability/loadout，工具执行层
 再次校验 capability。`runtime/task_events.py` 是 TaskEvent 写入 Conversation Inbox
 的唯一发布者。
+
+Pumpkin 在消息归档后把群聊顶层 `image` 和 `mface` 段登记为持久化候选，不等待网络
+下载。`runtime/stickers.py` 的单 worker 异步完成安全下载、内容及感知去重、视觉分类、
+隐私过滤和文件原子写入。跨群共享活跃库最多 50 个；满库后按北京时间每天最多替换
+10 个，旧资产移动到日期归档目录。收集不改变群聊参与决策。Conversation Agent 通过
+`sticker-reply` Skill 查询受控元数据并使用 `sticker_id` 发送，不能构造媒体路径或
+`mface` 参数；发送继续经过 Outbox、Turn capability 和回复预算。
+
+Pumpkin 音频能力在启动时选择 `MinimaxAudioProvider` 或
+`QwenLocalAudioProvider`。MiniMax Provider 访问云端 TTS；Qwen Provider 通过 HTTP 访问
+宿主机 MPS 服务，执行授权音色克隆和 WAV 合成。参考音频只从当前 Task 的源消息按需读取，
+不写入 Session Event 或 Artifact。Agent 只使用统一的 `generate_audio` 与
+`clone_voice` 契约，Provider 差异由 `providers/audio/` 内部适配。克隆成功后，最新音色
+指针由 Pumpkin 原子持久化。MiniMax ASR 独立装配，可与任一 TTS Provider 组合。
 
 Pumpkin 的有效数据路径只有：
 

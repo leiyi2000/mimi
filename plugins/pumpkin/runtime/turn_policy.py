@@ -19,6 +19,7 @@ class ConversationTurnPolicy(DefaultTurnPolicy):
             TurnCapability.TASK_READ,
             TurnCapability.TASK_UPDATE,
             TurnCapability.TASK_CORRECT,
+            TurnCapability.STICKER_REPLY,
         }
     )
     _TASK_EVENT_CAPABILITIES = frozenset(

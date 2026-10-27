@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import socket
+from collections.abc import Mapping
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Any
@@ -10,6 +11,8 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 from PIL import Image, UnidentifiedImageError
+
+from core.domain import MessageRecord, MessageSegment, MessageSegmentType
 
 
 class MediaProviderError(RuntimeError):
@@ -62,7 +65,13 @@ class MessageMediaProvider:
             if item.strip()
         )
 
-    async def fetch(self, segment_type: str, data: dict[str, Any]) -> FetchedMedia:
+    async def fetch(
+        self,
+        segment_type: str,
+        data: dict[str, Any],
+        *,
+        preserve_animation: bool = False,
+    ) -> FetchedMedia:
         if segment_type not in self._SUPPORTED_SEGMENTS:
             raise MediaProviderError("MEDIA_UNSUPPORTED")
         references = self._references(data)
@@ -70,7 +79,11 @@ class MessageMediaProvider:
         had_reference = bool(references)
         for url in direct_urls:
             try:
-                return await self._fetch_url(url, segment_type)
+                return await self._fetch_url(
+                    url,
+                    segment_type,
+                    preserve_animation=preserve_animation,
+                )
             except MediaProviderError as exc:
                 if exc.code not in {"MEDIA_EXPIRED", "MEDIA_FETCH_FAILED"}:
                     raise
@@ -96,7 +109,11 @@ class MessageMediaProvider:
                 item for item in self._references(response) if self._is_http_url(item)
             ):
                 try:
-                    return await self._fetch_url(url, segment_type)
+                    return await self._fetch_url(
+                        url,
+                        segment_type,
+                        preserve_animation=preserve_animation,
+                    )
                 except MediaProviderError as exc:
                     if exc.code not in {"MEDIA_EXPIRED", "MEDIA_FETCH_FAILED"}:
                         raise
@@ -105,7 +122,63 @@ class MessageMediaProvider:
             "MEDIA_EXPIRED" if had_reference else "MEDIA_REFERENCE_MISSING"
         )
 
-    async def _fetch_url(self, url: str, segment_type: str) -> FetchedMedia:
+    @classmethod
+    def resolve_segment(
+        cls,
+        record: MessageRecord,
+        segment_path: tuple[int, ...],
+    ) -> MessageSegment:
+        if not segment_path:
+            raise MediaProviderError("MEDIA_SEGMENT_NOT_FOUND")
+        top_index = segment_path[0]
+        if not 0 <= top_index < len(record.message.segments):
+            raise MediaProviderError("MEDIA_SEGMENT_NOT_FOUND")
+        segment = record.message.segments[top_index]
+        offset = 1
+        while offset < len(segment_path):
+            if offset + 1 >= len(segment_path):
+                raise MediaProviderError("MEDIA_SEGMENT_PATH_INVALID")
+            if segment.type is not MessageSegmentType.FORWARD:
+                raise MediaProviderError("MEDIA_SEGMENT_PATH_INVALID")
+            node_index = segment_path[offset]
+            child_index = segment_path[offset + 1]
+            messages = segment.data.get("messages")
+            if not isinstance(messages, list) or not 0 <= node_index < len(messages):
+                raise MediaProviderError("MEDIA_SEGMENT_NOT_FOUND")
+            node = messages[node_index]
+            if not isinstance(node, Mapping):
+                raise MediaProviderError("MEDIA_SEGMENT_PATH_INVALID")
+            children = node.get("segments")
+            if not isinstance(children, list) or not 0 <= child_index < len(children):
+                raise MediaProviderError("MEDIA_SEGMENT_NOT_FOUND")
+            child = children[child_index]
+            if not isinstance(child, Mapping):
+                raise MediaProviderError("MEDIA_SEGMENT_PATH_INVALID")
+            segment = cls._nested_segment(child)
+            offset += 2
+        return segment
+
+    @staticmethod
+    def _nested_segment(value: Mapping[str, Any]) -> MessageSegment:
+        raw_type = str(value.get("type") or MessageSegmentType.UNKNOWN.value)
+        try:
+            segment_type = MessageSegmentType(raw_type)
+        except ValueError:
+            segment_type = MessageSegmentType.UNKNOWN
+        data = value.get("data")
+        return MessageSegment(
+            type=segment_type,
+            text=str(value.get("text") or ""),
+            data=dict(data) if isinstance(data, Mapping) else {},
+        )
+
+    async def _fetch_url(
+        self,
+        url: str,
+        segment_type: str,
+        *,
+        preserve_animation: bool,
+    ) -> FetchedMedia:
         current = url
         try:
             async with httpx.AsyncClient(
@@ -148,7 +221,7 @@ class MessageMediaProvider:
                             bytes(body),
                         )
                         content = bytes(body)
-                        if content_type == "image/gif":
+                        if content_type == "image/gif" and not preserve_animation:
                             content, content_type = await asyncio.to_thread(
                                 self._normalize_image,
                                 content,
@@ -218,8 +291,22 @@ class MessageMediaProvider:
                 return "audio/mpeg"
             raise MediaProviderError("MEDIA_CONTENT_UNSUPPORTED")
         if segment_type == "file":
-            return normalized if normalized and normalized != "application/octet-stream" else (
-                "application/octet-stream"
+            if normalized in cls._AUDIO_TYPES:
+                return normalized
+            if content.startswith(b"RIFF") and content[8:12] == b"WAVE":
+                return "audio/wav"
+            if content.startswith(b"fLaC"):
+                return "audio/flac"
+            if content.startswith(b"ID3") or (
+                len(content) >= 2
+                and content[0] == 0xFF
+                and content[1] & 0xE0 == 0xE0
+            ):
+                return "audio/mpeg"
+            return (
+                normalized
+                if normalized and normalized != "application/octet-stream"
+                else "application/octet-stream"
             )
         for signature, content_type in cls._SIGNATURES:
             if content.startswith(signature):

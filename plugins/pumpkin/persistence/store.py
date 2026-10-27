@@ -10,6 +10,7 @@ from .repositories.conversation import ConversationRepositoryMixin
 from .repositories.idempotency import IdempotencyRepositoryMixin
 from .repositories.messages import MessageRepositoryMixin
 from .repositories.outbox import OutboxRepositoryMixin
+from .repositories.stickers import StickerRepositoryMixin
 from .repositories.tasks import TaskRepositoryMixin
 
 
@@ -22,6 +23,7 @@ class PumpkinStore(
     TaskRepositoryMixin,
     ArtifactRepositoryMixin,
     IdempotencyRepositoryMixin,
+    StickerRepositoryMixin,
 ):
     """Compatibility composition root for Pumpkin's domain repositories.
 
@@ -34,6 +36,7 @@ class PumpkinStore(
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._inbox_locks: dict[str, asyncio.Lock] = {}
         self._outbox_lock = asyncio.Lock()
+        self._sticker_lock = asyncio.Lock()
 
     async def initialize(self, db_url: str) -> None:
         await Tortoise.init(

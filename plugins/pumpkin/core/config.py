@@ -53,6 +53,17 @@ class ReasoningEffort(StrEnum):
     MAX = "max"
 
 
+class AudioProviderKind(StrEnum):
+    MINIMAX = "minimax"
+    QWEN_LOCAL = "qwen-local"
+
+
+class QwenAudioLanguage(StrEnum):
+    CHINESE = "Chinese"
+    ENGLISH = "English"
+    AUTO = "Auto"
+
+
 def _reasoning_effort(name: str, default: ReasoningEffort) -> ReasoningEffort:
     value = _env(name, default.value) or default.value
     try:
@@ -71,6 +82,30 @@ def _positive_int(name: str, default: int) -> int:
     if value <= 0:
         raise ValueError(f"{name} must be a positive integer")
     return value
+
+
+def _audio_provider_kind() -> AudioProviderKind | None:
+    value = _env("PUMPKIN_AUDIO_PROVIDER")
+    if not value:
+        return None
+    try:
+        return AudioProviderKind(value.lower())
+    except ValueError as exc:
+        supported = ", ".join(item.value for item in AudioProviderKind)
+        raise ValueError(
+            f"PUMPKIN_AUDIO_PROVIDER must be one of: {supported}"
+        ) from exc
+
+
+def _qwen_audio_language() -> QwenAudioLanguage:
+    value = _env("PUMPKIN_AUDIO_LANGUAGE", QwenAudioLanguage.CHINESE.value)
+    try:
+        return QwenAudioLanguage(value or QwenAudioLanguage.CHINESE.value)
+    except ValueError as exc:
+        supported = ", ".join(item.value for item in QwenAudioLanguage)
+        raise ValueError(
+            f"PUMPKIN_AUDIO_LANGUAGE must be one of: {supported}"
+        ) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,10 +241,12 @@ class ImageConfig:
 
 @dataclass(frozen=True, slots=True)
 class AudioConfig:
-    provider: str | None = None
+    provider: AudioProviderKind | None = None
     api_base_url: str | None = None
     api_key: str | None = None
     model: str = ""
+    default_voice_id: str | None = None
+    language: QwenAudioLanguage = QwenAudioLanguage.CHINESE
     transcription_provider: str | None = None
     transcription_base_url: str | None = None
     transcription_api_key: str | None = None
@@ -219,7 +256,11 @@ class AudioConfig:
 
     @property
     def is_configured(self) -> bool:
-        return all((self.provider, self.api_base_url, self.api_key, self.model))
+        if self.provider is AudioProviderKind.MINIMAX:
+            return all((self.api_base_url, self.api_key, self.model))
+        if self.provider is AudioProviderKind.QWEN_LOCAL:
+            return all((self.api_base_url, self.default_voice_id))
+        return False
 
     @property
     def transcription_is_configured(self) -> bool:
@@ -231,6 +272,23 @@ class AudioConfig:
                 self.transcription_model,
             )
         )
+
+    def __post_init__(self) -> None:
+        if self.provider is None:
+            return
+        if not self.is_configured:
+            raise ValueError(
+                f"audio provider {self.provider.value} is missing required configuration"
+            )
+        if self.max_text_chars <= 0:
+            raise ValueError("audio max_text_chars must be positive")
+        if (
+            self.provider is AudioProviderKind.QWEN_LOCAL
+            and self.max_text_chars > 1_000
+        ):
+            raise ValueError(
+                "PUMPKIN_AUDIO_MAX_TEXT_CHARS must not exceed 1000 for qwen-local"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -491,10 +549,12 @@ class PumpkinConfig:
                 ),
             ),
             audio=AudioConfig(
-                provider=_env("PUMPKIN_AUDIO_PROVIDER"),
+                provider=_audio_provider_kind(),
                 api_base_url=_env("PUMPKIN_AUDIO_API_BASE_URL"),
                 api_key=_env("PUMPKIN_AUDIO_API_KEY"),
                 model=_env("PUMPKIN_AUDIO_MODEL", "") or "",
+                default_voice_id=_env("PUMPKIN_AUDIO_VOICE_ID"),
+                language=_qwen_audio_language(),
                 transcription_provider=_env("PUMPKIN_AUDIO_TRANSCRIBE_PROVIDER"),
                 transcription_base_url=_env(
                     "PUMPKIN_AUDIO_TRANSCRIBE_BASE_URL"

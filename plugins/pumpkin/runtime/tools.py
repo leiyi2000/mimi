@@ -28,6 +28,16 @@ class ChatToolHost(Protocol):
     ) -> ToolResult: ...
 
 
+class StickerToolHost(Protocol):
+    async def search_stickers(
+        self, context: ToolContext, arguments: dict[str, Any]
+    ) -> ToolResult: ...
+
+    async def send_sticker(
+        self, context: ToolContext, arguments: dict[str, Any]
+    ) -> ToolResult: ...
+
+
 class TaskToolHost(Protocol):
     async def create_task(
         self, context: ToolContext, arguments: dict[str, Any]
@@ -70,11 +80,14 @@ def build_registry(
     chat: ChatToolHost,
     task: TaskToolHost | None = None,
     *,
+    sticker: StickerToolHost | None = None,
     trace: TraceCallback | None = None,
     registry: ToolRegistry | None = None,
 ) -> ToolRegistry:
     if task is None:
         task = chat  # type: ignore[assignment]
+    if sticker is None:
+        sticker = chat  # type: ignore[assignment]
     registry = registry or ToolRegistry(trace=trace)
 
     def register(
@@ -363,6 +376,63 @@ def build_registry(
         skill_name="media-inspection",
         timeout=30,
         allowed_roles=frozenset({AgentRole.CHAT, AgentRole.TASK}),
+    )
+    sticker_categories = [
+        "greeting",
+        "agreement",
+        "celebration",
+        "amusement",
+        "affection",
+        "comfort",
+        "surprise",
+        "confusion",
+        "embarrassment",
+        "sadness",
+        "anger",
+        "disagreement",
+        "teasing",
+        "silence",
+        "other",
+    ]
+    register(
+        "search_stickers",
+        "按语义分类查询可发送的活跃表情包，只返回受控 sticker_id 和语义元数据。",
+        {
+            "type": "object",
+            "required": ["category"],
+            "properties": {
+                "category": {"type": "string", "enum": sticker_categories},
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": 8,
+                },
+                "limit": {"type": "integer", "minimum": 1, "maximum": 8},
+            },
+        },
+        sticker.search_stickers,
+        skill_name="sticker-reply",
+        allowed_roles=frozenset({AgentRole.CHAT}),
+        required_capabilities=frozenset({TurnCapability.STICKER_REPLY}),
+    )
+    register(
+        "send_sticker",
+        "发送 search_stickers 返回的一个活跃 sticker_id。每个聊天 Turn 最多发送一个，"
+        "并计入当前回复条数预算。",
+        {
+            "type": "object",
+            "required": ["sticker_id", "idempotency_key"],
+            "properties": {
+                "sticker_id": {"type": "string"},
+                "idempotency_key": {"type": "string"},
+            },
+        },
+        sticker.send_sticker,
+        skill_name="sticker-reply",
+        read_only=False,
+        idempotency_required=True,
+        allowed_roles=frozenset({AgentRole.CHAT}),
+        required_capabilities=frozenset({TurnCapability.STICKER_REPLY}),
     )
     register(
         "send_napcat_reply",

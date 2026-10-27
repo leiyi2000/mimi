@@ -16,6 +16,9 @@ from core.domain import (
     OutboxStatus,
     ParticipationPhase,
     SessionState,
+    StickerAsset,
+    StickerCategory,
+    StickerClassification,
     TaskCorrection,
     TaskDescription,
     TaskEvent,
@@ -144,6 +147,119 @@ class MessageRepository(Protocol):
         sequence: int,
         limit: int,
     ) -> tuple[MessageRecord, ...]: ...
+
+
+class StickerRepository(Protocol):
+    async def enqueue_sticker_candidates(
+        self,
+        message: InboundMessage,
+    ) -> int: ...
+
+    async def recover_sticker_candidates(
+        self,
+        *,
+        claimed_before: datetime,
+    ) -> int: ...
+
+    async def claim_sticker_candidate(
+        self,
+        *,
+        now: datetime,
+    ) -> Any | None: ...
+
+    async def finish_sticker_candidate(
+        self,
+        candidate_id: str,
+        *,
+        status: str,
+        asset_id: str | None = None,
+        error_code: str | None = None,
+        next_attempt_at: datetime | None = None,
+    ) -> None: ...
+
+    async def get_sticker_by_hash(
+        self,
+        content_sha256: str,
+        perceptual_hash: str,
+    ) -> StickerAsset | None: ...
+
+    async def record_sticker_seen(
+        self,
+        sticker_id: str,
+        *,
+        scope_id: str,
+        seen_at: datetime,
+    ) -> StickerAsset: ...
+
+    async def create_sticker_asset(
+        self,
+        *,
+        sticker_id: str,
+        content_sha256: str,
+        perceptual_hash: str,
+        content_type: str,
+        file_extension: str,
+        relative_path: str,
+        classification: StickerClassification,
+        scope_id: str,
+        seen_at: datetime,
+    ) -> StickerAsset: ...
+
+    async def list_active_stickers(
+        self,
+        *,
+        category: StickerCategory | None = None,
+    ) -> tuple[StickerAsset, ...]: ...
+
+    async def list_staged_stickers(self) -> tuple[StickerAsset, ...]: ...
+
+    async def list_sticker_assets(self) -> tuple[StickerAsset, ...]: ...
+
+    async def delete_staged_sticker(self, sticker_id: str) -> bool: ...
+
+    async def activate_sticker(
+        self,
+        sticker_id: str,
+        *,
+        relative_path: str,
+        activated_at: datetime,
+    ) -> StickerAsset: ...
+
+    async def replace_sticker(
+        self,
+        *,
+        activated_sticker_id: str,
+        activated_relative_path: str,
+        archived_sticker_id: str,
+        archived_relative_path: str,
+        local_date: str,
+        reason: str,
+        changed_at: datetime,
+    ) -> tuple[StickerAsset, StickerAsset]: ...
+
+    async def sticker_replacement_count(self, local_date: str) -> int: ...
+
+    async def quarantine_sticker(
+        self,
+        sticker_id: str,
+        *,
+        relative_path: str,
+    ) -> None: ...
+
+    async def get_sticker(self, sticker_id: str) -> StickerAsset | None: ...
+
+    async def get_sticker_send_for_run(self, run_id: str) -> Any | None: ...
+
+    async def record_sticker_send(
+        self,
+        *,
+        run_id: str,
+        sticker_id: str,
+        scope_id: str,
+        outbox_id: str,
+        status: str,
+        sent_at: datetime | None,
+    ) -> None: ...
 
 
 class ConversationRepository(Protocol):
@@ -385,6 +501,15 @@ class ConversationStore(ConversationRepository, Protocol):
 
 
 class ChatToolStore(MessageRepository, IdempotencyRepository, Protocol):
+    pass
+
+
+class StickerStore(
+    StickerRepository,
+    MessageRepository,
+    IdempotencyRepository,
+    Protocol,
+):
     pass
 
 

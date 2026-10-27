@@ -301,6 +301,8 @@ class ToolRegistry:
             isinstance(value, bool) or not isinstance(value, int)
         ):
             return f"argument {path} must be integer"
+        if expected == "boolean" and not isinstance(value, bool):
+            return f"argument {path} must be boolean"
         if expected == "array":
             if not isinstance(value, list):
                 return f"argument {path} must be array"

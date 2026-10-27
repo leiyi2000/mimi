@@ -5,7 +5,12 @@ from types import SimpleNamespace
 import anthropic
 import pytest
 
-from core.config import PumpkinConfig, ReasoningEffort
+from core.config import (
+    AudioProviderKind,
+    PumpkinConfig,
+    QwenAudioLanguage,
+    ReasoningEffort,
+)
 from core.domain import ModelMessage, ModelResponse, ToolCall
 from providers.code import CodeProviderError, CodeRunnerProvider
 from providers.model import (
@@ -71,6 +76,41 @@ def test_time_defaults_are_bounded_for_interactive_runtime(monkeypatch):
     assert config.image.timeout_seconds == 90
     assert config.audio.timeout_seconds == 90
     assert config.media.timeout_seconds == 10
+
+
+def test_qwen_audio_configuration_does_not_require_api_key_or_model(monkeypatch):
+    monkeypatch.setenv("PUMPKIN_AUDIO_PROVIDER", "qwen-local")
+    monkeypatch.setenv(
+        "PUMPKIN_AUDIO_API_BASE_URL",
+        "http://host.docker.internal:8765",
+    )
+    monkeypatch.setenv("PUMPKIN_AUDIO_VOICE_ID", "lillia_zh")
+    monkeypatch.setenv("PUMPKIN_AUDIO_LANGUAGE", "Auto")
+    monkeypatch.setenv("PUMPKIN_AUDIO_MAX_TEXT_CHARS", "1000")
+    monkeypatch.delenv("PUMPKIN_AUDIO_API_KEY", raising=False)
+    monkeypatch.delenv("PUMPKIN_AUDIO_MODEL", raising=False)
+
+    config = PumpkinConfig.from_env()
+
+    assert config.audio.provider is AudioProviderKind.QWEN_LOCAL
+    assert config.audio.is_configured
+    assert config.audio.api_key is None
+    assert config.audio.model == ""
+    assert config.audio.default_voice_id == "lillia_zh"
+    assert config.audio.language is QwenAudioLanguage.AUTO
+
+
+def test_qwen_audio_rejects_text_limit_above_local_service_contract(monkeypatch):
+    monkeypatch.setenv("PUMPKIN_AUDIO_PROVIDER", "qwen-local")
+    monkeypatch.setenv("PUMPKIN_AUDIO_API_BASE_URL", "http://127.0.0.1:8765")
+    monkeypatch.setenv("PUMPKIN_AUDIO_VOICE_ID", "lillia_zh")
+    monkeypatch.setenv("PUMPKIN_AUDIO_MAX_TEXT_CHARS", "1001")
+
+    with pytest.raises(
+        ValueError,
+        match="must not exceed 1000 for qwen-local",
+    ):
+        PumpkinConfig.from_env()
 
 
 @pytest.mark.parametrize("value", [item.value for item in ReasoningEffort])

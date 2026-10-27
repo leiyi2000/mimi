@@ -187,6 +187,7 @@ class TurnCapability(StrEnum):
     TASK_UPDATE = "task_update"
     TASK_CORRECT = "task_correct"
     TASK_DELIVERY = "task_delivery"
+    STICKER_REPLY = "sticker_reply"
 
 
 class OutboxStatus(StrEnum):
@@ -218,6 +219,49 @@ class MessageSegmentType(StrEnum):
     UNKNOWN = "unknown"
 
 
+class StickerCategory(StrEnum):
+    GREETING = "greeting"
+    AGREEMENT = "agreement"
+    CELEBRATION = "celebration"
+    AMUSEMENT = "amusement"
+    AFFECTION = "affection"
+    COMFORT = "comfort"
+    SURPRISE = "surprise"
+    CONFUSION = "confusion"
+    EMBARRASSMENT = "embarrassment"
+    SADNESS = "sadness"
+    ANGER = "anger"
+    DISAGREEMENT = "disagreement"
+    TEASING = "teasing"
+    SILENCE = "silence"
+    OTHER = "other"
+
+
+class StickerSafety(StrEnum):
+    ALLOWED = "allowed"
+    REJECTED_PERSONAL = "rejected_personal"
+    REJECTED_SENSITIVE = "rejected_sensitive"
+    REJECTED_ADVERTISEMENT = "rejected_advertisement"
+    REJECTED_NOT_STICKER = "rejected_not_sticker"
+    REJECTED_UNREADABLE = "rejected_unreadable"
+
+
+class StickerCandidateStatus(StrEnum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    RETRYABLE_FAILED = "retryable_failed"
+    TERMINAL_FAILED = "terminal_failed"
+
+
+class StickerAssetStatus(StrEnum):
+    STAGED = "staged"
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+    QUARANTINED = "quarantined"
+
+
 @dataclass(frozen=True, slots=True)
 class MessageSegment:
     type: MessageSegmentType
@@ -244,6 +288,54 @@ class InboundMessage:
 class MessageRecord:
     message: InboundMessage
     sequence: int
+
+
+@dataclass(frozen=True, slots=True)
+class StickerClassification:
+    category: StickerCategory
+    tags: tuple[str, ...]
+    summary: str
+    tone: str
+    confidence: float
+    safety: StickerSafety
+
+
+@dataclass(frozen=True, slots=True)
+class StickerCandidate:
+    candidate_id: str
+    source_message_id: str
+    scope_id: str
+    segment_index: int
+    segment_type: MessageSegmentType
+    status: StickerCandidateStatus
+    attempt_count: int
+    next_attempt_at: datetime | None
+    asset_id: str | None
+    error_code: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class StickerAsset:
+    sticker_id: str
+    status: StickerAssetStatus
+    content_sha256: str
+    perceptual_hash: str
+    content_type: str
+    file_extension: str
+    relative_path: str
+    category: StickerCategory
+    tags: tuple[str, ...]
+    summary: str
+    tone: str
+    confidence: float
+    seen_count: int
+    scope_count: int
+    use_count: int
+    first_seen_at: datetime
+    last_seen_at: datetime
+    activated_at: datetime | None
+    last_used_at: datetime | None
+    archived_at: datetime | None
 
 
 @dataclass(frozen=True, slots=True)

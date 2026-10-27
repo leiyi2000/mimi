@@ -81,6 +81,37 @@ async def test_sender_embeds_local_media_for_cross_container_delivery(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_sender_sends_record_before_completion_text(tmp_path):
+    media = tmp_path / "result.wav"
+    media.write_bytes(b"RIFF\x00\x00\x00\x00WAVEaudio")
+
+    class Client:
+        def __init__(self):
+            self.messages = []
+
+        async def send_group_msg(self, *, group_id, message):
+            assert group_id == "20"
+            self.messages.append(message)
+            return {"message_id": 40 + len(self.messages)}
+
+    client = Client()
+    sender = NapCatSender(client, allowed_path_root=str(tmp_path))
+    result = await sender.send(
+        "group:20",
+        NapCatReply(
+            text="完成",
+            segments=({"type": "record", "file": str(media)},),
+            reply_to_message_id="10",
+            mention_user_id="7",
+        ),
+    )
+
+    assert result == ("41", "42")
+    assert [item._type for item in client.messages[0]] == ["record"]
+    assert [item._type for item in client.messages[1]] == ["reply", "at", "text"]
+
+
+@pytest.mark.asyncio
 async def test_adapter_enriches_quote_and_limits_recursive_forward():
     value = event(message_id=30)
     value["message"] = [

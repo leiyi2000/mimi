@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.config import PumpkinConfig
+from core.config import AudioProviderKind, PumpkinConfig
 from core.domain import (
     AgentRole,
     ArtifactRef,
@@ -23,7 +23,7 @@ from core.domain import (
     ToolResult,
 )
 from core.tools import Tool, ToolRegistry
-from providers.audio import GeneratedAudio
+from providers.audio import GeneratedAudio, VoiceSummary
 from providers.media import FetchedMedia
 from runtime.app import PumpkinRuntime
 from providers.text_image import LONG_REPLY_TEXT_LIMIT
@@ -808,7 +808,7 @@ async def test_inspect_message_media_transcribes_voice(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_audio_tools_save_and_apply_global_voice_profile(tmp_path):
+async def test_audio_tool_applies_minimax_settings_to_single_request(tmp_path):
     base = PumpkinConfig.from_env()
     config = replace(
         base,
@@ -816,7 +816,7 @@ async def test_audio_tools_save_and_apply_global_voice_profile(tmp_path):
         db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
         audio=replace(
             base.audio,
-            provider="minimax",
+            provider=AudioProviderKind.MINIMAX,
             api_base_url="https://api.test/v1",
             api_key="test-key",
             model="speech-2.8-hd",
@@ -834,10 +834,11 @@ async def test_audio_tools_save_and_apply_global_voice_profile(tmp_path):
     )
     context = tool_context(run_id="task-run", task_id="task-1", revision=1)
 
-    saved = await runtime.registry.execute(
-        "save_default_voice",
+    generated = await runtime.registry.execute(
+        "generate_audio",
         context,
         {
+            "text": "测试默认音色",
             "voice_id": None,
             "timbre_weights": [
                 {"voice_id": "male-qn-qingse", "weight": 60},
@@ -849,23 +850,210 @@ async def test_audio_tools_save_and_apply_global_voice_profile(tmp_path):
                 "timbre": 25,
                 "sound_effects": "robotic",
             },
-            "idempotency_key": "save-default-voice",
+            "idempotency_key": "generate-with-default-voice",
         },
+    )
+
+    assert not generated.is_error
+    assert not (tmp_path / "voice_profile.json").exists()
+    request = runtime.audio_provider.synthesize.await_args.args[0]
+    assert request.voice_id is None
+    assert [item.weight for item in request.timbre_weights] == [60, 40]
+    assert request.voice_modify.sound_effects.value == "robotic"
+    await runtime.store.close()
+
+
+@pytest.mark.asyncio
+async def test_qwen_audio_tool_clones_authorized_task_source_voice(tmp_path):
+    base = PumpkinConfig.from_env()
+    config = replace(
+        base,
+        data_dir=str(tmp_path),
+        db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+        audio=replace(
+            base.audio,
+            provider=AudioProviderKind.QWEN_LOCAL,
+            api_base_url="http://127.0.0.1:8765",
+            api_key=None,
+            model="",
+            default_voice_id="lillia_zh",
+            max_text_chars=1000,
+        ),
+    )
+    runtime = PumpkinRuntime(config, client=object())
+    await runtime.store.initialize(config.db_url)
+    record = await runtime.store.archive(
+        InboundMessage(
+            message_id="voice-source",
+            conversation_type=ConversationType.GROUP,
+            scope_id="group:1",
+            sender_id="7",
+            sender_name="member",
+            segments=(
+                MessageSegment(
+                    MessageSegmentType.RECORD,
+                    data={"url": "https://cdn.test/reference.wav"},
+                ),
+            ),
+            received_at=datetime.now(UTC),
+            is_self=False,
+            raw_text="这是我已授权的参考音频",
+            group_id="1",
+        )
+    )
+    runtime.task_runtime.runs["task-1"] = replace(
+        task_handoff(),
+        source_messages=(record,),
+    )
+
+    class Media:
+        async def fetch(self, segment_type, data):
+            assert segment_type == "record"
+            assert data["url"].endswith("reference.wav")
+            return FetchedMedia(
+                b"RIFF" + b"\x00" * 4 + b"WAVE" + b"\x00" * 300,
+                "audio/wav",
+                data["url"],
+            )
+
+    runtime.audio_plugin.media_provider = Media()
+    runtime.audio_provider.create_voice = AsyncMock(
+        return_value=VoiceSummary(
+            voice_id="speaker_1",
+            created_at="2026-10-27T00:00:00+00:00",
+            mode="icl",
+        )
+    )
+    context = tool_context(run_id="task-run", task_id="task-1", revision=1)
+
+    cloned = await runtime.registry.execute(
+        "clone_voice",
+        context,
+        {
+            "message_id": "voice-source",
+            "segment_index": 0,
+            "voice_id": "speaker_1",
+            "reference_text": "这是我已授权的参考音频",
+            "consent_confirmed": True,
+            "idempotency_key": "clone-speaker-1",
+        },
+    )
+
+    assert not cloned.is_error
+    assert cloned.content["voice"]["voice_id"] == "speaker_1"
+    assert cloned.content["activated"] is True
+    request = runtime.audio_provider.create_voice.await_args.args[0]
+    assert request.reference_audio.startswith(b"RIFF")
+    assert request.consent_confirmed is True
+    payload = json.loads((tmp_path / "voice_profile.json").read_text(encoding="utf-8"))
+    assert payload["profiles"]["qwen-local"]["voice_id"] == "speaker_1"
+
+    runtime.audio_provider.synthesize = AsyncMock(
+        return_value=GeneratedAudio(
+            data=b"RIFF" + b"\x00" * 4 + b"WAVE" + b"\x00" * 8,
+            content_type="audio/wav",
+            extension="wav",
+        )
     )
     generated = await runtime.registry.execute(
         "generate_audio",
         context,
         {
-            "text": "测试默认音色",
-            "idempotency_key": "generate-with-default-voice",
+            "text": "使用最新克隆音色",
+            "idempotency_key": "generate-with-latest-clone",
         },
     )
 
-    assert not saved.is_error
     assert not generated.is_error
-    assert (tmp_path / "voice_profile.json").exists()
-    kwargs = runtime.audio_provider.synthesize.await_args.kwargs
-    assert kwargs["voice_id"] is None
-    assert [item.weight for item in kwargs["timbre_weights"]] == [60, 40]
-    assert kwargs["voice_modify"].sound_effects.value == "robotic"
+    synthesis_request = runtime.audio_provider.synthesize.await_args.args[0]
+    assert synthesis_request.voice_id == "speaker_1"
     await runtime.store.close()
+
+
+def test_audio_tools_expose_one_agent_contract_for_all_providers(tmp_path):
+    base = PumpkinConfig.from_env()
+    minimax = PumpkinRuntime(
+        replace(
+            base,
+            data_dir=str(tmp_path / "minimax"),
+            audio=replace(
+                base.audio,
+                provider=AudioProviderKind.MINIMAX,
+                api_base_url="https://api.test/v1",
+                api_key="test-key",
+                model="speech-2.8-hd",
+            ),
+        ),
+        client=object(),
+    )
+    qwen = PumpkinRuntime(
+        replace(
+            base,
+            data_dir=str(tmp_path / "qwen"),
+            audio=replace(
+                base.audio,
+                provider=AudioProviderKind.QWEN_LOCAL,
+                api_base_url="http://127.0.0.1:8765",
+                api_key=None,
+                model="",
+                default_voice_id="lillia_zh",
+                max_text_chars=1000,
+            ),
+        ),
+        client=object(),
+    )
+
+    assert minimax.registry.get("generate_audio").input_schema == (
+        qwen.registry.get("generate_audio").input_schema
+    )
+    assert minimax.registry.get("clone_voice").input_schema == (
+        qwen.registry.get("clone_voice").input_schema
+    )
+    for runtime in (minimax, qwen):
+        audio_tools = {
+            name
+            for name in runtime.registry.names()
+            if name
+            in {
+                "generate_audio",
+                "clone_voice",
+                "save_default_voice",
+                "list_audio_voices",
+            }
+        }
+        assert audio_tools == {"generate_audio", "clone_voice"}
+
+
+@pytest.mark.asyncio
+async def test_minimax_clone_voice_returns_stable_unsupported_error(tmp_path):
+    base = PumpkinConfig.from_env()
+    runtime = PumpkinRuntime(
+        replace(
+            base,
+            data_dir=str(tmp_path),
+            audio=replace(
+                base.audio,
+                provider=AudioProviderKind.MINIMAX,
+                api_base_url="https://api.test/v1",
+                api_key="test-key",
+                model="speech-2.8-hd",
+            ),
+        ),
+        client=object(),
+    )
+
+    response = await runtime.registry.execute(
+        "clone_voice",
+        tool_context(run_id="task-run", task_id="task-1", revision=1),
+        {
+            "message_id": "voice-source",
+            "segment_index": 0,
+            "voice_id": "speaker_1",
+            "reference_text": "参考文本",
+            "consent_confirmed": True,
+            "idempotency_key": "unsupported-clone",
+        },
+    )
+
+    assert response.is_error
+    assert response.error_code == "VOICE_CLONE_UNSUPPORTED"

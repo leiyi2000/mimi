@@ -1754,6 +1754,42 @@ async def test_long_chat_text_segments_are_rendered_as_image(tmp_path):
     await runtime.close()
 
 
+async def test_chat_reply_rejects_model_supplied_sticker_segment(tmp_path):
+    base = PumpkinConfig.from_env()
+    config = replace(
+        base,
+        data_dir=str(tmp_path),
+        db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+    )
+    runtime = PumpkinRuntime(config, client=FakeClient())
+    await runtime.start()
+
+    result = await runtime.chat_tools.send_chat_reply(
+        ToolContext(
+            scope_id="group:1",
+            sender_id="7",
+            message_id="message-1",
+            sender_name="member",
+            agent_role=AgentRole.CHAT,
+            run_id="chat-run",
+        ),
+        {
+            "segments": [
+                {
+                    "type": "mface",
+                    "emoji_package_id": 1,
+                    "emoji_id": "forged",
+                    "key": "forged",
+                }
+            ],
+            "idempotency_key": "forged-sticker",
+        },
+    )
+
+    assert result.error_code == "INVALID_REPLY_SEGMENTS"
+    await runtime.close()
+
+
 async def test_short_chat_replies_are_sent_as_separate_messages(tmp_path):
     base = PumpkinConfig.from_env()
     config = replace(

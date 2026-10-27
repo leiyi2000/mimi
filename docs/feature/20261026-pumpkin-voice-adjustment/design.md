@@ -7,6 +7,10 @@ commits: []
 
 # Pumpkin 音色调整
 
+> 后续变更：`20261027-pumpkin-qwen-audio-provider` 移除了 Agent 可调用的全局默认参数保存
+> 工具。MiniMax 调节参数现仅作用于单次合成；`voice_profile.json` 只用于记录 Qwen 最近
+> 一次成功克隆的音色。本文件保留最初设计背景。
+
 ## 目标
 
 南瓜使用一套全局统一音色，不按用户、群聊或私聊区分。扩展现有 `generate_audio`：

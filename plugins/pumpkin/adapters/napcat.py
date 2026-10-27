@@ -417,21 +417,23 @@ class NapCatSender:
         scope_id: str,
         reply: NapCatReply,
     ) -> tuple[str, ...]:
-        segments = []
+        prefix_segments = []
         if reply.reply_to_message_id is not None:
-            segments.append(Reply(id=reply.reply_to_message_id))
+            prefix_segments.append(Reply(id=reply.reply_to_message_id))
         if reply.mention_user_id is not None:
-            segments.append(At(qq=reply.mention_user_id))
+            prefix_segments.append(At(qq=reply.mention_user_id))
+        content_segments = []
+        record_segments = []
         for item in reply.segments:
             item_type = item.get("type")
             if item_type == "text":
-                segments.append(Text(text=str(item.get("text", ""))))
+                content_segments.append(Text(text=str(item.get("text", ""))))
             elif item_type == "at":
-                segments.append(At(qq=str(item["qq"])))
+                content_segments.append(At(qq=str(item["qq"])))
             elif item_type == "face":
-                segments.append(Face(id=str(item["id"])))
+                content_segments.append(Face(id=str(item["id"])))
             elif item_type == "mface":
-                segments.append(
+                content_segments.append(
                     MFace(
                         emoji_package_id=int(item["emoji_package_id"]),
                         emoji_id=str(item["emoji_id"]),
@@ -440,19 +442,25 @@ class NapCatSender:
                     )
                 )
             elif item_type == "image":
-                segments.append(Image(file=self._safe_media_file(item["file"])))
+                content_segments.append(
+                    Image(file=self._safe_media_file(item["file"]))
+                )
             elif item_type == "file":
-                segments.append(File(file=self._safe_media_file(item["file"])))
+                content_segments.append(
+                    File(file=self._safe_media_file(item["file"]))
+                )
             elif item_type == "record":
-                segments.append(Record(file=self._safe_media_file(item["file"])))
+                record_segments.append(
+                    Record(file=self._safe_media_file(item["file"]))
+                )
             elif item_type == "json":
-                segments.append(Json(data=item["data"]))
+                content_segments.append(Json(data=item["data"]))
             elif item_type == "forward":
-                segments.append(Forward(id=str(item["id"])))
+                content_segments.append(Forward(id=str(item["id"])))
             elif item_type == "node_reference":
-                segments.append(NodeReference(id=str(item["id"])))
+                content_segments.append(NodeReference(id=str(item["id"])))
             elif item_type == "node_inline":
-                segments.append(
+                content_segments.append(
                     NodeInline(
                         nickname=str(item["nickname"]),
                         content=item["content"],
@@ -461,10 +469,21 @@ class NapCatSender:
             else:
                 raise MessageAdapterError(f"unsupported outbound segment: {item_type}")
         if reply.text:
-            segments.append(Text(text=reply.text))
-        if not segments:
+            content_segments.append(Text(text=reply.text))
+        if not prefix_segments and not content_segments and not record_segments:
             raise MessageAdapterError("empty reply")
 
+        message_ids = []
+        for record in record_segments:
+            message_ids.append(await self._send_message(scope_id, [record]))
+        remaining_segments = [*prefix_segments, *content_segments]
+        if remaining_segments:
+            message_ids.append(
+                await self._send_message(scope_id, remaining_segments)
+            )
+        return tuple(message_ids)
+
+    async def _send_message(self, scope_id: str, segments: list[Any]) -> str:
         if scope_id.startswith("group:"):
             response = await self.client.send_group_msg(
                 group_id=scope_id.removeprefix("group:"),
@@ -482,7 +501,7 @@ class NapCatSender:
         )
         if message_id is None:
             raise RuntimeError("NapCat reply did not return message_id")
-        return (str(message_id),)
+        return str(message_id)
 
     def _safe_media_file(self, value: Any) -> str:
         if not isinstance(value, str) or not value.strip():

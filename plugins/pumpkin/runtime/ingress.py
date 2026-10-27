@@ -94,6 +94,7 @@ class MessageIngress:
     snapshot_payload: Callable[[Any], dict[str, Any]]
     task_agent_skill_catalog: Callable[[], list[dict[str, Any]]]
     conversation_agent: Callable[[str], Agent]
+    collect_stickers: Callable[[MessageRecord], Awaitable[int]]
     trace: Callable[[str], None]
 
     async def handle_event(self, event: Any) -> None:
@@ -125,6 +126,10 @@ class MessageIngress:
             log.exception("failed to archive Pumpkin message")
             return
         self.trace(f"runtime archived message sequence={record.sequence}")
+        try:
+            await self.collect_stickers(record)
+        except Exception:
+            log.exception("failed to enqueue Pumpkin sticker candidates")
         if message.is_self:
             self.trace("runtime archived self message")
             return

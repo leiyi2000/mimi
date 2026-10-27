@@ -61,7 +61,10 @@ Pumpkin 是 Mimi 的 QQ 群聊和私聊 AI 插件。每条消息先写入
 | `PUMPKIN_WEB_MODEL_CONTENT_MAX_CHARS`、`PUMPKIN_WEB_HOST_CONCURRENCY` | 模型可见单页 Web 结果上限和同 host HTTP 并发，默认 8000 字符、2 并发 |
 | `PUMPKIN_CODE_RUNNER_URL`、`PUMPKIN_CODE_RUNNER_TOKEN` | 独立代码沙箱服务，默认使用 Compose 内部地址 |
 | `PUMPKIN_IMAGE_PROVIDER`、`PUMPKIN_IMAGE_API_BASE_URL`、`PUMPKIN_IMAGE_API_KEY`、`PUMPKIN_IMAGE_MODEL` | 可选图片生成适配器 |
-| `PUMPKIN_AUDIO_PROVIDER`、`PUMPKIN_AUDIO_API_BASE_URL`、`PUMPKIN_AUDIO_API_KEY`、`PUMPKIN_AUDIO_MODEL` | 可选音频生成适配器 |
+| `PUMPKIN_AUDIO_PROVIDER`、`PUMPKIN_AUDIO_API_BASE_URL` | 可选 TTS 适配器，支持 `minimax` 和 `qwen-local` |
+| `PUMPKIN_AUDIO_API_KEY`、`PUMPKIN_AUDIO_MODEL` | MiniMax TTS 凭据与模型 |
+| `PUMPKIN_AUDIO_VOICE_ID`、`PUMPKIN_AUDIO_LANGUAGE` | Qwen 本地 TTS 默认音色与语言 |
+| `PUMPKIN_AUDIO_TRANSCRIBE_*` | 可独立启用的 MiniMax 入站语音转写配置 |
 | `PUMPKIN_MEDIA_TIMEOUT_SECONDS`、`PUMPKIN_MEDIA_MAX_BYTES` | 按需查看消息图片的请求超时和大小上限 |
 | `PUMPKIN_DATABASE_URL` | 默认 `sqlite://data/pumpkin.db` |
 
@@ -90,9 +93,25 @@ revision 的图片 Artifact，公网图片需先经过下载校验。代码执�
 消息和合并转发会有限深度解析，超过深度或节点预算会保留截断标记。GIF 图片和动态扩展
 表情在交给模型前只提取首帧并转换为 PNG，避免把完整动画编码进模型请求。
 
-音频合成支持已有 MiniMax 音色、语速、音量、音调、情绪、声音质感与效果器，并可按权重
-混合 2 至 4 个已有音色。南瓜使用一套全局默认音色，明确要求设为默认时原子写入
-`data/voice_profile.json`；临时调整不修改该文件。当前不支持音色设计或克隆群友声音。
+Pumpkin 会在后台从所有群聊的顶层 `image` 和 `mface` 消息段收集表情候选。候选经过
+安全下载、精确及感知去重、视觉分类和隐私过滤后，进入最多 50 个的跨群共享活跃库；
+活跃库满后按北京时间每天最多替换 10 个，被替换文件进入
+`data/stickers/archive/YYYY-MM-DD/`。归档不参与发送，也不会自动删除。收集不会唤醒
+Conversation Agent。Conversation Agent 可按需加载 `sticker-reply` Skill，根据受控
+分类检索 `sticker_id` 并发送一个合适的表情；Task Event、Task Executor 和未被参与策略
+接受的普通群消息无权发送。表情与文字共用当前 Turn 的回复条数预算，并统一经过 Outbox。
+
+音频合成可选择 MiniMax 或宿主机上的 Qwen3-TTS 本地服务。MiniMax 支持已有音色、语速、
+音量、音调、情绪、声音质感、效果器及 2 至 4 个音色混合；Qwen 固定输出 WAV，支持
+`Chinese`、`English`、`Auto` 语言和已注册音色。Agent 始终使用统一的音频合成工具；
+不支持的设置由 Provider 适配器明确拒绝，不会静默忽略。
+
+Qwen 可从当前任务源消息中的语音或音频文件创建 ICL 或 x-vector 克隆音色。只有用户明确
+确认已获得说话人授权时才允许克隆；参考音频只在内存中发送给本地服务，不进入 Session
+Event、日志、Artifact 或 Pumpkin 配置文件。克隆成功后自动成为后续合成使用的最新音色，
+该指针通过 `data/voice_profile.json` 原子持久化。Pumpkin 不提供音色枚举或删除操作。
+Qwen 服务使用 Apple Silicon MPS，应在宿主机独立运行；Mimi 容器通过配置的宿主机地址
+访问它。
 
 ## 命令
 

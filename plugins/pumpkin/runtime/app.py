@@ -47,6 +47,7 @@ from providers.model import (
     OpenAICompatibleProvider,
     ResilientModelProvider,
 )
+from providers.stickers import ModelStickerClassifier, StickerClassifier
 from providers.text_image import TextImageRenderer
 from runtime.artifacts import ArtifactService
 from runtime.chat_tools import ChatToolService
@@ -66,6 +67,7 @@ from runtime.reply_ledger import TurnReplyLedger
 from runtime.task_commands import TaskCommandService
 from runtime.task_events import TaskEventNotifier
 from runtime.task_runtime import TaskRuntime
+from runtime.stickers import StickerService
 from runtime.tools import build_registry
 from runtime.recovery import RuntimeRecovery
 from runtime.turn_policy import ConversationTurnPolicy
@@ -87,6 +89,7 @@ class PumpkinRuntime:
         text_renderer: TextImageRenderer | None = None,
         html_renderer: HtmlRenderer | None = None,
         markdown_renderer: MarkdownRenderer | None = None,
+        sticker_classifier: StickerClassifier | None = None,
         trace: Callable[[str], None] | None = None,
         conversation_driver_decorator: Callable[
             [AgentDriver], AgentDriver
@@ -296,6 +299,16 @@ class PumpkinRuntime:
         self.artifact_service = self.plugin_manager.service(
             ServiceKey.ARTIFACT_SERVICE
         )
+        self.stickers = StickerService(
+            store=self.store,
+            media_provider=self.media_provider,
+            classifier=sticker_classifier
+            or ModelStickerClassifier(self.provider_chat),
+            outbox=self.outbox,
+            reply_ledger=self.reply_ledger,
+            data_dir=config.data_dir,
+            idempotency_key=self.idempotency_key,
+        )
         self.capability_services = CapabilityServices(
             config=config,
             store=self.store,
@@ -492,6 +505,7 @@ class PumpkinRuntime:
         build_registry(
             self.chat_tools,
             self.task_commands,
+            sticker=self.stickers,
             trace=self.trace,
             registry=self.registry,
         )
@@ -510,6 +524,7 @@ class PumpkinRuntime:
             snapshot_payload=snapshot_payload,
             task_agent_skill_catalog=self._task_agent_skill_catalog,
             conversation_agent=self._conversation_agent,
+            collect_stickers=self.stickers.enqueue,
             trace=self.trace,
         )
 
@@ -522,6 +537,7 @@ class PumpkinRuntime:
         await self.store.initialize(self.config.db_url)
         self.skills.discover()
         await self.outbox.start()
+        await self.stickers.start()
         recovery = RuntimeRecovery(
             inbox=self.store,
             tasks=self.store,
@@ -563,6 +579,8 @@ class PumpkinRuntime:
             )
             if not active and not running_agents:
                 await self.outbox.when_idle()
+                await self.stickers.when_idle()
+                self.stickers.raise_background_failure()
                 self.task_runtime.raise_background_failures()
                 if self._conversation_agents or self.task_runtime.lifecycle_agents():
                     await asyncio.gather(
@@ -585,6 +603,7 @@ class PumpkinRuntime:
 
     async def close(self) -> None:
         self._closing = True
+        await self.stickers.close()
         await self.outbox.close()
         agents = (
             *self._conversation_agents.values(),

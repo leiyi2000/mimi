@@ -23,6 +23,84 @@ class MessageArchiveRow(Model):
         table = "pumpkin_message_archive"
 
 
+class StickerCandidateRow(Model):
+    id = fields.IntField(primary_key=True)
+    candidate_id = fields.CharField(max_length=128, unique=True)
+    source_message_id = fields.CharField(max_length=128, db_index=True)
+    scope_id = fields.CharField(max_length=255, db_index=True)
+    segment_index = fields.IntField()
+    segment_type = fields.CharField(max_length=16)
+    status = fields.CharField(max_length=32, db_index=True)
+    attempt_count = fields.IntField(default=0)
+    next_attempt_at = fields.DatetimeField(null=True, db_index=True)
+    claimed_at = fields.DatetimeField(null=True)
+    asset_id = fields.CharField(max_length=128, null=True)
+    error_code = fields.CharField(max_length=128, null=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+    updated_at = fields.DatetimeField(auto_now=True)
+
+    class Meta:
+        table = "pumpkin_sticker_candidates"
+        unique_together = (("source_message_id", "segment_index"),)
+
+
+class StickerAssetRow(Model):
+    id = fields.IntField(primary_key=True)
+    sticker_id = fields.CharField(max_length=128, unique=True)
+    status = fields.CharField(max_length=32, db_index=True)
+    content_sha256 = fields.CharField(max_length=64, unique=True)
+    perceptual_hash = fields.CharField(max_length=64, db_index=True)
+    content_type = fields.CharField(max_length=64)
+    file_extension = fields.CharField(max_length=16)
+    relative_path = fields.TextField()
+    category = fields.CharField(max_length=32, db_index=True)
+    tags = fields.JSONField(default=list)
+    summary = fields.CharField(max_length=500)
+    tone = fields.CharField(max_length=120)
+    confidence = fields.FloatField()
+    seen_count = fields.IntField(default=1)
+    seen_scopes = fields.JSONField(default=list)
+    use_count = fields.IntField(default=0)
+    first_seen_at = fields.DatetimeField()
+    last_seen_at = fields.DatetimeField()
+    activated_at = fields.DatetimeField(null=True)
+    last_used_at = fields.DatetimeField(null=True)
+    archived_at = fields.DatetimeField(null=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+    updated_at = fields.DatetimeField(auto_now=True)
+
+    class Meta:
+        table = "pumpkin_sticker_assets"
+
+
+class StickerReplacementRow(Model):
+    id = fields.IntField(primary_key=True)
+    replacement_id = fields.CharField(max_length=128, unique=True)
+    local_date = fields.CharField(max_length=10, db_index=True)
+    activated_sticker_id = fields.CharField(max_length=128)
+    archived_sticker_id = fields.CharField(max_length=128)
+    reason = fields.CharField(max_length=255)
+    created_at = fields.DatetimeField(auto_now_add=True)
+
+    class Meta:
+        table = "pumpkin_sticker_replacements"
+
+
+class StickerSendRow(Model):
+    id = fields.IntField(primary_key=True)
+    send_id = fields.CharField(max_length=128, unique=True)
+    run_id = fields.CharField(max_length=255, unique=True)
+    sticker_id = fields.CharField(max_length=128, db_index=True)
+    scope_id = fields.CharField(max_length=255, db_index=True)
+    outbox_id = fields.CharField(max_length=128, unique=True)
+    status = fields.CharField(max_length=32)
+    created_at = fields.DatetimeField(auto_now_add=True)
+    sent_at = fields.DatetimeField(null=True)
+
+    class Meta:
+        table = "pumpkin_sticker_sends"
+
+
 class OutboundMessageRow(Model):
     id = fields.IntField(primary_key=True)
     outbound_id = fields.CharField(max_length=128, unique=True)

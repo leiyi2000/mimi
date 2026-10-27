@@ -27,3 +27,5 @@
 | [Pumpkin GIF 首帧读取](20261026-pumpkin-gif-first-frame/design.md) | - | - | implemented |
 | [Pumpkin 图片与代码产物上限](20261026-pumpkin-artifact-size-limits/design.md) | - | - | implemented |
 | [Pumpkin 音色调整](20261026-pumpkin-voice-adjustment/design.md) | - | - | implemented |
+| [Pumpkin Qwen 本地语音 Provider](20261027-pumpkin-qwen-audio-provider/design.md) | - | - | implemented |
+| [Pumpkin 表情包收集与发送](20261027-pumpkin-sticker-library/design.md) | - | - | implemented |

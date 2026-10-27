@@ -108,6 +108,53 @@ def test_only_terminal_task_events_receive_delivery_capability():
     assert TurnCapability.TASK_DELIVERY in completed_capabilities
 
 
+def test_only_user_message_turns_receive_sticker_reply_capability():
+    policy = ConversationTurnPolicy()
+    user_item = AgentInboxItem(
+        item_id="message:1",
+        agent_id="conversation:group:1",
+        session_id="session:group:1",
+        scope_id="group:1",
+        sequence=1,
+        target=AgentInboxTarget.NEXT_TURN,
+        source_type=AgentInboxSource.USER_MESSAGE,
+        payload={},
+        status=AgentInboxStatus.CLAIMED,
+    )
+    address_only = AgentInboxItem(
+        item_id="message:2",
+        agent_id="conversation:group:1",
+        session_id="session:group:1",
+        scope_id="group:1",
+        sequence=2,
+        target=AgentInboxTarget.NEXT_TURN,
+        source_type=AgentInboxSource.USER_MESSAGE,
+        payload={"address_only_message": True},
+        status=AgentInboxStatus.CLAIMED,
+    )
+    task_event = AgentInboxItem(
+        item_id="task:event",
+        agent_id="conversation:group:1",
+        session_id="session:group:1",
+        scope_id="group:1",
+        sequence=3,
+        target=AgentInboxTarget.NEXT_TURN,
+        source_type=AgentInboxSource.TASK_EVENT,
+        payload={},
+        status=AgentInboxStatus.CLAIMED,
+    )
+
+    assert TurnCapability.STICKER_REPLY in policy.tool_loadout(
+        user_item, ()
+    ).capabilities
+    assert TurnCapability.STICKER_REPLY not in policy.tool_loadout(
+        address_only, ()
+    ).capabilities
+    assert TurnCapability.STICKER_REPLY not in policy.tool_loadout(
+        task_event, ()
+    ).capabilities
+
+
 async def test_tool_registry_enforces_required_turn_capabilities():
     called = False
 

@@ -5,13 +5,16 @@ import os
 
 import pytest
 
+from core.config import AudioProviderKind, QwenAudioLanguage
 from providers.audio import (
+    QwenVoiceProfile,
     TimbreWeight,
     VoiceEffect,
     VoiceModification,
     VoiceProfile,
+    VoiceProfileStore,
+    VoiceProfileStoreError,
 )
-from providers.voice_profile import VoiceProfileStore, VoiceProfileStoreError
 
 
 @pytest.mark.asyncio
@@ -39,8 +42,8 @@ async def test_voice_profile_store_round_trip(tmp_path):
     assert loaded == profile
     assert path.stat().st_mode & 0o777 == 0o600
     payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["version"] == 1
-    assert payload["profile"]["timbre_weights"][1]["weight"] == 40
+    assert payload["version"] == 2
+    assert payload["profiles"]["minimax"]["timbre_weights"][1]["weight"] == 40
 
 
 @pytest.mark.asyncio
@@ -86,3 +89,45 @@ async def test_voice_profile_store_uses_builtin_default_when_missing(tmp_path):
     profile = await VoiceProfileStore(tmp_path / "missing.json").load()
 
     assert profile == VoiceProfile()
+
+
+@pytest.mark.asyncio
+async def test_voice_profile_store_migrates_v1_and_isolates_qwen(tmp_path):
+    path = tmp_path / "voice_profile.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "profile": VoiceProfile(voice_id="female-shaonv").as_dict(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = VoiceProfileStore(path)
+    qwen_default = QwenVoiceProfile(
+        voice_id="lillia_zh",
+        language=QwenAudioLanguage.CHINESE,
+    )
+
+    minimax = await store.load(AudioProviderKind.MINIMAX)
+    qwen = await store.load(
+        AudioProviderKind.QWEN_LOCAL,
+        default=qwen_default,
+    )
+    await store.save(
+        QwenVoiceProfile(
+            voice_id="speaker_1",
+            language=QwenAudioLanguage.AUTO,
+        ),
+        AudioProviderKind.QWEN_LOCAL,
+    )
+
+    assert minimax == VoiceProfile(voice_id="female-shaonv")
+    assert qwen == qwen_default
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["version"] == 2
+    assert payload["profiles"]["minimax"]["voice_id"] == "female-shaonv"
+    assert payload["profiles"]["qwen-local"] == {
+        "voice_id": "speaker_1",
+        "language": "Auto",
+    }
