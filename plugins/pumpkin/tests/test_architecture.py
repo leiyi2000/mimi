@@ -108,6 +108,45 @@ def test_only_terminal_task_events_receive_delivery_capability():
     assert TurnCapability.TASK_DELIVERY in completed_capabilities
 
 
+def test_task_event_reply_tools_follow_event_purpose():
+    policy = ConversationTurnPolicy()
+    tools = build_registry(ToolHost()).tools_for(AgentRole.CHAT)
+
+    def item(event_type: TaskEventType, status: TaskStatus) -> AgentInboxItem:
+        return AgentInboxItem(
+            item_id=f"{event_type.value}:{status.value}",
+            agent_id="conversation:group:1",
+            session_id="session:group:1",
+            scope_id="group:1",
+            sequence=1,
+            target=AgentInboxTarget.NEXT_TURN,
+            source_type=AgentInboxSource.TASK_EVENT,
+            payload={
+                "task_event": {
+                    "event_type": event_type.value,
+                    "status": status.value,
+                }
+            },
+            status=AgentInboxStatus.CLAIMED,
+        )
+
+    waiting = policy.tool_loadout(
+        item(TaskEventType.WAITING_FOR_INPUT, TaskStatus.WAITING_FOR_INPUT),
+        tools,
+    )
+    completed = policy.tool_loadout(
+        item(TaskEventType.COMPLETED, TaskStatus.COMPLETED),
+        tools,
+    )
+
+    assert "send_napcat_reply" in waiting.visible_tools
+    assert "send_napcat_replies" in waiting.visible_tools
+    assert "send_task_delivery" not in waiting.visible_tools
+    assert "send_task_delivery" in completed.visible_tools
+    assert "send_napcat_reply" not in completed.visible_tools
+    assert "send_napcat_replies" not in completed.visible_tools
+
+
 def test_only_user_message_turns_receive_sticker_reply_capability():
     policy = ConversationTurnPolicy()
     user_item = AgentInboxItem(

@@ -478,6 +478,7 @@ def build_registry(
         read_only=False,
         idempotency_required=True,
         allowed_roles=frozenset({AgentRole.CHAT}),
+        required_capabilities=frozenset({TurnCapability.CHAT_REPLY}),
     )
     register(
         "create_task",
@@ -558,6 +559,7 @@ def build_registry(
         read_only=False,
         idempotency_required=True,
         allowed_roles=frozenset({AgentRole.CHAT}),
+        required_capabilities=frozenset({TurnCapability.CHAT_REPLY}),
     )
     register(
         "get_task_status",
@@ -661,7 +663,8 @@ def build_registry(
         "send_task_delivery",
         "仅在消费 task.event 的轮次由 Conversation Agent 向任务原请求人发送已验证交付物；"
         "请求消息和请求人由 Runtime 根据任务所有权确定，普通 user.message 轮次和 "
-        "Task Executor 无权调用。",
+        "Task Executor 无权调用。完整任务只交付一个音频时，Runtime 会忽略重复完成文案，"
+        "只发送一条语音消息；成功后直接结束 Turn，不要追加普通聊天回复。",
         {
             "type": "object",
             "required": ["task_id", "revision", "idempotency_key"],

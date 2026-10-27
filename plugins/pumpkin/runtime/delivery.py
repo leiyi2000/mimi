@@ -116,22 +116,35 @@ class DeliveryService:
         ]
         if len(segments) != len(artifacts):
             return _error("verified artifact has no sendable path", "ARTIFACT_INVALID")
+        single_audio = (
+            TaskStatus(row.status) is TaskStatus.COMPLETED
+            and len(artifacts) == 1
+            and artifacts[0].kind == "audio"
+        )
+        payload = {
+            "text": "",
+            "original_text": "",
+            "segments": segments,
+            "source": "task_delivery",
+        }
+        if not single_audio:
+            payload.update(
+                {
+                    "text": text,
+                    "original_text": text,
+                    "reply_to_message_id": self.source_message_id(row),
+                    "mention_user_id": (
+                        self.requester_id(row)
+                        if context.scope_id.startswith("group:")
+                        else None
+                    ),
+                }
+            )
         item = await self.outbox.submit(
             idempotency_key=key,
             scope_id=context.scope_id,
             source_event_id=context.run_id,
-            payload={
-                "text": text,
-                "original_text": text,
-                "segments": segments,
-                "reply_to_message_id": self.source_message_id(row),
-                "mention_user_id": (
-                    self.requester_id(row)
-                    if context.scope_id.startswith("group:")
-                    else None
-                ),
-                "source": "task_delivery",
-            },
+            payload=payload,
         )
         if item.status is OutboxStatus.FAILED:
             return _error(

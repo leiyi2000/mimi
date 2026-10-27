@@ -15,6 +15,7 @@ from core.turns import DefaultTurnPolicy, TurnToolLoadout
 class ConversationTurnPolicy(DefaultTurnPolicy):
     _USER_CAPABILITIES = frozenset(
         {
+            TurnCapability.CHAT_REPLY,
             TurnCapability.TASK_CREATE,
             TurnCapability.TASK_READ,
             TurnCapability.TASK_UPDATE,
@@ -24,6 +25,13 @@ class ConversationTurnPolicy(DefaultTurnPolicy):
     )
     _TASK_EVENT_CAPABILITIES = frozenset(
         {
+            TurnCapability.TASK_READ,
+            TurnCapability.TASK_CORRECT,
+        }
+    )
+    _USER_ACTION_TASK_EVENT_CAPABILITIES = frozenset(
+        {
+            TurnCapability.CHAT_REPLY,
             TurnCapability.TASK_READ,
             TurnCapability.TASK_CORRECT,
         }
@@ -71,6 +79,12 @@ class ConversationTurnPolicy(DefaultTurnPolicy):
                 }
             ):
                 return self._TERMINAL_TASK_EVENT_CAPABILITIES
+            if isinstance(event, dict) and event.get("event_type") in {
+                TaskEventType.WAITING_FOR_INPUT.value,
+                TaskEventType.FAILED.value,
+                TaskEventType.PAUSED.value,
+            }:
+                return self._USER_ACTION_TASK_EVENT_CAPABILITIES
             return self._TASK_EVENT_CAPABILITIES
         if item.payload.get("address_only_message") is True:
             return frozenset()

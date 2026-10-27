@@ -4,7 +4,12 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 from core.agent import Agent
-from core.domain import AgentInboxSource, AgentInboxTarget, TaskEvent
+from core.domain import (
+    AgentInboxSource,
+    AgentInboxTarget,
+    TaskEvent,
+    is_user_visible_task_event,
+)
 from persistence.repositories import TaskRuntimeStore
 
 
@@ -29,6 +34,8 @@ class TaskEventNotifier:
         self.snapshot_payload = snapshot_payload
 
     async def notify(self, event: TaskEvent) -> None:
+        if not is_user_visible_task_event(event.event_type):
+            return
         row = await self.store.get_task(event.task_id)
         if row is None:
             return
@@ -45,6 +52,7 @@ class TaskEventNotifier:
             "task": self.snapshot_payload(snapshot) if snapshot else None,
             "task_context_mode": "related",
             "address_only_message": False,
+            "max_reply_messages": 1,
             "active_task_index": [self.snapshot_payload(item) for item in tasks],
             "source_message_ids": list(row.source_message_ids or []),
         }

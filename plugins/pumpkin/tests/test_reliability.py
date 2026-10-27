@@ -12,6 +12,7 @@ from core.domain import (
     ModelResponse,
     PersonRef,
     SessionState,
+    TaskEventType,
     TaskHandoff,
     TaskStatus,
     ToolCall,
@@ -340,6 +341,58 @@ async def test_reliable_task_event_uses_conversation_inbox_once(tmp_path):
         for item in events
     ) == 1
     assert client.sent == []
+    await runtime.close()
+
+
+async def test_internal_task_event_does_not_enter_conversation_inbox(tmp_path):
+    class CapturingAgent:
+        def __init__(self):
+            self.calls = []
+
+        async def send(self, payload, **kwargs):
+            self.calls.append((payload, kwargs))
+
+    agent = CapturingAgent()
+    runtime = ReliablePumpkinRuntime(
+        config_for(tmp_path),
+        client=Client(),
+        provider_chat=FailingProvider(),
+        provider_task=FailingProvider(),
+    )
+    await runtime.start()
+    runtime.task_event_notifier.conversation_agent = lambda scope_id: agent
+    handoff = TaskHandoff(
+        task_id="task-internal-event",
+        revision=1,
+        scope_id="group:1",
+        source_messages=(),
+        involved_people=(),
+        goal="生成语音",
+        constraints=(),
+        requested_deliverables=("语音",),
+        allowed_skills=(),
+    )
+    await runtime.task_service.create(handoff)
+    await runtime.task_service.transition(
+        handoff.task_id,
+        handoff.revision,
+        TaskStatus.RUNNING,
+        summary="task started",
+    )
+    event = await runtime.task_service.emit(
+        task_id=handoff.task_id,
+        revision=handoff.revision,
+        scope_id=handoff.scope_id,
+        event_type=TaskEventType.ARTIFACT_READY,
+        summary="audio candidate ready",
+    )
+
+    await runtime.task_event_notifier.notify(event)
+
+    assert agent.calls == []
+    stored = await runtime.store.events(handoff.task_id)
+    assert stored[-1].event_type is TaskEventType.ARTIFACT_READY
+    assert await runtime.store.unnotified_task_events() == ()
     await runtime.close()
 
 

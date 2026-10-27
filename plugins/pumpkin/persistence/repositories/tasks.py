@@ -22,6 +22,7 @@ from core.domain import (
     TaskHandoff,
     TaskStatus,
     TaskStatusSnapshot,
+    USER_VISIBLE_TASK_EVENT_TYPES,
 )
 from core.serialization import (
     artifact_from_dict,
@@ -319,9 +320,8 @@ class TaskRepositoryMixin:
     async def unnotified_task_events(self) -> tuple[TaskEvent, ...]:
         rows = await TaskEventRow.filter(
             event_type__in=[
-                TaskEventType.COMPLETED.value,
-                TaskEventType.FAILED.value,
-                TaskEventType.WAITING_FOR_INPUT.value,
+                event_type.value
+                for event_type in USER_VISIBLE_TASK_EVENT_TYPES
             ]
         ).order_by("id")
         if not rows:

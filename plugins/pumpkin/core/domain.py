@@ -111,6 +111,20 @@ class TaskEventType(StrEnum):
     DELETED = "task.deleted"
 
 
+USER_VISIBLE_TASK_EVENT_TYPES = frozenset(
+    {
+        TaskEventType.WAITING_FOR_INPUT,
+        TaskEventType.COMPLETED,
+        TaskEventType.FAILED,
+        TaskEventType.PAUSED,
+    }
+)
+
+
+def is_user_visible_task_event(event_type: TaskEventType) -> bool:
+    return event_type in USER_VISIBLE_TASK_EVENT_TYPES
+
+
 class AgentRole(StrEnum):
     CHAT = "chat"
     TASK = "task"
@@ -183,6 +197,7 @@ class TurnEndReason(StrEnum):
 
 
 class TurnCapability(StrEnum):
+    CHAT_REPLY = "chat_reply"
     TASK_CREATE = "task_create"
     TASK_READ = "task_read"
     TASK_UPDATE = "task_update"

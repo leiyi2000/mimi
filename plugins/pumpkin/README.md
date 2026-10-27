@@ -7,9 +7,10 @@ Pumpkin 是 Mimi 的 QQ 群聊和私聊 AI 插件。每条消息先写入
   模型与工具过程写入追加式 Session Event。
 - 任务由 Conversation Agent 创建，Task Executor 独立执行并只提交 TaskEvent 和
   已验证 Artifact，不具备 QQ 发送权限。
-- TaskEvent 使用固定 ID 写入持久化 Conversation Inbox，不占用用户消息 Inbox；启动时
-  会对账补投未通知的等待、失败和完成事件。Conversation Agent 根据持久化事实表达终态，
-  并只交付该 revision 已显式通过验收的 Artifact。
+- TaskEvent 全量持久化；只有等待输入、失败、暂停和完成事件使用固定 ID 写入 Conversation
+  Inbox，不占用用户消息 Inbox。候选 Artifact、进度和描述更新仅供任务查询与审计，不会
+  触发回复；启动时只补投未通知的用户可见事件。Conversation Agent 根据持久化事实表达
+  终态，并只交付该 revision 已显式通过验收的 Artifact。
 - 所有聊天和任务交付经持久化 Outbox 发送；正文超过 80 个字符时由 Outbox 自动渲染
   为图片。发送结果不确定时记为 `unknown`，不会盲目重发。
 - 任务创建成功后由 Runtime 通过 Outbox 立即发送 Conversation Agent 提供的简短自然确认，
@@ -113,6 +114,8 @@ Conversation Agent。Conversation Agent 可按需加载 `sticker-reply` Skill，
 音量、音调、情绪、声音质感、效果器及 2 至 4 个音色混合；Qwen 固定输出 WAV，支持
 `Chinese`、`English`、`Auto` 语言和已注册音色。Agent 始终使用统一的音频合成工具；
 不支持的设置由 Provider 适配器明确拒绝，不会静默忽略。
+完整任务只交付一个音频文件时，Runtime 只发送一条 QQ 语音，不再追加引用、@ 或重复的
+“已完成”文字；部分完成、失败和发送结果不确定时仍提供必要说明。
 
 Qwen 可从当前任务源消息中的语音或音频文件创建 ICL 或 x-vector 克隆音色。只有用户明确
 确认已获得说话人授权时才允许克隆；参考音频只在内存中发送给本地服务，不进入 Session

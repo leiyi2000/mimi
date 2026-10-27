@@ -29,3 +29,4 @@
 | [Pumpkin 音色调整](20261026-pumpkin-voice-adjustment/design.md) | - | - | implemented |
 | [Pumpkin Qwen 本地语音 Provider](20261027-pumpkin-qwen-audio-provider/design.md) | - | - | implemented |
 | [Pumpkin 表情包收集与发送](20261027-pumpkin-sticker-library/design.md) | - | - | implemented |
+| [Pumpkin 任务通知与音频交付收敛](20261027-pumpkin-task-notification-convergence/design.md) | - | - | implemented |

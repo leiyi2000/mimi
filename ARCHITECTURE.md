@@ -118,7 +118,9 @@ LOL 插件以 profile digest 校验 QIMEI36 缓存，缓存未命中时才调用
 Pumpkin 每个 QQ scope 只有一个长期 Conversation Agent。`runtime/ingress.py` 负责适配、
 归档、唤醒边界和写入持久化 Inbox；消息进入 Turn/Step AgentLoop 后由 Session Event
 恢复模型上下文。Conversation Inbox 在尚未领取的条目中优先处理用户消息，后台 TaskEvent
-单 Turn 最多使用 6 个模型步骤，避免任务通知长期阻塞明确唤醒。`runtime/task_runtime.py`
+单 Turn 最多使用 6 个模型步骤，避免任务通知长期阻塞明确唤醒。TaskEvent 全量持久化，
+但只有等待输入、失败、暂停和完成事件进入 Conversation Inbox；候选 Artifact、进度和
+描述更新不触发用户回复。`runtime/task_runtime.py`
 独立负责任务调度、并发、revision 过期、取消和恢复；Task Executor 只执行任务并登记
 Artifact，不直接发送 QQ 消息。Task Executor 最后两个模型步骤只允许终态工具；步骤耗尽
 但已有已验证 Artifact 时，由 Runtime 以可审计的部分完成事件保留现有交付物。
@@ -135,8 +137,8 @@ active 话题信号不续期、不开放受众、不增加预算。
 `PumpkinStore` 组合入口，不承载恢复或验收策略；启动恢复由 `runtime/recovery.py`
 编排。基础设施由 `core/services.py` 的具名 Service Definition 通过插件管理器装配；
 `runtime/turn_policy.py` 按强类型 Inbox 来源生成每轮 capability/loadout，工具执行层
-再次校验 capability。`runtime/task_events.py` 是 TaskEvent 写入 Conversation Inbox
-的唯一发布者。
+再次校验 capability。`runtime/task_events.py` 是用户可见 TaskEvent 写入 Conversation
+Inbox 的唯一发布者；实时发布与启动恢复复用同一事件可见性策略。
 
 Pumpkin 在消息归档后把群聊顶层 `image` 和 `mface` 段登记为持久化候选，不等待网络
 下载。`runtime/stickers.py` 的单 worker 异步完成安全下载、内容及感知去重、视觉分类、
@@ -153,6 +155,8 @@ Pumpkin 音频能力在启动时选择 `MinimaxAudioProvider` 或
 不写入 Session Event 或 Artifact。Agent 只使用统一的 `generate_audio` 与
 `clone_voice` 契约，Provider 差异由 `providers/audio/` 内部适配。克隆成功后，最新音色
 指针由 Pumpkin 原子持久化。MiniMax ASR 独立装配，可与任一 TTS Provider 组合。
+完整任务只交付一个音频 Artifact 时，交付层使用不带引用、@ 或重复完成文案的单条
+`record` 消息；部分完成和异常结果仍保留必要说明。
 
 Pumpkin 的有效数据路径只有：
 

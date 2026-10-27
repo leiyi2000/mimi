@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, UTC
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
+
+import pytest
 
 from core.config import PumpkinConfig
 from core.domain import (
@@ -11,6 +14,7 @@ from core.domain import (
     InboundMessage,
     MessageSegment,
     MessageSegmentType,
+    OutboxStatus,
     TaskCorrection,
     TaskHandoff,
     TaskStatus,
@@ -621,6 +625,83 @@ async def test_delivery_requires_terminal_task_even_when_artifact_is_ready(tmp_p
     )
 
     assert result.error_code == "TASK_NOT_TERMINAL"
+    await runtime.store.close()
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_text", "targeted"),
+    [
+        (TaskStatus.COMPLETED, "", False),
+        (TaskStatus.PARTIALLY_COMPLETED, "做好了，这是语音。", True),
+    ],
+)
+async def test_single_audio_delivery_matches_task_outcome(
+    tmp_path,
+    status,
+    expected_text,
+    targeted,
+):
+    runtime = await _runtime(tmp_path)
+    await _create_running_task(runtime)
+    row = await runtime.store.get_task("task-1")
+    assert row is not None
+    row.source_message_ids = ["message-1"]
+    row.involved_people = [
+        {
+            "participant_ref": "7",
+            "role": "requester",
+            "involvement": "created the task",
+        }
+    ]
+    await row.save(update_fields=["source_message_ids", "involved_people"])
+    artifact = await runtime.write_artifact(
+        _context(role=AgentRole.TASK, run_id="task-run", revision=1),
+        filename="result.wav",
+        kind="audio",
+        content=b"RIFF\x00\x00\x00\x00WAVEaudio",
+    )
+    await runtime.task_service.complete(
+        task_id="task-1",
+        revision=1,
+        scope_id="group:1",
+        status=status,
+        summary="audio completed",
+        remaining=(),
+        accepted_criteria=("audio generated",),
+        artifacts=(artifact,),
+        artifact_ids=(artifact.artifact_id,),
+    )
+    runtime.outbox.submit = AsyncMock(
+        return_value=SimpleNamespace(
+            status=OutboxStatus.SENT,
+            message_ids=("voice-1",),
+            error_code=None,
+        )
+    )
+
+    result = await runtime.task_commands.send_task_delivery(
+        _context(role=AgentRole.CHAT, run_id="delivery-run"),
+        {
+            "task_id": "task-1",
+            "revision": 1,
+            "text": "做好了，这是语音。",
+            "artifacts": [artifact.artifact_id],
+            "idempotency_key": "single-audio-delivery",
+        },
+    )
+
+    assert not result.is_error
+    payload = runtime.outbox.submit.await_args.kwargs["payload"]
+    assert payload["text"] == expected_text
+    assert payload["original_text"] == expected_text
+    assert payload["segments"] == [{"type": "record", "file": artifact.path}]
+    assert payload["source"] == "task_delivery"
+    assert ("reply_to_message_id" in payload) is targeted
+    assert ("mention_user_id" in payload) is targeted
+    if targeted:
+        assert payload["reply_to_message_id"] == "message-1"
+        assert payload["mention_user_id"] == "7"
+    assert result.content["message_ids"] == ["voice-1"]
     await runtime.store.close()
 
 
