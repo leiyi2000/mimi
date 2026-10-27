@@ -33,7 +33,7 @@ services:
         env_file:
             - .env
         environment:
-            PUMPKIN_CHAT_REASONING_EFFORT: low
+            PUMPKIN_CHAT_REASONING_EFFORT: medium
             PUMPKIN_TASK_REASONING_EFFORT: max
             PUMPKIN_CHAT_MAX_TOKENS: 4096
             PUMPKIN_TASK_MAX_TOKENS: 8192
