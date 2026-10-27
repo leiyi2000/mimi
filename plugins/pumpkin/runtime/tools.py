@@ -140,6 +140,7 @@ def build_registry(
         "topic_state 使用 ended，否则使用 active；sent_message_ids 必须按发送顺序完整"
         "复制当前轮所有发送工具返回的 message_ids，不得包含历史消息 ID。工具返回"
         "SEND_NOT_CONFIRMED 时，根据结果中的 confirmed_message_ids 修正后重试。"
+        "发送简短拒绝时 outcome 仍使用 replied；主动保持安静且未发送消息时使用 ignored。"
         "只有当前回复明确邀请群内其他成员继续参与时，才将 topic_audience 设为 "
         "group_open；requester_only 可关闭此前开放范围。省略该字段时保持现状。",
         {

@@ -50,6 +50,7 @@ class ParticipationAction(StrEnum):
 class ParticipationReason(StrEnum):
     EXPLICIT_DIRECT = "explicit_direct"
     SAME_SENDER_FOLLOW_UP = "same_sender_follow_up"
+    REACTION_ONLY_FOLLOW_UP = "reaction_only_follow_up"
     REPLY_TO_ACCEPTED_TOPIC_MESSAGE = "reply_to_accepted_topic_message"
     GROUP_OPEN_TOPIC = "group_open_topic"
     DIFFERENT_SENDER = "different_sender"

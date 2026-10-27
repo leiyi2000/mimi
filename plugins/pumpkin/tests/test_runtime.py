@@ -922,6 +922,177 @@ async def test_same_sender_follow_up_budget_accepts_only_two_turns(tmp_path):
     await runtime.close()
 
 
+async def test_same_sender_reaction_only_message_is_archived_without_turn(
+    tmp_path,
+):
+    base = PumpkinConfig.from_env()
+    runtime = PumpkinRuntime(
+        replace(
+            base,
+            data_dir=str(tmp_path),
+            db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+        ),
+        client=FakeClient(),
+        provider_chat=ChatProvider(),
+    )
+    await runtime.start()
+    now = datetime.now(UTC)
+    await runtime.sessions.activate(
+        "group:1",
+        summary="direct",
+        now=now,
+        sender_id="7",
+        message_id="wake",
+        explicit_wake=True,
+    )
+    reactions = (
+        (
+            "image",
+            {
+                "file": "reaction.gif",
+                "url": "https://example.invalid/reaction.gif",
+            },
+        ),
+        (
+            "mface",
+            {
+                "emoji_package_id": 1,
+                "emoji_id": "reaction",
+                "key": "reaction-key",
+                "summary": "reaction",
+            },
+        ),
+        ("face", {"id": "66"}),
+    )
+    decisions = []
+    for offset, (segment_type, data) in enumerate(reactions, start=1):
+        event = group_event(350 + offset, "")
+        event["raw_message"] = f"[CQ:{segment_type}]"
+        event["message"] = [{"type": segment_type, "data": data}]
+        decisions.append(
+            await runtime.sessions.decide_participation(
+                runtime.adapter.adapt(event),
+                direct=False,
+                now=now + timedelta(seconds=offset),
+            )
+        )
+
+    row = await runtime.store.get_session("group:1")
+    assert all(
+        decision.action is ParticipationAction.ARCHIVE_ONLY
+        and decision.intent is ParticipationIntent.AMBIENT
+        and decision.reason is ParticipationReason.REACTION_ONLY_FOLLOW_UP
+        for decision in decisions
+    )
+    assert row is not None
+    assert row.cooling_message_count == 0
+    await runtime.close()
+
+
+async def test_same_sender_single_emoji_is_reaction_only(tmp_path):
+    base = PumpkinConfig.from_env()
+    runtime = PumpkinRuntime(
+        replace(
+            base,
+            data_dir=str(tmp_path),
+            db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+        ),
+        client=FakeClient(),
+    )
+    await runtime.start()
+    now = datetime.now(UTC)
+    await runtime.sessions.activate(
+        "group:1",
+        summary="direct",
+        now=now,
+        sender_id="7",
+        explicit_wake=True,
+    )
+
+    decision = await runtime.sessions.decide_participation(
+        runtime.adapter.adapt(group_event(352, "👍🏻")),
+        direct=False,
+        now=now + timedelta(seconds=1),
+    )
+
+    assert decision.action is ParticipationAction.ARCHIVE_ONLY
+    assert decision.reason is ParticipationReason.REACTION_ONLY_FOLLOW_UP
+    await runtime.close()
+
+
+async def test_same_sender_image_with_question_remains_follow_up(tmp_path):
+    base = PumpkinConfig.from_env()
+    runtime = PumpkinRuntime(
+        replace(
+            base,
+            data_dir=str(tmp_path),
+            db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+        ),
+        client=FakeClient(),
+    )
+    await runtime.start()
+    now = datetime.now(UTC)
+    await runtime.sessions.activate(
+        "group:1",
+        summary="direct",
+        now=now,
+        sender_id="7",
+        explicit_wake=True,
+    )
+    event = group_event(353, "这个是什么意思？")
+    event["message"].append(
+        {
+            "type": "image",
+            "data": {
+                "file": "question.png",
+                "url": "https://example.invalid/question.png",
+            },
+        }
+    )
+
+    decision = await runtime.sessions.decide_participation(
+        runtime.adapter.adapt(event),
+        direct=False,
+        now=now + timedelta(seconds=1),
+    )
+
+    assert decision.action is ParticipationAction.ACCEPT
+    assert decision.intent is ParticipationIntent.FOLLOW_UP
+    assert decision.reason is ParticipationReason.SAME_SENDER_FOLLOW_UP
+    await runtime.close()
+
+
+async def test_direct_reaction_message_still_has_explicit_priority(tmp_path):
+    base = PumpkinConfig.from_env()
+    runtime = PumpkinRuntime(
+        replace(
+            base,
+            data_dir=str(tmp_path),
+            db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+        ),
+        client=FakeClient(),
+    )
+    await runtime.start()
+    event = group_event(354, "")
+    event["raw_message"] = "[CQ:at,qq=999][CQ:face,id=66]"
+    event["message"] = [
+        {"type": "at", "data": {"qq": "999"}},
+        {"type": "face", "data": {"id": "66"}},
+    ]
+    message = runtime.adapter.adapt(event)
+
+    wake = runtime.sessions.is_wake(message, "999")
+    decision = await runtime.sessions.decide_participation(
+        message,
+        direct=wake,
+    )
+
+    assert wake
+    assert decision.action is ParticipationAction.ACCEPT
+    assert decision.reason is ParticipationReason.EXPLICIT_DIRECT
+    await runtime.close()
+
+
 async def test_other_member_reply_to_accepted_message_is_expansion(tmp_path):
     base = PumpkinConfig.from_env()
     runtime = PumpkinRuntime(

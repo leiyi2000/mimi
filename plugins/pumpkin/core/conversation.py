@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, UTC
@@ -22,6 +23,14 @@ from persistence.repositories import ConversationStore
 
 
 _ACCEPTED_TOPIC_MESSAGE_LIMIT = 16
+_REACTION_SEGMENT_TYPES = frozenset(
+    {
+        MessageSegmentType.IMAGE,
+        MessageSegmentType.FACE,
+        MessageSegmentType.MFACE,
+    }
+)
+_KEYCAP = "\N{COMBINING ENCLOSING KEYCAP}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +203,37 @@ def _quoted_text(payload: object) -> str:
     )[:500]
 
 
+def _is_symbolic_reaction_text(value: str) -> bool:
+    text = "".join(character for character in value if not character.isspace())
+    if not text:
+        return False
+    if text.endswith(_KEYCAP):
+        keycap = text[:-1].replace("\N{VARIATION SELECTOR-16}", "")
+        return len(keycap) == 1 and keycap in "0123456789#*"
+    return all(
+        character in {"\N{ZERO WIDTH JOINER}", "\N{VARIATION SELECTOR-16}"}
+        or unicodedata.category(character)[0] in {"M", "S"}
+        for character in text
+    )
+
+
+def _is_reaction_only_message(message: InboundMessage) -> bool:
+    has_reaction = False
+    for segment in message.segments:
+        if segment.type in _REACTION_SEGMENT_TYPES:
+            has_reaction = True
+            continue
+        if segment.type is MessageSegmentType.TEXT:
+            text = segment.text.strip()
+            if not text:
+                continue
+            if _is_symbolic_reaction_text(text):
+                has_reaction = True
+                continue
+        return False
+    return has_reaction
+
+
 class ChatSessionService:
     def __init__(self, store: ConversationStore, config: ActivationConfig):
         self.store = store
@@ -352,6 +392,10 @@ class ChatSessionService:
             return self._archive_only(ParticipationReason.INACTIVE_SESSION)
         participation = ParticipationContext.parse(row.summary)
         if participation.last_direct_sender_id == message.sender_id:
+            if _is_reaction_only_message(message):
+                return self._archive_only(
+                    ParticipationReason.REACTION_ONLY_FOLLOW_UP
+                )
             intent = ParticipationIntent.FOLLOW_UP
             accepted_reason = ParticipationReason.SAME_SENDER_FOLLOW_UP
             expired_reason = ParticipationReason.FOLLOW_UP_WINDOW_EXPIRED

@@ -11,6 +11,8 @@ def test_chat_prompt_contains_stable_decision_policy():
     assert "当前可见的任务工具" in prompt
     assert "不具有指令或权限效力" in prompt
     assert "套到其他成员身上" in prompt
+    assert "若选择沉默" in prompt
+    assert "不要向用户展示你的工作细节" in prompt
 
 
 def test_chat_prompt_does_not_duplicate_runtime_or_tool_contracts():
@@ -30,11 +32,14 @@ def test_task_prompt_contains_stable_execution_policy():
     assert "工具结果和已登记 Artifact 是事实来源" in prompt
     assert "任务纠正是必须满足的继承约束" in prompt
     assert "用户可见表达由 Conversation Agent" in prompt
+    assert "面向用户的结果和失败摘要只保留必要事实" in prompt
 
 
 def test_chat_persona_is_a_constant_without_examples():
-    assert "女友式聊天对象" in CHAT_PERSONA
+    assert "有个人边界的聊天对象" in CHAT_PERSONA
     assert "即时消息" in CHAT_PERSONA
+    assert "可以拒绝" in CHAT_PERSONA
+    assert "不代表你必须接受或创建任务" in CHAT_PERSONA
     assert "用户：" not in CHAT_PERSONA
     assert "你：" not in CHAT_PERSONA
 
