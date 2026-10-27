@@ -3,6 +3,7 @@ import logging
 import threading
 import subprocess
 from pathlib import Path
+from typing import ClassVar
 import tomllib
 
 
@@ -10,6 +11,14 @@ log = logging.getLogger(__name__)
 
 
 class PluginManager:
+    _CHILD_LOG_LEVELS: ClassVar[dict[str, int]] = {
+        "DEBUG": logging.DEBUG,
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "ERROR": logging.ERROR,
+        "CRITICAL": logging.CRITICAL,
+    }
+
     def __init__(self):
         self.plugins: list[Path] = []
         plugins_dir = Path(__file__).parent.parent / "plugins"
@@ -43,14 +52,26 @@ class PluginManager:
                     )
                 owners[normalized] = plugin.name
 
+    @classmethod
+    def _resolve_log_level(cls, line: str, *, is_stderr: bool) -> int:
+        level_name, separator, _ = line.partition(":")
+        if separator:
+            level = cls._CHILD_LOG_LEVELS.get(level_name)
+            if level is not None:
+                return level
+        return logging.ERROR if is_stderr else logging.INFO
+
     def start(self):
-        def stream_log(stream, prefix, is_error=False):
-            log_func = log.error if is_error else log.info
+        def stream_log(stream, prefix, is_stderr=False):
             with stream:
                 for line in stream:
                     line = line.strip()
                     if line:
-                        log_func(f"[{prefix}] {line}")
+                        level = self._resolve_log_level(
+                            line,
+                            is_stderr=is_stderr,
+                        )
+                        log.log(level, f"[{prefix}] {line}")
 
         for plugin in self.plugins:
             # hardcode run main.py
