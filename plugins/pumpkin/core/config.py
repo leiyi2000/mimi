@@ -23,12 +23,16 @@ DEFAULT_TASK_MAX_STEPS = 16
 DEFAULT_TASK_FINALIZATION_STEPS = 2
 DEFAULT_TASK_WEB_SEARCH_LIMIT = 4
 DEFAULT_TASK_WEB_FETCH_LIMIT = 8
-DEFAULT_TASK_WEB_IMAGE_LIMIT = 4
+DEFAULT_TASK_WEB_DOWNLOAD_LIMIT = 4
+DEFAULT_TASK_BROWSER_DELEGATE_LIMIT = 2
+DEFAULT_BROWSER_TIMEOUT_SECONDS = 180
+DEFAULT_BROWSER_MAX_STEPS = 24
+DEFAULT_BROWSER_MAX_MCP_CALLS = 20
 DEFAULT_CHAT_MAX_TOKENS = 4096
 DEFAULT_TASK_MAX_TOKENS = 8192
 DEFAULT_WEB_MODEL_CONTENT_CHARS = 8_000
 DEFAULT_WEB_HOST_CONCURRENCY = 2
-DEFAULT_WEB_IMAGE_MAX_BYTES = 20 * 1024 * 1024
+DEFAULT_WEB_DOWNLOAD_MAX_BYTES = 20 * 1024 * 1024
 
 
 def _csv(value: str) -> tuple[str, ...]:
@@ -168,7 +172,8 @@ class TaskBudgetConfig:
     finalization_steps: int = DEFAULT_TASK_FINALIZATION_STEPS
     web_search_limit: int = DEFAULT_TASK_WEB_SEARCH_LIMIT
     web_fetch_limit: int = DEFAULT_TASK_WEB_FETCH_LIMIT
-    web_image_limit: int = DEFAULT_TASK_WEB_IMAGE_LIMIT
+    web_download_limit: int = DEFAULT_TASK_WEB_DOWNLOAD_LIMIT
+    browser_delegate_limit: int = DEFAULT_TASK_BROWSER_DELEGATE_LIMIT
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -176,7 +181,8 @@ class TaskBudgetConfig:
             ("finalization_steps", self.finalization_steps),
             ("web_search_limit", self.web_search_limit),
             ("web_fetch_limit", self.web_fetch_limit),
-            ("web_image_limit", self.web_image_limit),
+            ("web_download_limit", self.web_download_limit),
+            ("browser_delegate_limit", self.browser_delegate_limit),
         ):
             if value <= 0:
                 raise ValueError(f"task budget {name} must be positive")
@@ -204,7 +210,7 @@ class WebConfig:
     timeout_seconds: float = DEFAULT_WEB_TIMEOUT_SECONDS
     max_results: int = 8
     max_fetch_bytes: int = 1_048_576
-    max_image_bytes: int = DEFAULT_WEB_IMAGE_MAX_BYTES
+    max_download_bytes: int = DEFAULT_WEB_DOWNLOAD_MAX_BYTES
     max_fetch_chars: int = 30_000
     max_model_content_chars: int = DEFAULT_WEB_MODEL_CONTENT_CHARS
     max_host_concurrency: int = DEFAULT_WEB_HOST_CONCURRENCY
@@ -214,6 +220,26 @@ class WebConfig:
             raise ValueError("web max_model_content_chars must be at least 1000")
         if self.max_host_concurrency <= 0:
             raise ValueError("web max_host_concurrency must be positive")
+
+
+@dataclass(frozen=True, slots=True)
+class BrowserConfig:
+    enabled: bool = False
+    socket_path: str = "/run/pumpkin-browser/control.sock"
+    worker_token: str | None = None
+    timeout_seconds: float = DEFAULT_BROWSER_TIMEOUT_SECONDS
+    max_steps: int = DEFAULT_BROWSER_MAX_STEPS
+    max_mcp_calls: int = DEFAULT_BROWSER_MAX_MCP_CALLS
+
+    def __post_init__(self) -> None:
+        if self.timeout_seconds <= 0:
+            raise ValueError("browser timeout_seconds must be positive")
+        if self.max_steps <= 0 or self.max_mcp_calls <= 0:
+            raise ValueError("browser limits must be positive")
+        if self.enabled and (not self.socket_path or not self.worker_token):
+            raise ValueError(
+                "enabled browser requires socket_path and worker_token"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,6 +335,8 @@ class PumpkinConfig:
     model_chat: ModelConfig
     model_task: ModelConfig
     task: TaskConfig
+    model_browser: ModelConfig | None = None
+    browser: BrowserConfig = field(default_factory=BrowserConfig)
     web: WebConfig = field(default_factory=WebConfig)
     code: CodeConfig = field(default_factory=CodeConfig)
     image: ImageConfig = field(default_factory=ImageConfig)
@@ -333,6 +361,13 @@ class PumpkinConfig:
             _env("PUMPKIN_ASSISTANT_NAME", "configured-assistant")
             or "configured-assistant"
         )
+        browser_enabled = (
+            _env("PUMPKIN_BROWSER_ENABLED", "false") or "false"
+        ).lower() in {"1", "true", "yes"}
+        task_provider = _env("PUMPKIN_TASK_PROVIDER", provider) or provider
+        task_model = _env("PUMPKIN_TASK_MODEL", model) or model
+        task_base_url = _env("PUMPKIN_TASK_BASE_URL", base_url)
+        task_api_key = _env("PUMPKIN_TASK_API_KEY", api_key)
         return cls(
             assistant=AssistantConfig(
                 name=assistant_name,
@@ -412,10 +447,10 @@ class PumpkinConfig:
                 ),
             ),
             model_task=ModelConfig(
-                provider=_env("PUMPKIN_TASK_PROVIDER", provider) or provider,
-                model=_env("PUMPKIN_TASK_MODEL", model) or model,
-                base_url=_env("PUMPKIN_TASK_BASE_URL", base_url),
-                api_key=_env("PUMPKIN_TASK_API_KEY", api_key),
+                provider=task_provider,
+                model=task_model,
+                base_url=task_base_url,
+                api_key=task_api_key,
                 fallback_providers=_csv(
                     os.getenv("PUMPKIN_TASK_FALLBACK_PROVIDERS", "")
                 ),
@@ -438,6 +473,50 @@ class PumpkinConfig:
                 ),
                 max_tokens=_positive_int(
                     "PUMPKIN_TASK_MAX_TOKENS",
+                    DEFAULT_TASK_MAX_TOKENS,
+                ),
+            ),
+            model_browser=ModelConfig(
+                provider=(
+                    _env("PUMPKIN_BROWSER_PROVIDER", task_provider)
+                    or task_provider
+                ),
+                model=(
+                    _env("PUMPKIN_BROWSER_MODEL", task_model)
+                    or task_model
+                ),
+                base_url=_env(
+                    "PUMPKIN_BROWSER_BASE_URL",
+                    task_base_url,
+                ),
+                api_key=_env("PUMPKIN_BROWSER_API_KEY", task_api_key),
+                fallback_providers=_csv(
+                    os.getenv("PUMPKIN_BROWSER_FALLBACK_PROVIDERS", "")
+                ),
+                fallback_base_urls=_csv(
+                    os.getenv("PUMPKIN_BROWSER_FALLBACK_BASE_URLS", "")
+                ),
+                request_timeout_seconds=float(
+                    os.getenv(
+                        "PUMPKIN_BROWSER_MODEL_TIMEOUT_SECONDS",
+                        str(DEFAULT_TASK_TIMEOUT_SECONDS),
+                    )
+                ),
+                max_retries=int(
+                    os.getenv("PUMPKIN_BROWSER_MAX_RETRIES", "1")
+                ),
+                empty_response_retries=int(
+                    os.getenv(
+                        "PUMPKIN_BROWSER_EMPTY_RESPONSE_RETRIES",
+                        "1",
+                    )
+                ),
+                reasoning_effort=_reasoning_effort(
+                    "PUMPKIN_BROWSER_REASONING_EFFORT",
+                    ReasoningEffort.LOW,
+                ),
+                max_tokens=_positive_int(
+                    "PUMPKIN_BROWSER_MAX_TOKENS",
                     DEFAULT_TASK_MAX_TOKENS,
                 ),
             ),
@@ -477,10 +556,42 @@ class PumpkinConfig:
                         "PUMPKIN_TASK_WEB_FETCH_LIMIT",
                         DEFAULT_TASK_WEB_FETCH_LIMIT,
                     ),
-                    web_image_limit=_positive_int(
-                        "PUMPKIN_TASK_WEB_IMAGE_LIMIT",
-                        DEFAULT_TASK_WEB_IMAGE_LIMIT,
+                    web_download_limit=_positive_int(
+                        "PUMPKIN_TASK_WEB_DOWNLOAD_LIMIT",
+                        _positive_int(
+                            "PUMPKIN_TASK_WEB_IMAGE_LIMIT",
+                            DEFAULT_TASK_WEB_DOWNLOAD_LIMIT,
+                        ),
                     ),
+                    browser_delegate_limit=_positive_int(
+                        "PUMPKIN_TASK_BROWSER_DELEGATE_LIMIT",
+                        DEFAULT_TASK_BROWSER_DELEGATE_LIMIT,
+                    ),
+                ),
+            ),
+            browser=BrowserConfig(
+                enabled=browser_enabled,
+                socket_path=(
+                    _env(
+                        "PUMPKIN_BROWSER_WORKER_SOCKET",
+                        "/run/pumpkin-browser/control.sock",
+                    )
+                    or "/run/pumpkin-browser/control.sock"
+                ),
+                worker_token=_env("PUMPKIN_BROWSER_WORKER_TOKEN"),
+                timeout_seconds=float(
+                    os.getenv(
+                        "PUMPKIN_BROWSER_TIMEOUT_SECONDS",
+                        str(DEFAULT_BROWSER_TIMEOUT_SECONDS),
+                    )
+                ),
+                max_steps=_positive_int(
+                    "PUMPKIN_BROWSER_MAX_STEPS",
+                    DEFAULT_BROWSER_MAX_STEPS,
+                ),
+                max_mcp_calls=_positive_int(
+                    "PUMPKIN_BROWSER_MAX_MCP_CALLS",
+                    DEFAULT_BROWSER_MAX_MCP_CALLS,
                 ),
             ),
             web=WebConfig(
@@ -500,10 +611,13 @@ class PumpkinConfig:
                 max_fetch_bytes=int(
                     os.getenv("PUMPKIN_FETCH_MAX_BYTES", str(1_048_576))
                 ),
-                max_image_bytes=int(
+                max_download_bytes=int(
                     os.getenv(
-                        "PUMPKIN_IMAGE_FETCH_MAX_BYTES",
-                        str(DEFAULT_WEB_IMAGE_MAX_BYTES),
+                        "PUMPKIN_WEB_DOWNLOAD_MAX_BYTES",
+                        os.getenv(
+                            "PUMPKIN_IMAGE_FETCH_MAX_BYTES",
+                            str(DEFAULT_WEB_DOWNLOAD_MAX_BYTES),
+                        ),
                     )
                 ),
                 max_fetch_chars=int(os.getenv("PUMPKIN_FETCH_MAX_CHARS", "30000")),

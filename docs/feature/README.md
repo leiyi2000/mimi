@@ -30,3 +30,5 @@
 | [Pumpkin Qwen 本地语音 Provider](20261027-pumpkin-qwen-audio-provider/design.md) | - | - | implemented |
 | [Pumpkin 表情包收集与发送](20261027-pumpkin-sticker-library/design.md) | - | - | implemented |
 | [Pumpkin 任务通知与音频交付收敛](20261027-pumpkin-task-notification-convergence/design.md) | - | - | implemented |
+| [Pumpkin 公网抓取 wreq Transport](20261028-pumpkin-wreq-web-transport/design.md) | - | - | implemented |
+| [Pumpkin Browser Agent 与 Obscura MCP](20261028-pumpkin-obscura-browser/design.md) | - | - | implemented |

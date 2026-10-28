@@ -58,11 +58,15 @@ Pumpkin 是 Mimi 的 QQ 群聊和私聊 AI 插件。每条消息先写入
 | `PUMPKIN_CHAT_TIMEOUT_SECONDS`、`PUMPKIN_TASK_TIMEOUT_SECONDS` | 单次聊天和任务模型请求超时；聊天默认 60 秒且超时不重试 |
 | `PUMPKIN_SINGLE_TASK_TIMEOUT_SECONDS` | 单个任务总执行时限 |
 | `PUMPKIN_MAX_STEPS`、`PUMPKIN_TASK_MAX_STEPS`、`PUMPKIN_TASK_FINALIZATION_STEPS` | Conversation Agent 与 Task Executor 的最大模型步骤数默认分别为 36 和 16；任务在 50% 和 75% 时提醒模型收敛，最后 2 步只允许提交完成状态 |
-| `PUMPKIN_TASK_WEB_SEARCH_LIMIT`、`PUMPKIN_TASK_WEB_FETCH_LIMIT`、`PUMPKIN_TASK_WEB_IMAGE_LIMIT` | 单个 Task Turn 的搜索、抓页和图片下载上限，默认 4、8、4 |
+| `PUMPKIN_TASK_WEB_SEARCH_LIMIT`、`PUMPKIN_TASK_WEB_FETCH_LIMIT`、`PUMPKIN_TASK_WEB_DOWNLOAD_LIMIT` | 单个 Task Turn 的搜索、抓页和文件下载上限，默认 4、8、4 |
+| `PUMPKIN_TASK_BROWSER_DELEGATE_LIMIT` | 单个 Task Turn 的 Browser Agent 委派上限，默认 2 |
+| `PUMPKIN_WEB_DOWNLOAD_MAX_BYTES` | 单个公网文件下载上限，默认 20 MiB |
 | `PUMPKIN_CHAT_FALLBACK_BASE_URLS`、`PUMPKIN_TASK_FALLBACK_BASE_URLS` | 逗号分隔的备用端点 |
 | `PUMPKIN_SEARCH_API_URL`、`PUMPKIN_SEARCH_API_KEY` | 可选网页搜索服务，未配置时明确返回未配置 |
 | `PUMPKIN_FETCH_MAX_BYTES`、`PUMPKIN_IMAGE_FETCH_MAX_BYTES` | 网页正文与网页图片的独立下载上限，默认分别为 1 MiB 和 20 MiB |
 | `PUMPKIN_WEB_MODEL_CONTENT_MAX_CHARS`、`PUMPKIN_WEB_HOST_CONCURRENCY` | 模型可见单页 Web 结果上限和同 host HTTP 并发，默认 8000 字符、2 并发 |
+| `PUMPKIN_BROWSER_ENABLED`、`PUMPKIN_BROWSER_WORKER_SOCKET`、`PUMPKIN_BROWSER_WORKER_TOKEN` | 可选隔离 Browser Agent 开关、UDS 路径和 Worker 认证 Token |
+| `PUMPKIN_BROWSER_REASONING_EFFORT`、`PUMPKIN_BROWSER_TIMEOUT_SECONDS`、`PUMPKIN_BROWSER_MAX_STEPS`、`PUMPKIN_BROWSER_MAX_MCP_CALLS` | Browser Agent 独立模型推理深度、总时限、模型步骤和 MCP 调用预算；默认 `low`、180 秒、24、20 |
 | `PUMPKIN_CODE_RUNNER_URL`、`PUMPKIN_CODE_RUNNER_TOKEN` | 独立代码沙箱服务，默认使用 Compose 内部地址 |
 | `PUMPKIN_IMAGE_PROVIDER`、`PUMPKIN_IMAGE_API_BASE_URL`、`PUMPKIN_IMAGE_API_KEY`、`PUMPKIN_IMAGE_MODEL` | 可选图片生成适配器 |
 | `PUMPKIN_AUDIO_PROVIDER`、`PUMPKIN_AUDIO_API_BASE_URL` | 可选 TTS 适配器，支持 `minimax` 和 `qwen-local` |
@@ -84,6 +88,21 @@ Conversation Agent 的稳定决策原则和有个人边界的亲近人格由独�
 [`docs/feature/20261023-pumpkin-task-performance/design.md`](../../docs/feature/20261023-pumpkin-task-performance/design.md)。
 终态交付、稳定验收条件和纠正计数设计见
 [`docs/feature/20261023-pumpkin-delivery-gating/design.md`](../../docs/feature/20261023-pumpkin-delivery-gating/design.md)。
+
+`search_web` 使用 `httpx` 访问配置的搜索 API。`fetch_url` 使用固定 Chrome Linux
+Profile 的 `wreq` Transport 读取任意公网来源，并通过 `output=text|artifact`
+区分网页正文与通用文件 Artifact。不同 URL 的文件支持并发下载，单 host 并发仍受配置
+限制；同一 URL 会在 Turn 内去重。抓取仍会拒绝内网地址，逐跳校验并固定 DNS，限制重定向
+和响应大小；传输失败不会自动回退到 `httpx`。该能力不执行 JavaScript，也不能通过验证码
+或站点挑战。
+
+动态网页、公开页面交互、截图和 PDF 可按需加载 `browser-delegation` Skill。Task Agent
+只调用高层 `delegate_browser_task`；每次委派由 `browser-worker` 从
+`plugins/pumpkin/browser/` 镜像启动一个全新的 Obscura stdio MCP 进程，结束后强制回收。
+Worker 通过共享 Unix Domain Socket 与 Mimi 通信，只加入独立公网出站网络，不读取 Mimi
+密钥、数据库或插件数据。首版全局并发为 1，容量满时明确拒绝。启用前设置独立随机 Token，
+并使用 `docker compose --profile browser build --pull browser-worker` 构建镜像；未启用时
+该 Skill 不进入能力目录，不影响 `search_web` 和 `fetch_url`。
 
 网页搜索、代码执行、图片生成、HTML 图文渲染、Markdown 报告渲染和音频合成均为按需
 Skill。Markdown 渲染支持标题、引用、列表、表格、代码块和来源链接；配图只引用当前

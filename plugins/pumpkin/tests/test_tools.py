@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import replace
 from datetime import datetime, UTC
@@ -22,7 +23,12 @@ from core.domain import (
     ToolContext,
     ToolResult,
 )
-from core.tools import Tool, ToolRegistry
+from core.tools import (
+    Tool,
+    ToolBudgetKind,
+    ToolExecutionPolicy,
+    ToolRegistry,
+)
 from providers.audio import GeneratedAudio, VoiceSummary
 from providers.media import FetchedMedia
 from runtime.app import PumpkinRuntime
@@ -216,6 +222,122 @@ async def test_tool_registry_enforces_string_length_constraints():
     assert not called
 
 
+@pytest.mark.asyncio
+async def test_tool_registry_applies_argument_specific_execution_policy():
+    calls = 0
+    cached = ToolResult(content={"cached": True})
+
+    async def handler(context, arguments):
+        nonlocal calls
+        del context, arguments
+        calls += 1
+        return ToolResult(content={"ok": True})
+
+    def policy(arguments):
+        download = arguments.get("output") == "artifact"
+        return ToolExecutionPolicy(
+            read_only=not download,
+            parallel_safe=True,
+            idempotency_required=download,
+            budget_kind=(
+                ToolBudgetKind.WEB_DOWNLOAD
+                if download
+                else ToolBudgetKind.WEB_FETCH
+            ),
+        )
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            name="fetch_url",
+            description="test",
+            input_schema={
+                "type": "object",
+                "required": ["url"],
+                "properties": {
+                    "url": {"type": "string"},
+                    "output": {
+                        "type": "string",
+                        "enum": ["text", "artifact"],
+                    },
+                    "idempotency_key": {"type": "string"},
+                },
+            },
+            handler=handler,
+            policy_resolver=policy,
+        )
+    )
+
+    text = await registry.execute(
+        "fetch_url",
+        tool_context(run_id="text-run"),
+        {"url": "https://public.example"},
+    )
+    missing_key = await registry.execute(
+        "fetch_url",
+        tool_context(run_id="image-run"),
+        {"url": "https://public.example/file.zip", "output": "artifact"},
+    )
+
+    async def get_cached(key):
+        assert key.endswith(":image-key")
+        return cached
+
+    image = await registry.execute(
+        "fetch_url",
+        tool_context(run_id="image-run"),
+        {
+            "url": "https://public.example/file.zip",
+            "output": "artifact",
+            "idempotency_key": "image-key",
+        },
+        idempotency=get_cached,
+    )
+
+    assert text.content == {"ok": True}
+    assert missing_key.error_code == "INVALID_TOOL_ARGUMENTS"
+    assert image is cached
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_tool_registry_allows_parallel_safe_writes():
+    active = 0
+    max_active = 0
+
+    async def handler(context, arguments):
+        nonlocal active, max_active
+        del context, arguments
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.02)
+        active -= 1
+        return ToolResult(content={"ok": True})
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            name="download",
+            description="test",
+            input_schema={"type": "object"},
+            handler=handler,
+            policy_resolver=lambda arguments: ToolExecutionPolicy(
+                read_only=False,
+                parallel_safe=True,
+                idempotency_required=False,
+                budget_kind=None,
+            ),
+        )
+    )
+
+    await asyncio.gather(
+        registry.execute("download", tool_context(run_id="run-1"), {}),
+        registry.execute("download", tool_context(run_id="run-2"), {}),
+    )
+
+    assert max_active == 2
+
+
 def test_create_task_requires_a_short_natural_acknowledgement():
     runtime = PumpkinRuntime(PumpkinConfig.from_env(), client=object())
     schema = runtime.registry.get("create_task").input_schema
@@ -299,6 +421,68 @@ def test_task_manager_tools_are_not_registered():
 
     assert "request_chat_reply" not in runtime.registry.names()
     assert "task_manager_turn_complete" not in runtime.registry.names()
+
+
+def test_fetch_url_unifies_text_and_download_modes():
+    runtime = PumpkinRuntime(PumpkinConfig.from_env(), client=object())
+
+    assert "download_web_image" not in runtime.registry.names()
+    tool = runtime.registry.get("fetch_url")
+    assert tool.input_schema["properties"]["output"]["enum"] == [
+        "text",
+        "artifact",
+    ]
+    assert tool.policy_for({}).budget_kind is ToolBudgetKind.WEB_FETCH
+    download_policy = tool.policy_for({"output": "artifact"})
+    assert download_policy.budget_kind is ToolBudgetKind.WEB_DOWNLOAD
+    assert download_policy.idempotency_required
+    assert download_policy.parallel_safe
+    assert not download_policy.read_only
+
+
+def test_fetch_url_sanitizes_download_filename():
+    filename = PumpkinRuntime(
+        PumpkinConfig.from_env(),
+        client=object(),
+    ).web_plugin._download_filename(
+        "https://public.example/files/ignored.bin",
+        "application/pdf",
+        'attachment; filename="../../report final.pdf"',
+        "download-key",
+    )
+
+    assert filename.startswith("web-download-")
+    assert filename.endswith("-report-final.pdf")
+    assert ".." not in filename
+    assert "/" not in filename
+
+
+@pytest.mark.asyncio
+async def test_fetch_url_dispatches_both_outputs_through_one_handler():
+    runtime = PumpkinRuntime(PumpkinConfig.from_env(), client=object())
+    text_result = ToolResult(content={"text": "page"})
+    file_result = ToolResult(content={"artifact_id": "file-1"})
+    runtime.web_plugin._fetch_text = AsyncMock(return_value=text_result)
+    runtime.web_plugin.download_file = AsyncMock(return_value=file_result)
+    handler = runtime.registry.get("fetch_url").handler
+
+    text = await handler(
+        tool_context(run_id="text-run"),
+        {"url": "https://public.example/page"},
+    )
+    downloaded = await handler(
+        tool_context(run_id="image-run", task_id="task-1", revision=1),
+        {
+            "url": "https://public.example/archive.zip",
+            "output": "artifact",
+            "idempotency_key": "file-1",
+        },
+    )
+
+    assert text is text_result
+    assert downloaded is file_result
+    runtime.web_plugin._fetch_text.assert_awaited_once()
+    runtime.web_plugin.download_file.assert_awaited_once()
 
 
 def test_long_reply_threshold_is_explicit():

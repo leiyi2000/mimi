@@ -8,7 +8,7 @@
 
 Mimi 是基于 NapCat/OneBot 的插件化 QQ 机器人。仓库采用单仓库、多进程结构：
 
-- Docker Compose 提供 NapCat、网易云 API、QIMEI 和 Mimi。
+- Docker Compose 提供 NapCat、网易云 API、QIMEI、Mimi，以及可选的代码与浏览器 Worker。
 - Mimi 根进程扫描 `plugins/*`，校验命令清单并启动插件子进程。
 - 每个插件拥有独立 Python 环境、NapCat WebSocket、业务代码和运行数据。
 - 插件之间不直接导入；共享的是环境变量、NapCat 服务和明确的 HTTP 服务。
@@ -45,6 +45,8 @@ flowchart LR
     APEX --> EA[EA / ALS API]
     MUSIC --> NCM[ncm-api]
     MUSIC --> SIGN[音乐卡片签名服务]
+    PUMPKIN --> BW[Browser Worker]
+    BW --> WEB[公网网页]
 ```
 
 ## 运行视图
@@ -55,6 +57,8 @@ flowchart LR
 | `ncm-api` | 网易云搜索、登录和账户接口 | 外部服务状态 |
 | `qimei` | 通过 Unidbg 与原生库注册 QIMEI36 | `data/qimei/` 仅缓存 APK |
 | `mimi` | 根进程与全部插件子进程 | 插件数据卷 |
+| `code-runner` | Pumpkin 隔离代码执行 | 单次请求临时目录 |
+| `browser-worker` | Pumpkin 单租约 Obscura stdio MCP 进程 | 单次委派临时目录 |
 
 `mimi/main.py` 创建 `PluginManager`。管理器扫描 `plugins/` 的直接子目录，读取
 `commands.toml` 并做全局、大小写不敏感的命令去重，然后在每个插件目录执行
@@ -77,6 +81,7 @@ plugins/
   music/                  # 网易云搜索、登录与音乐卡片
   yasuo/                  # 群消息归档、撤回海报与查询 API
   pumpkin/                # Harness Agent、TaskRuntime、Artifact 与能力插件
+    browser/              # 隔离 Browser Worker、UDS 协议与 Obscura 生命周期
 qimei/
   src/main/java/qimei/    # QIMEI HTTP、APK 校验、Unidbg 调用
 ```
@@ -157,6 +162,23 @@ Pumpkin 音频能力在启动时选择 `MinimaxAudioProvider` 或
 指针由 Pumpkin 原子持久化。MiniMax ASR 独立装配，可与任一 TTS Provider 组合。
 完整任务只交付一个音频 Artifact 时，交付层使用不带引用、@ 或重复完成文案的单条
 `record` 消息；部分完成和异常结果仍保留必要说明。
+
+Pumpkin 的 `search_web` 继续通过 `httpx` 调用受认证搜索 API；`fetch_url` 对任意公网
+来源的 GET 请求则由 `WreqWebTransport` 承担，并以 `output=text|artifact`
+区分网页正文与通用文件 Artifact。文件下载写入独立 Artifact，允许不同 URL 并发执行；
+同一 URL 由 Turn 预算去重。该 Transport 固定 Chrome Linux Profile，禁用系统代理和自动
+重定向，并在每次请求前解析、校验并固定全部公网 DNS 地址。重定向由 Provider 有界处理，
+每个目标重新执行 DNS 校验；响应按页面和文件各自上限流式读取。`wreq` 对象与异常不会
+越过 Provider 边界，也不会失败后静默回退到 `httpx`。
+
+需要 JavaScript、公开页面交互、截图或 PDF 时，Task Agent 只调用高层
+`delegate_browser_task`。Mimi 内的短生命周期 Browser Agent 使用独立模型上下文和受控
+MCP 工具集，通过共享 Unix Domain Socket 调用 `browser-worker`。Worker 每次委派启动一个
+全新的 Obscura stdio MCP 子进程，拥有唯一 lease、临时 HOME、DOM、Cookie、Storage 和
+元素引用；终态、取消或超时后强制回收。Worker 不挂载插件数据或 Mimi secrets，只加入
+独立公网出站网络；Mimi 不加入该网络。公网 URL 在 Mimi 与 Worker 两侧校验，原始
+selector、脚本、Cookie、Header、Storage 和高影响操作不进入工具契约。截图和 PDF 返回
+Mimi 后写入当前 Task revision 的 Artifact，再走既有验收与 Outbox 交付。
 
 Pumpkin 的有效数据路径只有：
 

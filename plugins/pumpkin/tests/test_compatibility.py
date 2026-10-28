@@ -71,7 +71,7 @@ def test_time_defaults_are_bounded_for_interactive_runtime(monkeypatch):
     assert config.task.single_task_timeout_seconds == 900
     assert config.web.timeout_seconds == 10
     assert config.web.max_fetch_bytes == 1024 * 1024
-    assert config.web.max_image_bytes == 20 * 1024 * 1024
+    assert config.web.max_download_bytes == 20 * 1024 * 1024
     assert config.code.timeout_seconds == 20
     assert config.image.timeout_seconds == 90
     assert config.audio.timeout_seconds == 90

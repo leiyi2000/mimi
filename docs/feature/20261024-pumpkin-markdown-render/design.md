@@ -21,7 +21,8 @@ Artifact。适合旅行攻略、调研摘要、清单、表格和代码说明等
 - Markdown 原始 HTML 不执行；脚本、iframe 和事件属性不会进入渲染树。
 - 普通 HTTP(S) 链接可以作为可见来源保留，但图片只接受当前任务和 revision 下的
   `artifact://<artifact_id>`。
-- 公网图片先由 `download_web_image` 下载并验证，再把返回的 Artifact ID 写入 Markdown。
+- 公网图片先由 `fetch_url(output=artifact)` 下载并验证，再把返回的 Artifact ID
+  写入 Markdown。
 - 单次最多引用 8 张图片，Markdown 长度、输出宽度和设备像素比均有确定性上限。
 
 ## 3. 调用链
@@ -40,7 +41,7 @@ Task Executor
 图片来自公开 URL 时：
 
 ```text
-download_web_image(url)
+fetch_url(url, output=artifact)
   -> image Artifact
   -> ![说明](artifact://<artifact_id>)
   -> render_markdown

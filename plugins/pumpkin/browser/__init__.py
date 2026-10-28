@@ -1,0 +1,1 @@
+"""Isolated Obscura browser worker."""

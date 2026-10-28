@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-import httpx
 import pytest
 
-from providers.web import WebProviderError, WebSearchProvider
+from providers.web import (
+    WebProviderError,
+    WebSearchProvider,
+    WebTransportResponse,
+)
 from sandbox.app import MAX_FILE_BYTES, MAX_TOTAL_FILE_BYTES, execute, validate_script
 
 
@@ -49,7 +52,7 @@ async def test_search_provider_requires_explicit_api_key():
         timeout=1,
         max_results=3,
         max_fetch_bytes=100_000,
-        max_image_bytes=5 * 1024 * 1024,
+        max_download_bytes=5 * 1024 * 1024,
         max_fetch_chars=1_000,
     )
     with pytest.raises(WebProviderError, match="SEARCH_NOT_CONFIGURED"):
@@ -57,50 +60,51 @@ async def test_search_provider_requires_explicit_api_key():
 
 
 @pytest.mark.asyncio
-async def test_image_download_has_a_separate_size_limit(monkeypatch):
+async def test_file_download_has_a_separate_size_limit():
     body = b"x" * (6 * 1024 * 1024)
 
-    def respond(request: httpx.Request) -> httpx.Response:
-        content_type = (
-            "text/plain"
-            if request.url.path.endswith(".txt")
-            else "image/jpeg"
-        )
-        return httpx.Response(
-            200,
-            headers={
-                "content-type": content_type,
-                "content-length": str(len(body)),
-            },
-            content=body,
-            request=request,
-        )
+    class Transport:
+        async def get(self, url, *, headers, max_bytes):
+            if len(body) > max_bytes:
+                raise WebProviderError("FETCH_TOO_LARGE")
+            if url.endswith(".txt"):
+                content_type = "text/plain"
+            elif url.endswith(".zip"):
+                content_type = "application/zip"
+            else:
+                content_type = "image/jpeg"
+            return WebTransportResponse(
+                200,
+                url,
+                {
+                    "content-type": content_type,
+                    "content-length": str(len(body)),
+                },
+                body,
+            )
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-        provider = WebSearchProvider(
-            api_url="https://example.invalid/search",
-            api_key=None,
-            timeout=1,
-            max_results=3,
-            max_fetch_bytes=1024 * 1024,
-            max_image_bytes=20 * 1024 * 1024,
-            max_fetch_chars=1_000,
-            client=client,
-        )
+    provider = WebSearchProvider(
+        api_url="https://example.invalid/search",
+        api_key=None,
+        timeout=1,
+        max_results=3,
+        max_fetch_bytes=1024 * 1024,
+        max_download_bytes=20 * 1024 * 1024,
+        max_fetch_chars=1_000,
+        web_transport=Transport(),
+    )
 
-        async def allow_public_url(url: str) -> None:
-            assert url in {
-                "https://assets.example/image.jpg",
-                "https://assets.example/page.txt",
-            }
+    downloaded = await provider.download_file(
+        "https://assets.example/image.jpg"
+    )
+    assert downloaded.content_type == "image/jpeg"
+    assert downloaded.content == body
 
-        monkeypatch.setattr(provider, "_validate_public_url", allow_public_url)
+    archive = await provider.download_file(
+        "https://assets.example/archive.zip"
+    )
+    assert archive.content_type == "application/zip"
+    assert archive.content == body
 
-        _, content_type, content = await provider.download_image(
-            "https://assets.example/image.jpg"
-        )
-        assert content_type == "image/jpeg"
-        assert content == body
-
-        with pytest.raises(WebProviderError, match="FETCH_TOO_LARGE"):
-            await provider.fetch("https://assets.example/page.txt")
+    with pytest.raises(WebProviderError, match="FETCH_TOO_LARGE"):
+        await provider.fetch("https://assets.example/page.txt")

@@ -23,7 +23,7 @@ Pumpkin 当前对不同产物使用以下单文件限制：
 
 ### 2.1 网页图片
 
-- `WebConfig.max_image_bytes` 默认值从 5 MiB 改为 20 MiB。
+- 公网下载上限现由 `WebConfig.max_download_bytes` 表达，默认 20 MiB。
 - `PUMPKIN_IMAGE_FETCH_MAX_BYTES` 的环境回退值和 `.env.example` 同步改为
   `20971520`。
 - `WebSearchProvider` 现有 20 MiB 硬上限保持不变。

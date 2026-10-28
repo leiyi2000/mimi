@@ -30,13 +30,17 @@ def registry():
             "web-search",
             frozenset({AgentRole.CHAT, AgentRole.TASK}),
         ),
-        ("download_web_image", "web-search", frozenset({AgentRole.TASK})),
         ("execute_code", "code-execution", frozenset({AgentRole.TASK})),
         ("generate_image", "image-render", frozenset({AgentRole.TASK})),
         ("generate_audio", "audio-render", frozenset({AgentRole.TASK})),
         ("clone_voice", "audio-render", frozenset({AgentRole.TASK})),
         ("render_html", "html-render", frozenset({AgentRole.TASK})),
         ("render_markdown", "markdown-render", frozenset({AgentRole.TASK})),
+        (
+            "delegate_browser_task",
+            "browser-delegation",
+            frozenset({AgentRole.TASK}),
+        ),
     ):
         value.register(
             Tool(
@@ -62,6 +66,7 @@ def test_skill_catalog_and_role_boundaries():
     }
     assert {item["skill_name"] for item in skills.catalog(AgentRole.TASK)} == {
         "audio-render",
+        "browser-delegation",
         "code-execution",
         "group-history",
         "image-render",

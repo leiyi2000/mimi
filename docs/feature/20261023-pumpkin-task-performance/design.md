@@ -10,7 +10,7 @@ commits: []
 ## 1. 背景
 
 Pumpkin 的长任务曾允许 Task Agent 使用与 Conversation Agent 相同的 36 个模型步骤，
-网页搜索、正文抓取和图片下载也没有单任务调用上限。模型可以重复读取同一 URL，并把每次
+网页搜索、正文抓取和文件下载也没有单任务调用上限。模型可以重复读取同一 URL，并把每次
 抓取的完整正文持续带入后续模型请求。慢任务的主要耗时因此来自过多模型回合和重复 Web
 调用，而不是任务排队。
 
@@ -40,12 +40,12 @@ Task Agent 的 Web 工具预算由强类型 `TaskBudgetConfig` 和 `ToolBudgetKi
 | 工具类别 | 默认单 Turn 上限 |
 | --- | ---: |
 | `search_web` | 4 |
-| `fetch_url` | 8 |
-| `download_web_image` | 4 |
+| `fetch_url(output=text)` | 8 |
+| `fetch_url(output=artifact)` | 4 |
 
-工具定义声明自己的预算类别；AgentLoop 不按工具名猜测类别。预算状态只存在于当前 Turn，
-不会跨任务或跨 Turn 污染。超限调用返回不可重试的 `TOOL_BUDGET_EXHAUSTED`，让模型使用
-已有结果完成或部分完成任务。
+工具定义按调用参数解析预算类别；AgentLoop 不按工具名猜测类别。预算状态只存在于当前
+Turn，不会跨任务或跨 Turn 污染。超限调用返回不可重试的
+`TOOL_BUDGET_EXHAUSTED`，让模型使用已有结果完成或部分完成任务。
 
 ## 3. URL 去重与失败熔断
 
@@ -78,7 +78,7 @@ HTTP `408`、`429` 和 `5xx` 才标记为可重试。其他 `4xx`、内容类型
 
 ## 5. HTTP 可观测性
 
-`WebSearchProvider` 对搜索、抓页和图片下载的每次 HTTP 尝试记录单行
+`WebSearchProvider` 对搜索、抓页和文件下载的每次 HTTP 尝试记录单行
 `pumpkin_web_http` 事件，字段仅包括：
 
 - `operation`；

@@ -29,8 +29,10 @@ Markdown 原始 HTML 不会执行。普通 HTTP(S) 链接可以作为来源保�
 `![说明](artifact://<artifact_id>)`，并且 Artifact 必须属于当前任务和 revision。
 
 图片来自公开网络 URL 时，任务必须同时获得 `web-search` 和 `markdown-render` 授权。
-先加载 `web-search`，调用 `download_web_image` 下载并校验图片，再把返回的 Artifact ID
-写入 Markdown。不要把 HTTP(S)、本地路径或 data URL 直接写入 Markdown 图片语法。
+先加载 `web-search`，调用
+`fetch_url(output="artifact", idempotency_key="...")` 下载并校验图片，再把返回的
+Artifact ID 写入 Markdown。不要把 HTTP(S)、本地路径或 data URL 直接写入 Markdown
+图片语法。
 
 渲染成功后，将返回的 Artifact ID 写入 `complete_task.artifact_ids`。Task Executor
 不能调用 `send_task_delivery`；Runtime 会在任务完成验收后交付 Artifact。不能把

@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import mimetypes
+import re
+from email.message import Message
+from enum import StrEnum
+from pathlib import PurePosixPath
 from typing import Any, cast
+from urllib.parse import unquote, urlsplit
 
 from core.config import PumpkinConfig
 from core.domain import AgentRole, ToolContext, ToolResult
@@ -9,12 +15,34 @@ from core.plugins import PluginContext, ServiceKey
 from core.tools import (
     Tool,
     ToolBudgetKind,
+    ToolExecutionPolicy,
     ToolRegistry,
     TraceCallback,
 )
 from providers.web import WebProviderError, WebSearchProvider
 
 from .base import CapabilityHost, error, ok, result, task_error
+
+
+class WebFetchOutput(StrEnum):
+    TEXT = "text"
+    ARTIFACT = "artifact"
+
+
+def _fetch_policy(arguments: dict[str, Any]) -> ToolExecutionPolicy:
+    if arguments.get("output", WebFetchOutput.TEXT) == WebFetchOutput.ARTIFACT:
+        return ToolExecutionPolicy(
+            read_only=False,
+            parallel_safe=True,
+            idempotency_required=True,
+            budget_kind=ToolBudgetKind.WEB_DOWNLOAD,
+        )
+    return ToolExecutionPolicy(
+        read_only=True,
+        parallel_safe=True,
+        idempotency_required=False,
+        budget_kind=ToolBudgetKind.WEB_FETCH,
+    )
 
 
 class WebCapabilityPlugin:
@@ -47,7 +75,7 @@ class WebCapabilityPlugin:
             timeout=config.web.timeout_seconds,
             max_results=config.web.max_results,
             max_fetch_bytes=config.web.max_fetch_bytes,
-            max_image_bytes=config.web.max_image_bytes,
+            max_download_bytes=config.web.max_download_bytes,
             max_fetch_chars=config.web.max_fetch_chars,
             max_host_concurrency=config.web.max_host_concurrency,
             trace=self.trace,
@@ -77,51 +105,36 @@ class WebCapabilityPlugin:
                 Tool(
                     name="fetch_url",
                     description=(
-                        "读取一个公开网页用于核对搜索结果；"
-                        "会阻止私网地址、二进制和不安全重定向。"
+                        "访问公开 URL。output=text 读取网页正文；"
+                        "任务中使用 output=artifact 下载通用文件并登记 Artifact，"
+                        "此模式必须提供 idempotency_key。"
                     ),
                     input_schema={
                         "type": "object",
                         "required": ["url"],
-                        "properties": {"url": {"type": "string"}},
-                    },
-                    handler=self.fetch,
-                    skill_name="web-search",
-                    timeout=25,
-                    allowed_roles=frozenset({AgentRole.CHAT, AgentRole.TASK}),
-                    budget_kind=ToolBudgetKind.WEB_FETCH,
-                    deduplicate_argument="url",
-                    model_content_max_chars=(config.web.max_model_content_chars),
-                )
-            )
-        )
-        context.effect(
-            registry.register(
-                Tool(
-                    name="download_web_image",
-                    description=(
-                        "下载一个公开图片 URL，校验后登记为当前任务的图片 Artifact。"
-                    ),
-                    input_schema={
-                        "type": "object",
-                        "required": ["url", "idempotency_key"],
                         "properties": {
                             "url": {"type": "string"},
+                            "output": {
+                                "type": "string",
+                                "enum": [
+                                    WebFetchOutput.TEXT,
+                                    WebFetchOutput.ARTIFACT,
+                                ],
+                            },
                             "idempotency_key": {"type": "string"},
                         },
                     },
-                    handler=lambda tool_context, arguments: self.download_image(
+                    handler=lambda tool_context, arguments: self.fetch(
                         host,
                         tool_context,
                         arguments,
                     ),
                     skill_name="web-search",
-                    read_only=False,
                     timeout=35,
-                    idempotency_required=True,
-                    allowed_roles=frozenset({AgentRole.TASK}),
-                    budget_kind=ToolBudgetKind.WEB_IMAGE,
+                    allowed_roles=frozenset({AgentRole.CHAT, AgentRole.TASK}),
                     deduplicate_argument="url",
+                    model_content_max_chars=(config.web.max_model_content_chars),
+                    policy_resolver=_fetch_policy,
                 )
             )
         )
@@ -162,6 +175,17 @@ class WebCapabilityPlugin:
         )
 
     async def fetch(
+        self,
+        host: CapabilityHost,
+        context: ToolContext,
+        arguments: dict[str, Any],
+    ) -> ToolResult:
+        output = WebFetchOutput(arguments.get("output", WebFetchOutput.TEXT))
+        if output is WebFetchOutput.ARTIFACT:
+            return await self.download_file(host, context, arguments)
+        return await self._fetch_text(context, arguments)
+
+    async def _fetch_text(
         self,
         context: ToolContext,
         arguments: dict[str, Any],
@@ -208,7 +232,7 @@ class WebCapabilityPlugin:
             }
         )
 
-    async def download_image(
+    async def download_file(
         self,
         host: CapabilityHost,
         context: ToolContext,
@@ -218,7 +242,7 @@ class WebCapabilityPlugin:
             return invalid
         key = host.idempotency_key(
             context,
-            "web-image",
+            "web-download",
             str(arguments["idempotency_key"]),
         )
         cached = await host.store.idempotency_get(key)
@@ -226,49 +250,49 @@ class WebCapabilityPlugin:
             return ok(cached)
         url = str(arguments.get("url", "")).strip()
         if not url:
-            return error("图片 URL 不能为空", "IMAGE_URL_INVALID")
+            return error("下载 URL 不能为空", "DOWNLOAD_URL_INVALID")
         try:
-            final_url, content_type, content = await self._provider().download_image(
-                url
+            downloaded = await self._provider().download_file(url)
+            filename = self._download_filename(
+                downloaded.url,
+                downloaded.content_type,
+                downloaded.content_disposition,
+                key,
             )
-            extension = {
-                "image/jpeg": "jpg",
-                "image/png": "png",
-                "image/webp": "webp",
-                "image/gif": "gif",
-            }.get(content_type)
-            if extension is None:
-                return error(
-                    "只支持 PNG、JPEG、WebP 或 GIF 图片",
-                    "IMAGE_CONTENT_UNSUPPORTED",
-                )
+            kind = (
+                "image"
+                if downloaded.content_type
+                in {"image/gif", "image/jpeg", "image/png", "image/webp"}
+                else "file"
+            )
             artifact = await host.write_artifact(
                 context,
-                filename=(
-                    "web-image-"
-                    f"{hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]}"
-                    f".{extension}"
-                ),
-                kind="image",
-                content=content,
-                source_ref={"url": final_url},
-                strategy_ref={"tool": "download_web_image"},
+                filename=filename,
+                kind=kind,
+                content=downloaded.content,
+                source_ref={
+                    "url": downloaded.url,
+                    "content_type": downloaded.content_type,
+                },
+                strategy_ref={
+                    "tool": "fetch_url",
+                    "output": WebFetchOutput.ARTIFACT,
+                },
             )
         except WebProviderError as exc:
             suggested_action = {
-                "FETCH_CONTENT_REJECTED": "改用搜索结果中的其他图片 URL。",
-                "FETCH_HTTP_ERROR": "改用其他公开图片来源。",
-                "FETCH_NOT_FOUND": "图片不存在，改用其他公开图片来源。",
-                "FETCH_AUTH_FAILED": "图片需要授权，改用公开图片来源。",
-                "FETCH_RATE_LIMITED": "图片来源正在限流，稍后重试或更换来源。",
-                "FETCH_TIMEOUT": "图片来源响应超时，稍后重试或更换来源。",
-                "FETCH_UPSTREAM_ERROR": "图片来源暂时异常，稍后重试或更换来源。",
-                "FETCH_PRIVATE_ADDRESS": "改用公网图片来源。",
-                "FETCH_TOO_LARGE": "改用较小的图片。",
-            }.get(exc.code, "改用其他公开图片来源。")
+                "FETCH_HTTP_ERROR": "改用其他公开文件来源。",
+                "FETCH_NOT_FOUND": "文件不存在，改用其他公开来源。",
+                "FETCH_AUTH_FAILED": "文件需要授权，改用公开来源。",
+                "FETCH_RATE_LIMITED": "文件来源正在限流，稍后重试或更换来源。",
+                "FETCH_TIMEOUT": "文件来源响应超时，稍后重试或更换来源。",
+                "FETCH_UPSTREAM_ERROR": "文件来源暂时异常，稍后重试或更换来源。",
+                "FETCH_PRIVATE_ADDRESS": "改用公网文件来源。",
+                "FETCH_TOO_LARGE": "改用较小的文件。",
+            }.get(exc.code, "改用其他公开文件来源。")
             return error(
                 {
-                    "message": "图片无法安全下载。",
+                    "message": "文件无法安全下载。",
                     "reason_code": exc.code,
                     "status_code": exc.status_code,
                     "retry_after": exc.retry_after,
@@ -278,12 +302,13 @@ class WebCapabilityPlugin:
                 retryable=exc.retryable,
             )
         except (OSError, ValueError) as exc:
-            return error(str(exc), "IMAGE_ARTIFACT_WRITE_FAILED")
+            return error(str(exc), "DOWNLOAD_ARTIFACT_WRITE_FAILED")
         payload = {
             "artifact_id": artifact.artifact_id,
             "name": artifact.name,
             "size_bytes": artifact.size_bytes,
-            "source_url": final_url,
+            "content_type": downloaded.content_type,
+            "source_url": downloaded.url,
         }
         await host.store.idempotency_put(key, payload)
         return result(
@@ -291,6 +316,32 @@ class WebCapabilityPlugin:
             artifacts=(artifact,),
             suppress_final_text=True,
         )
+
+    @staticmethod
+    def _download_filename(
+        url: str,
+        content_type: str,
+        content_disposition: str | None,
+        key: str,
+    ) -> str:
+        candidate = None
+        if content_disposition:
+            message = Message()
+            message["content-disposition"] = content_disposition
+            candidate = message.get_filename()
+        raw_name = candidate or unquote(PurePosixPath(urlsplit(url).path).name)
+        safe_name = re.sub(
+            r"[^A-Za-z0-9._-]+",
+            "-",
+            str(raw_name or "download").replace("\\", "/").rsplit("/", 1)[-1],
+        ).strip(".-_")
+        if not safe_name:
+            safe_name = "download"
+        if "." not in safe_name:
+            extension = mimetypes.guess_extension(content_type) or ""
+            safe_name += extension
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+        return f"web-download-{digest}-{safe_name}"[:180]
 
     def _provider(self) -> WebSearchProvider:
         if self.provider is None:

@@ -37,12 +37,14 @@ services:
             PUMPKIN_TASK_REASONING_EFFORT: max
             PUMPKIN_CHAT_MAX_TOKENS: 4096
             PUMPKIN_TASK_MAX_TOKENS: 8192
+            PUMPKIN_BROWSER_WORKER_SOCKET: /run/pumpkin-browser/control.sock
         restart: unless-stopped
         volumes:
             - ./data/mini/plugins/apex/data:/app/plugins/apex/data
             - ./data/mini/plugins/pumpkin/data:/app/plugins/pumpkin/data
             - ./data/mini/plugins/yasuo/data:/app/plugins/yasuo/data
             - ./data/mini/plugins/lol/data:/app/plugins/lol/data
+            - pumpkin_browser_runtime:/run/pumpkin-browser
         depends_on:
             napcat:
                 condition: service_started
@@ -71,6 +73,34 @@ services:
                 # Keep compatibility with the previous SANDBOX_URL=http://sandbox:8080.
                 aliases:
                     - sandbox
+    browser-worker:
+        profiles:
+            - browser
+        build:
+            context: ./plugins/pumpkin/browser
+        container_name: mimi-browser-worker
+        restart: unless-stopped
+        environment:
+            BROWSER_WORKER_SOCKET: /run/pumpkin-browser/control.sock
+            BROWSER_WORKER_TOKEN: ${PUMPKIN_BROWSER_WORKER_TOKEN:-disabled}
+        volumes:
+            - pumpkin_browser_runtime:/run/pumpkin-browser
+        tmpfs:
+            - /tmp:size=256m,mode=1777
+        read_only: true
+        cap_drop:
+            - ALL
+        security_opt:
+            - no-new-privileges:true
+        pids_limit: 64
+        mem_limit: 1g
+        cpus: 1.0
+        networks:
+            - browser_egress
 
 networks:
     pumpkin_internal:
+    browser_egress:
+
+volumes:
+    pumpkin_browser_runtime:

@@ -252,7 +252,7 @@ Pumpkin 使用精简的 Python 插件上下文：
 
 | 插件 | Provider | Tool |
 | --- | --- | --- |
-| web | `WebSearchProvider` | `search_web`、`fetch_url`、`download_web_image` |
+| web | `WebSearchProvider` | `search_web`、`fetch_url`（正文或通用文件 Artifact） |
 | code | `CodeRunnerProvider` | `execute_code` |
 | image | `ImageProvider` | `generate_image` |
 | audio | `AudioProvider` | `generate_audio` |

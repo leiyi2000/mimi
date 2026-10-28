@@ -4,7 +4,6 @@ description: 搜索和核对公开网页资料。
 allowed-tools:
   - search_web
   - fetch_url
-  - download_web_image
 agent-roles:
   - chat
   - task
@@ -29,5 +28,7 @@ priority: 80
 才能将资源登记并交付；不能把“找到相关页面”说成“已经交付”。遇到登录、权限、私密内容
 或资源受限时，必须如实说明限制，不要猜测或伪造资源。
 
-需要把公开图片用于 HTML 海报时，调用 `download_web_image`，并把返回的 Artifact ID
-交给 `html-render`，使用 `artifact://<artifact_id>` 引用。不要把图片 URL 直接写入 HTML。
+需要下载公开文件时，调用
+`fetch_url(output="artifact", idempotency_key="...")`。多个不同 URL 可以在同一批工具
+调用中并发下载。需要把公开图片用于 HTML 或 Markdown 交付物时，使用返回的图片 Artifact
+ID，不要把图片 URL 直接写入交付内容。

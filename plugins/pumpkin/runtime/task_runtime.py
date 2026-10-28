@@ -235,7 +235,10 @@ class TaskRuntime:
                             self.config.task.budget.web_search_limit
                         ),
                         web_fetch=self.config.task.budget.web_fetch_limit,
-                        web_image=self.config.task.budget.web_image_limit,
+                        web_download=self.config.task.budget.web_download_limit,
+                        browser_delegate=(
+                            self.config.task.budget.browser_delegate_limit
+                        ),
                     ),
                 ),
                 self.provider,

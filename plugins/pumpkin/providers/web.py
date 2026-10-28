@@ -1,18 +1,27 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import ipaddress
 import json
 import re
-import socket
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from html.parser import HTMLParser
+from typing import Any, Protocol
 from urllib.parse import urljoin, urlsplit
 
 import httpx
+import wreq
+from wreq import exceptions as wreq_exceptions
+
+from providers.public_url import (
+    AddressResolver,
+    PublicUrlError,
+    PublicUrlGuard,
+)
 
 
 class WebProviderError(RuntimeError):
@@ -34,7 +43,152 @@ class WebProviderError(RuntimeError):
 class WebHttpOperation(StrEnum):
     SEARCH = "search"
     FETCH = "fetch"
-    IMAGE = "image"
+    DOWNLOAD = "download"
+
+
+class WebTransportError(RuntimeError):
+    def __init__(self, *, retryable: bool = False) -> None:
+        super().__init__("WEB_TRANSPORT_FAILED")
+        self.retryable = retryable
+
+
+@dataclass(frozen=True, slots=True)
+class WebTransportResponse:
+    status_code: int
+    url: str
+    headers: Mapping[str, str]
+    body: bytes
+
+
+class WebTransport(Protocol):
+    async def get(
+        self,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        max_bytes: int,
+    ) -> WebTransportResponse: ...
+
+
+WreqClientFactory = Callable[..., Any]
+
+
+class WreqWebTransport:
+    PROFILE_NAME = "chrome149-linux"
+
+    def __init__(
+        self,
+        *,
+        timeout: float,
+        resolver: AddressResolver | None = None,
+        client_factory: WreqClientFactory = wreq.Client,
+    ) -> None:
+        self.timeout = timeout
+        self._url_guard = PublicUrlGuard(resolver)
+        self._client_factory = client_factory
+
+    async def get(
+        self,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        max_bytes: int,
+    ) -> WebTransportResponse:
+        validated = await self._validated_addresses(url)
+        dns_options = wreq.DnsOptions()
+        dns_options.add_resolve(
+            validated.host,
+            [
+                ipaddress.ip_address(address)
+                for address in validated.addresses
+            ],
+        )
+        client: Any | None = None
+        try:
+            client = self._client_factory(
+                emulation=wreq.Emulation(
+                    profile=wreq.Profile.Chrome149,
+                    platform=wreq.Platform.Linux,
+                    http2=True,
+                    headers=True,
+                ),
+                timeout=datetime.timedelta(seconds=self.timeout),
+                redirect=wreq.redirect.Policy.none(),
+                cookie_store=False,
+                no_proxy=True,
+                tls_verify=True,
+                tls_verify_hostname=True,
+                dns_options=dns_options,
+            )
+            async with client.get(url, headers=dict(headers)) as response:
+                response_headers = self._headers(response.headers)
+                content_length = response_headers.get("content-length")
+                if (
+                    content_length
+                    and content_length.isdigit()
+                    and int(content_length) > max_bytes
+                ):
+                    raise WebProviderError("FETCH_TOO_LARGE")
+                body = bytearray()
+                async with response.stream() as stream:
+                    async for chunk in stream:
+                        if isinstance(chunk, wreq.HeaderMap):
+                            continue
+                        if len(body) + len(chunk) > max_bytes:
+                            raise WebProviderError("FETCH_TOO_LARGE")
+                        body.extend(chunk)
+                return WebTransportResponse(
+                    status_code=response.status.as_int(),
+                    url=str(response.url),
+                    headers=response_headers,
+                    body=bytes(body),
+                )
+        except WebProviderError:
+            raise
+        except wreq_exceptions.TimeoutError as exc:
+            raise WebTransportError(retryable=True) from exc
+        except (
+            wreq_exceptions.BodyError,
+            wreq_exceptions.BuilderError,
+            wreq_exceptions.ConnectionError,
+            wreq_exceptions.ConnectionResetError,
+            wreq_exceptions.DecodingError,
+            wreq_exceptions.ProxyConnectionError,
+            wreq_exceptions.RedirectError,
+            wreq_exceptions.RequestError,
+            wreq_exceptions.StatusError,
+            wreq_exceptions.TlsError,
+        ) as exc:
+            raise WebTransportError() from exc
+        finally:
+            if client is not None:
+                client.close()
+
+    async def _validated_addresses(self, url: str):
+        try:
+            return await self._url_guard.validate(url)
+        except PublicUrlError as exc:
+            code = {
+                "PUBLIC_URL_INVALID": "FETCH_URL_INVALID",
+                "PUBLIC_URL_DNS_FAILED": "FETCH_DNS_FAILED",
+                "PUBLIC_URL_PRIVATE_ADDRESS": "FETCH_PRIVATE_ADDRESS",
+            }[exc.code]
+            raise WebProviderError(code) from exc
+
+    @staticmethod
+    def _headers(headers: wreq.HeaderMap) -> dict[str, str]:
+        values: dict[str, str] = {}
+        for name in (
+            "content-disposition",
+            "content-length",
+            "content-type",
+            "location",
+            "retry-after",
+        ):
+            value = headers.get(name)
+            if value is not None:
+                values[name] = bytes(value).decode("latin-1")
+        return values
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +206,14 @@ class FetchedPage:
     text: str
     links: tuple[str, ...]
     truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadedFile:
+    url: str
+    content_type: str
+    content_disposition: str | None
+    content: bytes
 
 
 class _HtmlExtractor(HTMLParser):
@@ -103,10 +265,11 @@ class WebSearchProvider:
         timeout: float,
         max_results: int,
         max_fetch_bytes: int,
-        max_image_bytes: int,
+        max_download_bytes: int,
         max_fetch_chars: int,
         max_host_concurrency: int = 2,
-        client: httpx.AsyncClient | None = None,
+        search_client: httpx.AsyncClient | None = None,
+        web_transport: WebTransport | None = None,
         trace: Callable[[str], None] | None = None,
     ) -> None:
         self.api_url = api_url.strip()
@@ -114,13 +277,14 @@ class WebSearchProvider:
         self.timeout = timeout
         self.max_results = max(1, min(max_results, 20))
         self.max_fetch_bytes = max(64 * 1024, min(max_fetch_bytes, 4 * 1024 * 1024))
-        self.max_image_bytes = max(
+        self.max_download_bytes = max(
             64 * 1024,
-            min(max_image_bytes, 20 * 1024 * 1024),
+            min(max_download_bytes, 20 * 1024 * 1024),
         )
         self.max_fetch_chars = max(1_000, min(max_fetch_chars, 100_000))
         self.max_host_concurrency = max(1, min(max_host_concurrency, 16))
-        self._client = client
+        self._search_client = search_client
+        self._web_transport = web_transport or WreqWebTransport(timeout=timeout)
         self._trace = trace
         self._host_semaphores: dict[str, asyncio.Semaphore] = {}
 
@@ -132,9 +296,9 @@ class WebSearchProvider:
             raise WebProviderError("SEARCH_QUERY_INVALID")
         started_at = time.monotonic()
         try:
-            if self._client is not None:
+            if self._search_client is not None:
                 async with self._host_semaphore(self.api_url):
-                    response = await self._client.post(
+                    response = await self._search_client.post(
                         self.api_url,
                         json={
                             "query": query,
@@ -232,12 +396,7 @@ class WebSearchProvider:
         current = url.strip()
         started_at = time.monotonic()
         try:
-            if self._client is not None:
-                return await self._fetch(self._client, current)
-            async with httpx.AsyncClient(
-                timeout=self.timeout, follow_redirects=False, trust_env=False
-            ) as client:
-                return await self._fetch(client, current)
+            return await self._fetch(current)
         except WebProviderError as exc:
             if exc.code in {
                 "FETCH_URL_INVALID",
@@ -252,16 +411,11 @@ class WebSearchProvider:
                 )
             raise
 
-    async def download_image(self, url: str) -> tuple[str, str, bytes]:
+    async def download_file(self, url: str) -> DownloadedFile:
         current = url.strip()
         started_at = time.monotonic()
         try:
-            if self._client is not None:
-                return await self._download_image(self._client, current)
-            async with httpx.AsyncClient(
-                timeout=self.timeout, follow_redirects=False, trust_env=False
-            ) as client:
-                return await self._download_image(client, current)
+            return await self._download_file(current)
         except WebProviderError as exc:
             if exc.code in {
                 "FETCH_URL_INVALID",
@@ -269,99 +423,87 @@ class WebSearchProvider:
                 "FETCH_PRIVATE_ADDRESS",
             }:
                 self._emit_http(
-                    WebHttpOperation.IMAGE,
+                    WebHttpOperation.DOWNLOAD,
                     current,
                     started_at,
                     error=exc,
                 )
             raise
 
-    async def _download_image(
+    async def _download_file(
         self,
-        client: httpx.AsyncClient,
         url: str,
-    ) -> tuple[str, str, bytes]:
+    ) -> DownloadedFile:
         for redirect_count in range(4):
-            await self._validate_public_url(url)
             started_at = time.monotonic()
             status_code: int | None = None
             emitted = False
             try:
-                async with (
-                    self._host_semaphore(url),
-                    client.stream(
-                        "GET",
+                async with self._host_semaphore(url):
+                    response = await self._web_transport.get(
                         url,
-                        headers={
-                            "Accept": "image/avif,image/webp,image/apng,image/*",
-                            "User-Agent": "mimi-pumpkin/1.0",
-                        },
-                    ) as response,
-                ):
-                    status_code = response.status_code
-                    if response.status_code in {301, 302, 303, 307, 308}:
-                        location = response.headers.get("location", "").strip()
-                        if not location or redirect_count == 3:
-                            raise WebProviderError(
-                                "FETCH_REDIRECT_REJECTED",
-                                status_code=response.status_code,
-                            )
-                        self._emit_http(
-                            WebHttpOperation.IMAGE,
-                            url,
-                            started_at,
+                        headers={"Accept": "*/*"},
+                        max_bytes=self.max_download_bytes,
+                    )
+                status_code = response.status_code
+                if response.status_code in {301, 302, 303, 307, 308}:
+                    location = response.headers.get("location", "").strip()
+                    if not location or redirect_count == 3:
+                        raise WebProviderError(
+                            "FETCH_REDIRECT_REJECTED",
                             status_code=response.status_code,
                         )
-                        emitted = True
-                        url = urljoin(str(response.url), location)
-                        continue
-                    if response.status_code >= 400:
-                        raise self._http_error(
-                            "FETCH",
-                            response.status_code,
-                            response.headers.get("retry-after"),
-                        )
-                    content_type = (
-                        response.headers.get("content-type", "")
-                        .split(";", 1)[0]
-                        .lower()
+                    self._emit_http(
+                        WebHttpOperation.DOWNLOAD,
+                        url,
+                        started_at,
+                        status_code=response.status_code,
                     )
-                    if not content_type.startswith("image/"):
-                        raise WebProviderError("FETCH_CONTENT_REJECTED")
-                    length = response.headers.get("content-length")
-                    if (
-                        length
-                        and length.isdigit()
-                        and int(length) > self.max_image_bytes
-                    ):
-                        raise WebProviderError("FETCH_TOO_LARGE")
-                    body = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        if len(body) + len(chunk) > self.max_image_bytes:
-                            raise WebProviderError("FETCH_TOO_LARGE")
-                        body.extend(chunk)
-                    final_url = str(response.url)
+                    emitted = True
+                    url = urljoin(response.url, location)
+                    continue
+                if response.status_code >= 400:
+                    raise self._http_error(
+                        "FETCH",
+                        response.status_code,
+                        response.headers.get("retry-after"),
+                    )
+                content_type = (
+                    response.headers.get("content-type", "")
+                    .split(";", 1)[0]
+                    .lower()
+                )
                 self._emit_http(
-                    WebHttpOperation.IMAGE,
+                    WebHttpOperation.DOWNLOAD,
                     url,
                     started_at,
                     status_code=status_code,
                 )
-                return final_url, content_type, bytes(body)
+                return DownloadedFile(
+                    url=response.url,
+                    content_type=content_type or "application/octet-stream",
+                    content_disposition=response.headers.get(
+                        "content-disposition"
+                    ),
+                    content=response.body,
+                )
             except WebProviderError as exc:
                 if not emitted:
                     self._emit_http(
-                        WebHttpOperation.IMAGE,
+                        WebHttpOperation.DOWNLOAD,
                         url,
                         started_at,
                         status_code=status_code,
                         error=exc,
                     )
                 raise
-            except (httpx.HTTPError, TimeoutError) as exc:
-                error = WebProviderError("FETCH_UNAVAILABLE")
+            except WebTransportError as exc:
+                error = WebProviderError(
+                    "FETCH_UNAVAILABLE",
+                    retryable=exc.retryable,
+                )
                 self._emit_http(
-                    WebHttpOperation.IMAGE,
+                    WebHttpOperation.DOWNLOAD,
                     url,
                     started_at,
                     error=error,
@@ -369,82 +511,67 @@ class WebSearchProvider:
                 raise error from exc
         raise WebProviderError("FETCH_REDIRECT_REJECTED")
 
-    async def _fetch(self, client: httpx.AsyncClient, url: str) -> FetchedPage:
+    async def _fetch(self, url: str) -> FetchedPage:
         for redirect_count in range(4):
-            await self._validate_public_url(url)
             started_at = time.monotonic()
             status_code: int | None = None
             emitted = False
             try:
-                async with (
-                    self._host_semaphore(url),
-                    client.stream(
-                        "GET",
+                async with self._host_semaphore(url):
+                    response = await self._web_transport.get(
                         url,
                         headers={
                             "Accept": (
                                 "text/html,application/json,text/plain,application/xml"
                             ),
-                            "User-Agent": "mimi-pumpkin/1.0",
                         },
-                    ) as response,
-                ):
-                    status_code = response.status_code
-                    if response.status_code in {301, 302, 303, 307, 308}:
-                        location = response.headers.get("location", "").strip()
-                        if not location or redirect_count == 3:
-                            raise WebProviderError(
-                                "FETCH_REDIRECT_REJECTED",
-                                status_code=response.status_code,
-                            )
-                        self._emit_http(
-                            WebHttpOperation.FETCH,
-                            url,
-                            started_at,
+                        max_bytes=self.max_fetch_bytes,
+                    )
+                status_code = response.status_code
+                if response.status_code in {301, 302, 303, 307, 308}:
+                    location = response.headers.get("location", "").strip()
+                    if not location or redirect_count == 3:
+                        raise WebProviderError(
+                            "FETCH_REDIRECT_REJECTED",
                             status_code=response.status_code,
                         )
-                        emitted = True
-                        url = urljoin(str(response.url), location)
-                        continue
-                    if response.status_code >= 400:
-                        raise self._http_error(
-                            "FETCH",
-                            response.status_code,
-                            response.headers.get("retry-after"),
-                        )
-                    content_type = (
-                        response.headers.get("content-type", "")
-                        .split(";", 1)[0]
-                        .lower()
+                    self._emit_http(
+                        WebHttpOperation.FETCH,
+                        url,
+                        started_at,
+                        status_code=response.status_code,
                     )
-                    if content_type not in {
-                        "text/html",
-                        "application/xhtml+xml",
-                        "text/plain",
-                        "text/markdown",
-                        "application/json",
-                        "application/xml",
-                        "text/xml",
-                    }:
-                        raise WebProviderError("FETCH_CONTENT_REJECTED")
-                    length = response.headers.get("content-length")
-                    if (
-                        length
-                        and length.isdigit()
-                        and int(length) > self.max_fetch_bytes
-                    ):
-                        raise WebProviderError("FETCH_TOO_LARGE")
-                    body = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        if len(body) + len(chunk) > self.max_fetch_bytes:
-                            raise WebProviderError("FETCH_TOO_LARGE")
-                        body.extend(chunk)
-                    encoding = self._encoding(response.headers.get("content-type", ""))
-                    final_url = str(response.url)
+                    emitted = True
+                    url = urljoin(response.url, location)
+                    continue
+                if response.status_code >= 400:
+                    raise self._http_error(
+                        "FETCH",
+                        response.status_code,
+                        response.headers.get("retry-after"),
+                    )
+                content_type = (
+                    response.headers.get("content-type", "")
+                    .split(";", 1)[0]
+                    .lower()
+                )
+                if content_type not in {
+                    "text/html",
+                    "application/xhtml+xml",
+                    "text/plain",
+                    "text/markdown",
+                    "application/json",
+                    "application/xml",
+                    "text/xml",
+                }:
+                    raise WebProviderError("FETCH_CONTENT_REJECTED")
+                encoding = self._encoding(
+                    response.headers.get("content-type", "")
+                )
                 page = self._parse(
-                    final_url,
+                    response.url,
                     content_type,
-                    bytes(body).decode(encoding, errors="replace"),
+                    response.body.decode(encoding, errors="replace"),
                 )
                 self._emit_http(
                     WebHttpOperation.FETCH,
@@ -463,8 +590,11 @@ class WebSearchProvider:
                         error=exc,
                     )
                 raise
-            except (httpx.HTTPError, TimeoutError) as exc:
-                error = WebProviderError("FETCH_UNAVAILABLE")
+            except WebTransportError as exc:
+                error = WebProviderError(
+                    "FETCH_UNAVAILABLE",
+                    retryable=exc.retryable,
+                )
                 self._emit_http(
                     WebHttpOperation.FETCH,
                     url,
@@ -523,6 +653,16 @@ class WebSearchProvider:
             retry_after = retry_after.replace("\r", "").replace("\n", "")[:100]
         event = {
             "operation": operation.value,
+            "transport": (
+                "httpx"
+                if operation is WebHttpOperation.SEARCH
+                else "wreq"
+            ),
+            "profile": (
+                None
+                if operation is WebHttpOperation.SEARCH
+                else WreqWebTransport.PROFILE_NAME
+            ),
             "host": (urlsplit(url).hostname or "").lower(),
             "status_code": (
                 error.status_code
@@ -548,30 +688,6 @@ class WebSearchProvider:
             )
         except Exception:  # noqa: BLE001
             return
-
-    @staticmethod
-    async def _validate_public_url(url: str) -> None:
-        parsed = urlsplit(url)
-        if (
-            parsed.scheme not in {"http", "https"}
-            or not parsed.hostname
-            or parsed.username is not None
-            or parsed.password is not None
-            or any(char in url for char in "\r\n\x00")
-        ):
-            raise WebProviderError("FETCH_URL_INVALID")
-        try:
-            addresses = await asyncio.to_thread(
-                socket.getaddrinfo,
-                parsed.hostname,
-                parsed.port or (443 if parsed.scheme == "https" else 80),
-                type=socket.SOCK_STREAM,
-            )
-        except (OSError, ValueError, UnicodeError) as exc:
-            raise WebProviderError("FETCH_DNS_FAILED") from exc
-        for address in addresses:
-            if not ipaddress.ip_address(address[4][0]).is_global:
-                raise WebProviderError("FETCH_PRIVATE_ADDRESS")
 
     def _parse(self, url: str, content_type: str, content: str) -> FetchedPage:
         title = ""

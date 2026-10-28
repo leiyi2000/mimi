@@ -21,20 +21,34 @@ TraceCallback = Callable[[str], None]
 class ToolBudgetKind(StrEnum):
     WEB_SEARCH = "web_search"
     WEB_FETCH = "web_fetch"
-    WEB_IMAGE = "web_image"
+    WEB_DOWNLOAD = "web_download"
+    BROWSER_DELEGATE = "browser_delegate"
+
+
+@dataclass(frozen=True, slots=True)
+class ToolExecutionPolicy:
+    read_only: bool
+    parallel_safe: bool
+    idempotency_required: bool
+    budget_kind: ToolBudgetKind | None
+
+
+ToolPolicyResolver = Callable[[dict[str, Any]], ToolExecutionPolicy]
 
 
 @dataclass(frozen=True, slots=True)
 class ToolBudgetLimits:
     web_search: int
     web_fetch: int
-    web_image: int
+    web_download: int
+    browser_delegate: int = 2
 
     def limit_for(self, kind: ToolBudgetKind) -> int:
         return {
             ToolBudgetKind.WEB_SEARCH: self.web_search,
             ToolBudgetKind.WEB_FETCH: self.web_fetch,
-            ToolBudgetKind.WEB_IMAGE: self.web_image,
+            ToolBudgetKind.WEB_DOWNLOAD: self.web_download,
+            ToolBudgetKind.BROWSER_DELEGATE: self.browser_delegate,
         }[kind]
 
 
@@ -55,6 +69,17 @@ class Tool:
     budget_kind: ToolBudgetKind | None = None
     deduplicate_argument: str | None = None
     model_content_max_chars: int | None = None
+    policy_resolver: ToolPolicyResolver | None = None
+
+    def policy_for(self, arguments: dict[str, Any]) -> ToolExecutionPolicy:
+        if self.policy_resolver is not None:
+            return self.policy_resolver(arguments)
+        return ToolExecutionPolicy(
+            read_only=self.read_only,
+            parallel_safe=self.read_only,
+            idempotency_required=self.idempotency_required,
+            budget_kind=self.budget_kind,
+        )
 
 
 class ToolRegistryError(ValueError):
@@ -139,6 +164,9 @@ class ToolRegistry:
                 is_error=True,
                 error_code="UNKNOWN_TOOL",
             )
+        policy = tool.policy_for(
+            arguments if isinstance(arguments, dict) else {}
+        )
         self._emit(
             {
                 "phase": "started",
@@ -147,7 +175,7 @@ class ToolRegistry:
                 "run_id": context.run_id,
                 "tool": name,
                 "argument_keys": sorted(arguments) if isinstance(arguments, dict) else [],
-                "idempotency_required": tool.idempotency_required,
+                "idempotency_required": policy.idempotency_required,
                 "idempotency_key_present": (
                     isinstance(arguments, dict)
                     and bool(arguments.get("idempotency_key"))
@@ -188,11 +216,21 @@ class ToolRegistry:
             )
             self._emit_result(name, context, result, started_at)
             return result
+        if policy.idempotency_required and not str(
+            arguments.get("idempotency_key", "")
+        ).strip():
+            result = ToolResult(
+                content="idempotency_key is required for this operation",
+                is_error=True,
+                error_code="INVALID_TOOL_ARGUMENTS",
+            )
+            self._emit_result(name, context, result, started_at)
+            return result
         key = (
             f"{context.run_id}:{tool_use_id or name}:"
             f"{context.scope_id}:{name}:{arguments.get('idempotency_key', '')}"
         )
-        if tool.idempotency_required and idempotency is not None:
+        if policy.idempotency_required and idempotency is not None:
             cached = await idempotency(key)
             if cached is not None:
                 self._emit(
@@ -207,7 +245,7 @@ class ToolRegistry:
                 )
                 return cached
         try:
-            if tool.read_only:
+            if policy.parallel_safe:
                 result = tool.handler(context, arguments)
                 if inspect.isawaitable(result):
                     result = await asyncio.wait_for(result, timeout=tool.timeout)
@@ -246,7 +284,7 @@ class ToolRegistry:
                 error_code="TOOL_FAILED",
                 retryable=False,
             )
-        if tool.idempotency_required and remember is not None:
+        if policy.idempotency_required and remember is not None:
             await remember(key, result)
         self._emit_result(name, context, result, started_at)
         return result

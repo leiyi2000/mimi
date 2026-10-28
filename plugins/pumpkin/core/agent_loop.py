@@ -250,7 +250,7 @@ class _TurnToolBudget:
     in_flight: set[tuple[ToolBudgetKind, str]] = field(default_factory=set)
 
     def prepare(self, tool: Tool, call: ToolCall) -> ToolResult | None:
-        kind = tool.budget_kind
+        kind = tool.policy_for(call.arguments).budget_kind
         if kind is None:
             return None
         resource_key = self._resource_key(tool, call)
@@ -297,10 +297,11 @@ class _TurnToolBudget:
         tool: Tool,
         call: ToolCall,
     ) -> tuple[ToolBudgetKind, str] | None:
-        if tool.budget_kind is None or tool.deduplicate_argument is None:
+        kind = tool.policy_for(call.arguments).budget_kind
+        if kind is None or tool.deduplicate_argument is None:
             return None
         value = _normalized_url(call.arguments.get(tool.deduplicate_argument))
-        return (tool.budget_kind, value) if value else None
+        return (kind, value) if value else None
 
 
 @dataclass(slots=True)
@@ -922,7 +923,7 @@ class SessionAgentLoop:
                 tool = self.tools.get(call.name)
             except ToolRegistryError:
                 return False
-            if not tool.read_only:
+            if not tool.policy_for(call.arguments).parallel_safe:
                 return False
         return True
 

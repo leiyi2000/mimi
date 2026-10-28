@@ -46,7 +46,9 @@
 ## 2. 编码约束
 
 - Python 使用 3.12+ 原生能力，不增加兼容性导入。
-- HTTP 使用 `httpx`，不为单个接口引入 SDK。
+- HTTP 默认使用 `httpx`，不为单个接口引入 SDK。唯一例外是 Pumpkin 对任意公网网页和
+  网页图片的 GET 抓取使用 `wreq` 固定浏览器传输 Profile；搜索、模型和其他服务 API
+  继续使用 `httpx`。
 - 领域数据优先使用普通 `dataclass`；持久化实体使用 Tortoise `Model`。
 - 配置集中在 `Config` dataclass 或入口装配，不在业务函数中散落默认值。
 - 命令处理器只做参数、权限、用例编排和用户反馈。

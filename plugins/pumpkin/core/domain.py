@@ -128,11 +128,13 @@ def is_user_visible_task_event(event_type: TaskEventType) -> bool:
 class AgentRole(StrEnum):
     CHAT = "chat"
     TASK = "task"
+    BROWSER = "browser"
 
 
 class AgentProfile(StrEnum):
     CONVERSATION = "conversation"
     TASK = "task"
+    BROWSER = "browser"
 
 
 class AgentStatus(StrEnum):

@@ -10,6 +10,7 @@ from typing import Any
 from adapters.napcat import NapCatMessageAdapter, NapCatSender
 from capabilities import (
     AudioCapabilityPlugin,
+    BrowserCapabilityPlugin,
     CodeCapabilityPlugin,
     HtmlCapabilityPlugin,
     ImageCapabilityPlugin,
@@ -86,6 +87,7 @@ class PumpkinRuntime:
         client: Any,
         provider_chat: ModelProvider | None = None,
         provider_task: ModelProvider | None = None,
+        provider_browser: ModelProvider | None = None,
         text_renderer: TextImageRenderer | None = None,
         html_renderer: HtmlRenderer | None = None,
         markdown_renderer: MarkdownRenderer | None = None,
@@ -148,6 +150,13 @@ class PumpkinRuntime:
                             lambda _context: provider_task
                             or _provider(config.model_task),
                         ),
+                        ServiceProvider(
+                            ServiceKey.PROVIDER_BROWSER,
+                            lambda _context: provider_browser
+                            or _provider(
+                                config.model_browser or config.model_task
+                            ),
+                        ),
                     ),
                 ),
                 ServiceDefinition(
@@ -208,6 +217,9 @@ class PumpkinRuntime:
         self.sessions = self.plugin_manager.service(ServiceKey.SESSION_SERVICE)
         self.provider_chat = self.plugin_manager.service(ServiceKey.PROVIDER_CHAT)
         self.provider_task = self.plugin_manager.service(ServiceKey.PROVIDER_TASK)
+        self.provider_browser = self.plugin_manager.service(
+            ServiceKey.PROVIDER_BROWSER
+        )
         self.registry = self.plugin_manager.service(ServiceKey.TOOL_REGISTRY)
         self.sender = self.plugin_manager.service(ServiceKey.NAPCAT_SENDER)
         self.adapter = self.plugin_manager.service(ServiceKey.NAPCAT_ADAPTER)
@@ -331,6 +343,7 @@ class PumpkinRuntime:
             )
         )
         self.web_plugin = WebCapabilityPlugin(trace=self.trace)
+        self.browser_plugin = BrowserCapabilityPlugin(trace=self.trace)
         self.code_plugin = CodeCapabilityPlugin()
         self.image_plugin = ImageCapabilityPlugin()
         self.audio_plugin = AudioCapabilityPlugin()
@@ -339,6 +352,7 @@ class PumpkinRuntime:
         self.plugin_manager.mount_all(
             (
                 self.web_plugin,
+                self.browser_plugin,
                 self.code_plugin,
                 self.image_plugin,
                 self.audio_plugin,
@@ -357,6 +371,7 @@ class PumpkinRuntime:
             for skill_name, provider in (
                 ("image-render", self.image_provider),
                 ("audio-render", self.audio_provider),
+                ("browser-delegation", self.browser_plugin.runner),
             )
             if provider is None
         }
@@ -623,7 +638,11 @@ class PumpkinRuntime:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         closed: set[int] = set()
-        for provider in (self.provider_chat, self.provider_task):
+        for provider in (
+            self.provider_chat,
+            self.provider_task,
+            self.provider_browser,
+        ):
             close = getattr(provider, "close", None)
             if close is None or id(provider) in closed:
                 continue
