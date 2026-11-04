@@ -223,6 +223,53 @@ async def test_tool_registry_enforces_string_length_constraints():
 
 
 @pytest.mark.asyncio
+async def test_tool_registry_enforces_array_length_constraints():
+    called = False
+
+    async def handler(context, arguments):
+        nonlocal called
+        del context, arguments
+        called = True
+        return ToolResult(content={"ok": True})
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            name="bounded_array",
+            description="test",
+            input_schema={
+                "type": "object",
+                "required": ["items"],
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 2,
+                        "items": {"type": "string"},
+                    },
+                },
+            },
+            handler=handler,
+        )
+    )
+
+    empty = await registry.execute(
+        "bounded_array",
+        tool_context(run_id="run-empty-array"),
+        {"items": []},
+    )
+    long = await registry.execute(
+        "bounded_array",
+        tool_context(run_id="run-long-array"),
+        {"items": ["1", "2", "3"]},
+    )
+
+    assert empty.error_code == "INVALID_TOOL_ARGUMENTS"
+    assert long.error_code == "INVALID_TOOL_ARGUMENTS"
+    assert not called
+
+
+@pytest.mark.asyncio
 async def test_tool_registry_applies_argument_specific_execution_policy():
     calls = 0
     cached = ToolResult(content={"cached": True})
@@ -348,6 +395,20 @@ def test_create_task_requires_a_short_natural_acknowledgement():
         "minLength": 1,
         "maxLength": 40,
     }
+
+
+def test_chat_reply_schema_restricts_model_supplied_segments():
+    runtime = PumpkinRuntime(PumpkinConfig.from_env(), client=object())
+    schema = runtime.registry.get("send_napcat_reply").input_schema
+    segments = schema["properties"]["segments"]
+
+    assert segments["maxItems"] == 12
+    assert segments["items"]["required"] == ["type"]
+    assert segments["items"]["properties"]["type"]["enum"] == [
+        "text",
+        "at",
+        "face",
+    ]
 
 
 @pytest.mark.asyncio

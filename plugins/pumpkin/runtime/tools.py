@@ -469,7 +469,23 @@ def build_registry(
             "required": ["idempotency_key"],
             "properties": {
                 "text": {"type": "string"},
-                "segments": {"type": "array"},
+                "segments": {
+                    "type": "array",
+                    "maxItems": 12,
+                    "items": {
+                        "type": "object",
+                        "required": ["type"],
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": ["text", "at", "face"],
+                            },
+                            "text": {"type": "string"},
+                            "qq": {"type": "string"},
+                            "id": {"type": "string"},
+                        },
+                    },
+                },
                 "mention_user_id": {"type": "string"},
                 "idempotency_key": {"type": "string"},
             },

@@ -13,25 +13,28 @@ DEFAULT_CHAT_TIMEOUT_SECONDS = 60.0
 DEFAULT_TASK_TIMEOUT_SECONDS = 90.0
 DEFAULT_TASK_INTAKE_TIMEOUT_SECONDS = 60.0
 DEFAULT_SINGLE_TASK_TIMEOUT_SECONDS = 900
-DEFAULT_WEB_TIMEOUT_SECONDS = 10.0
+DEFAULT_WEB_TIMEOUT_SECONDS = 20.0
 DEFAULT_CODE_TIMEOUT_SECONDS = 20
 DEFAULT_IMAGE_TIMEOUT_SECONDS = 90.0
 DEFAULT_AUDIO_TIMEOUT_SECONDS = 90.0
 DEFAULT_MEDIA_TIMEOUT_SECONDS = 10.0
-DEFAULT_MAX_STEPS = 36
+DEFAULT_MAX_STEPS = 10
 DEFAULT_TASK_MAX_STEPS = 16
 DEFAULT_TASK_FINALIZATION_STEPS = 2
-DEFAULT_TASK_WEB_SEARCH_LIMIT = 4
-DEFAULT_TASK_WEB_FETCH_LIMIT = 8
-DEFAULT_TASK_WEB_DOWNLOAD_LIMIT = 4
-DEFAULT_TASK_BROWSER_DELEGATE_LIMIT = 2
-DEFAULT_BROWSER_TIMEOUT_SECONDS = 180
-DEFAULT_BROWSER_MAX_STEPS = 24
-DEFAULT_BROWSER_MAX_MCP_CALLS = 20
+DEFAULT_TASK_WEB_SEARCH_LIMIT = 8
+DEFAULT_TASK_WEB_FETCH_LIMIT = 16
+DEFAULT_TASK_WEB_DOWNLOAD_LIMIT = 8
+DEFAULT_TASK_BROWSER_DELEGATE_LIMIT = 4
+DEFAULT_BROWSER_TIMEOUT_SECONDS = 300
+DEFAULT_BROWSER_MAX_STEPS = 36
+DEFAULT_BROWSER_MAX_MCP_CALLS = 40
 DEFAULT_CHAT_MAX_TOKENS = 4096
 DEFAULT_TASK_MAX_TOKENS = 8192
+DEFAULT_WEB_MAX_RESULTS = 12
+DEFAULT_WEB_FETCH_MAX_BYTES = 2 * 1024 * 1024
+DEFAULT_WEB_FETCH_MAX_CHARS = 60_000
 DEFAULT_WEB_MODEL_CONTENT_CHARS = 8_000
-DEFAULT_WEB_HOST_CONCURRENCY = 2
+DEFAULT_WEB_HOST_CONCURRENCY = 4
 DEFAULT_WEB_DOWNLOAD_MAX_BYTES = 20 * 1024 * 1024
 
 
@@ -208,10 +211,10 @@ class WebConfig:
     api_url: str = "https://api.anysearch.com/v1/search"
     api_key: str | None = None
     timeout_seconds: float = DEFAULT_WEB_TIMEOUT_SECONDS
-    max_results: int = 8
-    max_fetch_bytes: int = 1_048_576
+    max_results: int = DEFAULT_WEB_MAX_RESULTS
+    max_fetch_bytes: int = DEFAULT_WEB_FETCH_MAX_BYTES
     max_download_bytes: int = DEFAULT_WEB_DOWNLOAD_MAX_BYTES
-    max_fetch_chars: int = 30_000
+    max_fetch_chars: int = DEFAULT_WEB_FETCH_MAX_CHARS
     max_model_content_chars: int = DEFAULT_WEB_MODEL_CONTENT_CHARS
     max_host_concurrency: int = DEFAULT_WEB_HOST_CONCURRENCY
 
@@ -607,9 +610,17 @@ class PumpkinConfig:
                         str(DEFAULT_WEB_TIMEOUT_SECONDS),
                     )
                 ),
-                max_results=int(os.getenv("PUMPKIN_SEARCH_MAX_RESULTS", "8")),
+                max_results=int(
+                    os.getenv(
+                        "PUMPKIN_SEARCH_MAX_RESULTS",
+                        str(DEFAULT_WEB_MAX_RESULTS),
+                    )
+                ),
                 max_fetch_bytes=int(
-                    os.getenv("PUMPKIN_FETCH_MAX_BYTES", str(1_048_576))
+                    os.getenv(
+                        "PUMPKIN_FETCH_MAX_BYTES",
+                        str(DEFAULT_WEB_FETCH_MAX_BYTES),
+                    )
                 ),
                 max_download_bytes=int(
                     os.getenv(
@@ -620,7 +631,12 @@ class PumpkinConfig:
                         ),
                     )
                 ),
-                max_fetch_chars=int(os.getenv("PUMPKIN_FETCH_MAX_CHARS", "30000")),
+                max_fetch_chars=int(
+                    os.getenv(
+                        "PUMPKIN_FETCH_MAX_CHARS",
+                        str(DEFAULT_WEB_FETCH_MAX_CHARS),
+                    )
+                ),
                 max_model_content_chars=_positive_int(
                     "PUMPKIN_WEB_MODEL_CONTENT_MAX_CHARS",
                     DEFAULT_WEB_MODEL_CONTENT_CHARS,

@@ -69,9 +69,16 @@ def test_time_defaults_are_bounded_for_interactive_runtime(monkeypatch):
     assert config.model_chat.max_tokens == 4096
     assert config.model_task.max_tokens == 8192
     assert config.task.single_task_timeout_seconds == 900
-    assert config.web.timeout_seconds == 10
-    assert config.web.max_fetch_bytes == 1024 * 1024
+    assert config.web.timeout_seconds == 20
+    assert config.web.max_results == 12
+    assert config.web.max_fetch_bytes == 2 * 1024 * 1024
     assert config.web.max_download_bytes == 20 * 1024 * 1024
+    assert config.web.max_fetch_chars == 60_000
+    assert config.web.max_model_content_chars == 8_000
+    assert config.web.max_host_concurrency == 4
+    assert config.browser.timeout_seconds == 300
+    assert config.browser.max_steps == 36
+    assert config.browser.max_mcp_calls == 40
     assert config.code.timeout_seconds == 20
     assert config.image.timeout_seconds == 90
     assert config.audio.timeout_seconds == 90

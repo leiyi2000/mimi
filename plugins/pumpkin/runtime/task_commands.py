@@ -97,8 +97,6 @@ class TaskCommandService:
         context: ToolContext,
         arguments: dict[str, Any],
     ) -> ToolResult:
-        if not context.scope_id.startswith("group:"):
-            return error("tasks are restricted to group scopes", "TASK_SCOPE_UNSUPPORTED")
         key = self.idempotency_key(
             context,
             "task-create",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import re
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,9 @@ from runtime.outbox import OutboxSender
 from runtime.reply_ledger import TurnReplyLedger
 from runtime.task_runtime import TaskRuntime
 from runtime.tool_results import error, ok
+
+
+_CQ_CONTROL_CODE = re.compile(r"\[CQ:", re.IGNORECASE)
 
 
 class ChatToolService:
@@ -248,13 +252,15 @@ class ChatToolService:
         segments = arguments.get("segments", [])
         if not text and not segments:
             return error("empty reply", "EMPTY_REPLY")
+        if _CQ_CONTROL_CODE.search(text):
+            return error(
+                "聊天正文不能包含 CQ 控制码；媒体必须通过受控交付工具发送。",
+                "INVALID_REPLY_SEGMENTS",
+            )
         if not isinstance(segments, list) or len(segments) > 12:
             return error("invalid reply segments", "INVALID_REPLY_SEGMENTS")
         for item in segments:
-            if (
-                not isinstance(item, dict)
-                or item.get("type") not in {"text", "at", "face"}
-            ):
+            if not _valid_chat_segment(item):
                 return error("invalid reply segment", "INVALID_REPLY_SEGMENTS")
         key = self.idempotency_key(context, "chat", str(arguments["idempotency_key"]))
         cached = await self.store.idempotency_get(key)
@@ -580,6 +586,24 @@ def _media_filename(data: dict[str, Any], content_type: str) -> str:
         "audio/flac": ".flac",
     }.get(content_type, ".audio")
     return f"message-media{extension}"
+
+
+def _valid_chat_segment(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    segment_type = item.get("type")
+    required_fields = {
+        "text": "text",
+        "at": "qq",
+        "face": "id",
+    }
+    field = required_fields.get(segment_type)
+    if field is None:
+        return False
+    value = item.get(field)
+    if not isinstance(value, str) or not value.strip():
+        return False
+    return segment_type != "text" or _CQ_CONTROL_CODE.search(value) is None
 
 
 def _inspect_file_content(

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from core.domain import ModelMessage, ToolCall
+from core.domain import ModelMessage
 from core.tools import Tool
 from providers.browser_worker import (
     BrowserWorkerClient,
@@ -96,7 +96,7 @@ _SAFE_KEYS = frozenset(
         "Tab",
     }
 )
-_MAX_TOOL_TEXT = 30_000
+_MAX_TOOL_TEXT = 12_000
 _MAX_MEDIA_BYTES = 20 * 1024 * 1024
 
 

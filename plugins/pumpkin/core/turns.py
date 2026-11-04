@@ -18,6 +18,7 @@ from .tools import Tool
 class TurnToolLoadout:
     visible_tools: frozenset[str]
     capabilities: frozenset[TurnCapability] = frozenset()
+    allow_skill_loading: bool = True
 
 
 class TurnPolicy(Protocol):

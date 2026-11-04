@@ -300,7 +300,7 @@ async def test_failed_turn_after_confirmed_reply_suppresses_failure_receipt(tmp_
     await runtime.close()
 
 
-async def test_reliable_task_event_uses_conversation_inbox_once(tmp_path):
+async def test_failed_task_event_turn_sends_deterministic_receipt_once(tmp_path):
     client = Client()
     runtime = ReliablePumpkinRuntime(
         config_for(tmp_path),
@@ -340,7 +340,9 @@ async def test_reliable_task_event_uses_conversation_inbox_once(tmp_path):
         item.event_type is AgentEventType.TASK_EVENT
         for item in events
     ) == 1
-    assert client.sent == []
+    assert len(client.sent) == 1
+    sent_text = getattr(client.sent[0][1][-1], "text", "")
+    assert sent_text == "这个任务执行失败了，暂时没有生成可交付结果。"
     await runtime.close()
 
 

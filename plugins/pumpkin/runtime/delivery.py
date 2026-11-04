@@ -128,18 +128,14 @@ class DeliveryService:
             "source": "task_delivery",
         }
         if not single_audio:
-            payload.update(
-                {
-                    "text": text,
-                    "original_text": text,
-                    "reply_to_message_id": self.source_message_id(row),
-                    "mention_user_id": (
-                        self.requester_id(row)
-                        if context.scope_id.startswith("group:")
-                        else None
-                    ),
-                }
-            )
+            payload.update({"text": text, "original_text": text})
+            if context.scope_id.startswith("group:"):
+                payload.update(
+                    {
+                        "reply_to_message_id": self.source_message_id(row),
+                        "mention_user_id": self.requester_id(row),
+                    }
+                )
         item = await self.outbox.submit(
             idempotency_key=key,
             scope_id=context.scope_id,

@@ -97,6 +97,7 @@ class WebCapabilityPlugin:
                     timeout=25,
                     allowed_roles=frozenset({AgentRole.CHAT, AgentRole.TASK}),
                     budget_kind=ToolBudgetKind.WEB_SEARCH,
+                    model_content_max_chars=config.web.max_model_content_chars,
                 )
             )
         )

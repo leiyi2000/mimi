@@ -354,6 +354,9 @@ class ToolRegistry:
             minimum = definition.get("minItems")
             if isinstance(minimum, int) and len(value) < minimum:
                 return f"argument {path} must contain at least {minimum} items"
+            maximum = definition.get("maxItems")
+            if isinstance(maximum, int) and len(value) > maximum:
+                return f"argument {path} must contain at most {maximum} items"
             item_definition = definition.get("items")
             if isinstance(item_definition, dict):
                 for index, item in enumerate(value):

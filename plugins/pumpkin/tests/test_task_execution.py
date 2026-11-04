@@ -41,6 +41,10 @@ class Client:
         self.sent.append((str(group_id), message))
         return {"message_id": 200 + len(self.sent)}
 
+    async def send_private_msg(self, user_id, message):
+        self.sent.append((str(user_id), message))
+        return {"message_id": 200 + len(self.sent)}
+
 
 class TaskProvider:
     def __init__(self):
@@ -168,6 +172,52 @@ async def test_task_agent_delivery_and_completion_are_scoped(tmp_path):
     ]
     assert delivery_types[:2] == ["reply", "at"]
     assert "image" in delivery_types
+    await runtime.close()
+
+
+async def test_private_task_uses_same_execution_and_delivery_pipeline(tmp_path):
+    config = replace(
+        PumpkinConfig.from_env(),
+        data_dir=str(tmp_path),
+        db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+    )
+    client = Client()
+    provider = TaskProvider()
+    runtime = PumpkinRuntime(
+        config,
+        client=client,
+        provider_chat=provider,
+        provider_task=provider,
+        text_renderer=FakeTextRenderer(),
+    )
+    await runtime.start()
+    event = {
+        "message_type": "private",
+        "time": int(time.time()),
+        "self_id": 999,
+        "message_id": 1,
+        "user_id": 7,
+        "message_seq": 1,
+        "real_id": 1,
+        "sender": {"user_id": 7, "nickname": "member"},
+        "raw_message": "请完成这个任务",
+        "message": [{"type": "text", "data": {"text": "请完成这个任务"}}],
+    }
+
+    await runtime.handle_event(event)
+    await runtime.wait_for_idle(timeout=2)
+
+    tasks = await runtime.store.list_tasks("private:7")
+    assert len(tasks) == 1
+    assert tasks[0].status is TaskStatus.COMPLETED
+    assert provider.calls["chat"] == 3
+    assert [target for target, _ in client.sent] == ["7", "7"]
+    acknowledgement = getattr(client.sent[0][1][-1], "text", "")
+    assert acknowledgement == "好，我来处理。"
+    delivery_types = [
+        getattr(segment, "_type", "") for segment in client.sent[1][1]
+    ]
+    assert delivery_types == ["image"]
     await runtime.close()
 
 

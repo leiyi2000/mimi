@@ -487,6 +487,62 @@ async def test_address_only_message_does_not_expose_task_context(tmp_path):
         {"create_task", "get_task_status", "update_task"}.isdisjoint(tool_names)
         for tool_names in provider.visible_tools
     )
+    assert all("load_skill" not in tool_names for tool_names in provider.visible_tools)
+    assert all(
+        {
+            "send_napcat_reply",
+            "send_napcat_replies",
+            "chat_turn_complete",
+        }.issubset(tool_names)
+        for tool_names in provider.visible_tools
+    )
+    await runtime.close()
+
+
+async def test_unrelated_failure_question_does_not_inject_active_task(tmp_path):
+    base = PumpkinConfig.from_env()
+    config = replace(
+        base,
+        assistant=replace(base.assistant, name="南瓜"),
+        activation=replace(base.activation, prefixes=("南瓜",)),
+        data_dir=str(tmp_path),
+        db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+    )
+    provider = AddressOnlyProvider()
+    runtime = PumpkinRuntime(
+        config,
+        client=FakeClient(),
+        provider_chat=provider,
+        provider_task=provider,
+    )
+    await runtime.start()
+    handoff = TaskHandoff(
+        task_id="failed-task",
+        revision=1,
+        scope_id="group:1",
+        source_messages=(),
+        involved_people=(PersonRef("7", "requester", "created the task"),),
+        goal="整理路线",
+        constraints=(),
+        requested_deliverables=(),
+        allowed_skills=(),
+    )
+    await runtime.task_service.create(handoff)
+    await runtime.task_service.transition(
+        "failed-task",
+        1,
+        TaskStatus.FAILED,
+        summary="任务执行失败",
+    )
+
+    await runtime.handle_event(group_event(2, "南瓜，刚才为什么没成功？"))
+    await runtime.wait_for_idle(timeout=1)
+
+    payload = provider.contexts[0]["inbox"]["payload"]
+    assert payload["task_related"] is False
+    assert payload["task_context_mode"] == "on_request"
+    assert payload["active_task_index"] == []
+    assert payload["recent_outbound_messages"] == []
     await runtime.close()
 
 
@@ -2045,6 +2101,68 @@ async def test_chat_reply_rejects_model_supplied_sticker_segment(tmp_path):
     )
 
     assert result.error_code == "INVALID_REPLY_SEGMENTS"
+    await runtime.close()
+
+
+async def test_chat_reply_rejects_cq_media_control_code_in_text(tmp_path):
+    base = PumpkinConfig.from_env()
+    config = replace(
+        base,
+        data_dir=str(tmp_path),
+        db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+    )
+    client = FakeClient()
+    runtime = PumpkinRuntime(config, client=client)
+    await runtime.start()
+
+    result = await runtime.chat_tools.send_chat_reply(
+        ToolContext(
+            scope_id="private:7",
+            sender_id="7",
+            message_id="message-1",
+            sender_name="member",
+            agent_role=AgentRole.CHAT,
+            run_id="chat-run",
+        ),
+        {
+            "text": "[CQ:image,file=https://public.example/image.png]",
+            "idempotency_key": "forged-cq-image",
+        },
+    )
+
+    assert result.error_code == "INVALID_REPLY_SEGMENTS"
+    assert client.sent == []
+    await runtime.close()
+
+
+async def test_chat_reply_rejects_cq_control_code_in_text_segment(tmp_path):
+    base = PumpkinConfig.from_env()
+    config = replace(
+        base,
+        data_dir=str(tmp_path),
+        db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+    )
+    client = FakeClient()
+    runtime = PumpkinRuntime(config, client=client)
+    await runtime.start()
+
+    result = await runtime.chat_tools.send_chat_reply(
+        ToolContext(
+            scope_id="group:1",
+            sender_id="7",
+            message_id="message-1",
+            sender_name="member",
+            agent_role=AgentRole.CHAT,
+            run_id="chat-run",
+        ),
+        {
+            "segments": [{"type": "text", "text": "[CQ:face,id=66]"}],
+            "idempotency_key": "forged-cq-face",
+        },
+    )
+
+    assert result.error_code == "INVALID_REPLY_SEGMENTS"
+    assert client.sent == []
     await runtime.close()
 
 

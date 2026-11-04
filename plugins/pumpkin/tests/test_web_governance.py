@@ -105,6 +105,7 @@ def _provider(
 
 def test_task_budget_defaults_and_notices(monkeypatch):
     for name in (
+        "PUMPKIN_MAX_STEPS",
         "PUMPKIN_TASK_MAX_STEPS",
         "PUMPKIN_TASK_FINALIZATION_STEPS",
         "PUMPKIN_TASK_WEB_SEARCH_LIMIT",
@@ -116,11 +117,12 @@ def test_task_budget_defaults_and_notices(monkeypatch):
 
     config = PumpkinConfig.from_env()
 
+    assert config.max_steps == 10
     assert config.task.budget.max_steps == 16
     assert config.task.budget.finalization_steps == 2
-    assert config.task.budget.web_search_limit == 4
-    assert config.task.budget.web_fetch_limit == 8
-    assert config.task.budget.web_download_limit == 4
+    assert config.task.budget.web_search_limit == 8
+    assert config.task.budget.web_fetch_limit == 16
+    assert config.task.budget.web_download_limit == 8
     assert "50%" in _budget_notice(8, 16, (0.5, 0.75))
     assert "75%" in _budget_notice(12, 16, (0.5, 0.75))
 

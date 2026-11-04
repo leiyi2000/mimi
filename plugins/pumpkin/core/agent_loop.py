@@ -365,7 +365,10 @@ class SessionAgentLoop:
         )
         loadout = self.profile.turn_policy.tool_loadout(item, available_tools)
         visible = set(loadout.visible_tools)
-        visible.add("load_skill")
+        if loadout.allow_skill_loading:
+            visible.add("load_skill")
+        else:
+            visible.discard("load_skill")
         max_steps = self.profile.max_steps_for(item.source_type)
         reserved_completion_steps = min(
             self.profile.reserved_completion_steps,

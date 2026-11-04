@@ -6,13 +6,16 @@ Pumpkin 是 Mimi 的 QQ 群聊和私聊 AI 插件。每条消息先写入
 - Conversation Agent 负责自然对话和任务识别；每条用户消息形成一个可恢复 Turn，
   模型与工具过程写入追加式 Session Event。
 - 任务由 Conversation Agent 创建，Task Executor 独立执行并只提交 TaskEvent 和
-  已验证 Artifact，不具备 QQ 发送权限。
+  已验证 Artifact，不具备 QQ 发送权限。群聊和私聊使用同一套 scope 隔离、任务执行与
+  交付链路；私聊结果直接发送，不附加群聊式引用或 `@`。
 - TaskEvent 全量持久化；只有等待输入、失败、暂停和完成事件使用固定 ID 写入 Conversation
   Inbox，不占用用户消息 Inbox。候选 Artifact、进度和描述更新仅供任务查询与审计，不会
   触发回复；启动时只补投未通知的用户可见事件。Conversation Agent 根据持久化事实表达
   终态，并只交付该 revision 已显式通过验收的 Artifact。
 - 所有聊天和任务交付经持久化 Outbox 发送；正文超过 80 个字符时由 Outbox 自动渲染
-  为图片。发送结果不确定时记为 `unknown`，不会盲目重发。
+  为图片。普通聊天只接受文本、`@` 和内置表情段，不解析模型拼接的 CQ 控制码；任务
+  图片、文件和语音必须通过已验证 Artifact 交付。发送结果不确定时记为 `unknown`，
+  不会盲目重发。
 - 任务创建成功后由 Runtime 通过 Outbox 立即发送 Conversation Agent 提供的简短自然确认，
   并直接结束当前 Conversation Turn，避免额外模型回合拖慢首响或重复更新任务。内部任务
   目标不会作为确认文案展示；防御性处理空白确认时只发送不含任务内容的短兜底。
@@ -57,16 +60,17 @@ Pumpkin 是 Mimi 的 QQ 群聊和私聊 AI 插件。每条消息先写入
 | `PUMPKIN_STOP_ALIASES` | 可选的逗号分隔停止参与别名；默认包含 `闭嘴`、`别说了` 和动态助手名组合 |
 | `PUMPKIN_CHAT_TIMEOUT_SECONDS`、`PUMPKIN_TASK_TIMEOUT_SECONDS` | 单次聊天和任务模型请求超时；聊天默认 60 秒且超时不重试 |
 | `PUMPKIN_SINGLE_TASK_TIMEOUT_SECONDS` | 单个任务总执行时限 |
-| `PUMPKIN_MAX_STEPS`、`PUMPKIN_TASK_MAX_STEPS`、`PUMPKIN_TASK_FINALIZATION_STEPS` | Conversation Agent 与 Task Executor 的最大模型步骤数默认分别为 36 和 16；任务在 50% 和 75% 时提醒模型收敛，最后 2 步只允许提交完成状态 |
-| `PUMPKIN_TASK_WEB_SEARCH_LIMIT`、`PUMPKIN_TASK_WEB_FETCH_LIMIT`、`PUMPKIN_TASK_WEB_DOWNLOAD_LIMIT` | 单个 Task Turn 的搜索、抓页和文件下载上限，默认 4、8、4 |
-| `PUMPKIN_TASK_BROWSER_DELEGATE_LIMIT` | 单个 Task Turn 的 Browser Agent 委派上限，默认 2 |
+| `PUMPKIN_MAX_STEPS`、`PUMPKIN_TASK_MAX_STEPS`、`PUMPKIN_TASK_FINALIZATION_STEPS` | Conversation Agent 与 Task Executor 的最大模型步骤数默认分别为 10 和 16；任务在 50% 和 75% 时提醒模型收敛，最后 2 步只允许提交完成状态 |
+| `PUMPKIN_TASK_WEB_SEARCH_LIMIT`、`PUMPKIN_TASK_WEB_FETCH_LIMIT`、`PUMPKIN_TASK_WEB_DOWNLOAD_LIMIT` | 单个 Task Turn 的搜索、抓页和文件下载上限，默认 8、16、8 |
+| `PUMPKIN_TASK_BROWSER_DELEGATE_LIMIT` | 单个 Task Turn 的 Browser Agent 委派上限，默认 4 |
 | `PUMPKIN_WEB_DOWNLOAD_MAX_BYTES` | 单个公网文件下载上限，默认 20 MiB |
 | `PUMPKIN_CHAT_FALLBACK_BASE_URLS`、`PUMPKIN_TASK_FALLBACK_BASE_URLS` | 逗号分隔的备用端点 |
 | `PUMPKIN_SEARCH_API_URL`、`PUMPKIN_SEARCH_API_KEY` | 可选网页搜索服务，未配置时明确返回未配置 |
-| `PUMPKIN_FETCH_MAX_BYTES`、`PUMPKIN_IMAGE_FETCH_MAX_BYTES` | 网页正文与网页图片的独立下载上限，默认分别为 1 MiB 和 20 MiB |
-| `PUMPKIN_WEB_MODEL_CONTENT_MAX_CHARS`、`PUMPKIN_WEB_HOST_CONCURRENCY` | 模型可见单页 Web 结果上限和同 host HTTP 并发，默认 8000 字符、2 并发 |
+| `PUMPKIN_SEARCH_TIMEOUT_SECONDS`、`PUMPKIN_SEARCH_MAX_RESULTS` | 单次 Web 请求超时和搜索结果上限，默认 20 秒、12 条 |
+| `PUMPKIN_FETCH_MAX_BYTES`、`PUMPKIN_FETCH_MAX_CHARS`、`PUMPKIN_IMAGE_FETCH_MAX_BYTES` | 网页正文下载、提取文本和网页图片上限，默认 2 MiB、60000 字符和 20 MiB |
+| `PUMPKIN_WEB_MODEL_CONTENT_MAX_CHARS`、`PUMPKIN_WEB_HOST_CONCURRENCY` | 模型可见单次 Web 结果上限和同 host HTTP 并发，默认 8000 字符、4 并发 |
 | `PUMPKIN_BROWSER_ENABLED`、`PUMPKIN_BROWSER_WORKER_SOCKET`、`PUMPKIN_BROWSER_WORKER_TOKEN` | 可选隔离 Browser Agent 开关、UDS 路径和 Worker 认证 Token |
-| `PUMPKIN_BROWSER_REASONING_EFFORT`、`PUMPKIN_BROWSER_TIMEOUT_SECONDS`、`PUMPKIN_BROWSER_MAX_STEPS`、`PUMPKIN_BROWSER_MAX_MCP_CALLS` | Browser Agent 独立模型推理深度、总时限、模型步骤和 MCP 调用预算；默认 `low`、180 秒、24、20 |
+| `PUMPKIN_BROWSER_REASONING_EFFORT`、`PUMPKIN_BROWSER_TIMEOUT_SECONDS`、`PUMPKIN_BROWSER_MAX_STEPS`、`PUMPKIN_BROWSER_MAX_MCP_CALLS` | Browser Agent 独立模型推理深度、总时限、模型步骤和 MCP 调用预算；默认 `low`、300 秒、36、40 |
 | `PUMPKIN_CODE_RUNNER_URL`、`PUMPKIN_CODE_RUNNER_TOKEN` | 独立代码沙箱服务，默认使用 Compose 内部地址 |
 | `PUMPKIN_IMAGE_PROVIDER`、`PUMPKIN_IMAGE_API_BASE_URL`、`PUMPKIN_IMAGE_API_KEY`、`PUMPKIN_IMAGE_MODEL` | 可选图片生成适配器 |
 | `PUMPKIN_AUDIO_PROVIDER`、`PUMPKIN_AUDIO_API_BASE_URL` | 可选 TTS 适配器，支持 `minimax` 和 `qwen-local` |

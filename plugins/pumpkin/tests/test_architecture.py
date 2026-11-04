@@ -186,12 +186,15 @@ def test_only_user_message_turns_receive_sticker_reply_capability():
     assert TurnCapability.STICKER_REPLY in policy.tool_loadout(
         user_item, ()
     ).capabilities
-    assert TurnCapability.STICKER_REPLY not in policy.tool_loadout(
-        address_only, ()
-    ).capabilities
+    address_only_loadout = policy.tool_loadout(address_only, ())
+    assert address_only_loadout.capabilities == frozenset(
+        {TurnCapability.CHAT_REPLY}
+    )
+    assert address_only_loadout.allow_skill_loading is False
     assert TurnCapability.STICKER_REPLY not in policy.tool_loadout(
         task_event, ()
     ).capabilities
+    assert policy.tool_loadout(task_event, ()).allow_skill_loading is False
 
 
 async def test_tool_registry_enforces_required_turn_capabilities():

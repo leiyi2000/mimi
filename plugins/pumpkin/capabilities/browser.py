@@ -113,7 +113,7 @@ class BrowserCapabilityPlugin:
                     allowed_roles=frozenset({AgentRole.TASK}),
                     budget_kind=ToolBudgetKind.BROWSER_DELEGATE,
                     deduplicate_argument="start_url",
-                    model_content_max_chars=16_000,
+                    model_content_max_chars=8_000,
                 )
             )
         )

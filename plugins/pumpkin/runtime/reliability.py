@@ -12,6 +12,7 @@ from core.domain import (
     AgentInboxItem,
     AgentInboxSource,
     OutboxStatus,
+    TaskEventType,
 )
 from .app import PumpkinRuntime
 
@@ -137,18 +138,28 @@ class ReliablePumpkinRuntime(PumpkinRuntime):
         *,
         source_event_id: str,
     ) -> None:
-        if item.source_type is not AgentInboxSource.USER_MESSAGE:
+        if item.source_type is AgentInboxSource.USER_MESSAGE:
+            text = "刚才这条消息处理失败了，请稍后再试一次。"
+            idempotency_key = f"turn-failed:{item.item_id}"
+            source = "turn_failure_receipt"
+            reply_to_message_id = item.payload.get("message_id")
+        elif item.source_type is AgentInboxSource.TASK_EVENT:
+            text = _task_event_fallback_text(item)
+            idempotency_key = f"task-event-turn-failed:{item.item_id}"
+            source = "task_event_failure_receipt"
+            reply_to_message_id = None
+        else:
             return
         result = await self.outbox.submit(
-            idempotency_key=f"turn-failed:{item.item_id}",
+            idempotency_key=idempotency_key,
             scope_id=item.scope_id,
             source_event_id=source_event_id,
             payload={
-                "text": "刚才这条消息处理失败了，请稍后再试一次。",
-                "original_text": "刚才这条消息处理失败了，请稍后再试一次。",
+                "text": text,
+                "original_text": text,
                 "segments": [],
-                "reply_to_message_id": item.payload.get("message_id"),
-                "source": "turn_failure_receipt",
+                "reply_to_message_id": reply_to_message_id,
+                "source": source,
             },
         )
         if result.status is not OutboxStatus.SENT:
@@ -159,3 +170,23 @@ class ReliablePumpkinRuntime(PumpkinRuntime):
                 result.error_code,
             )
             return
+
+
+def _task_event_fallback_text(item: AgentInboxItem) -> str:
+    event = item.payload.get("task_event")
+    event_type = event.get("event_type") if isinstance(event, dict) else None
+    return {
+        TaskEventType.FAILED.value: (
+            "这个任务执行失败了，暂时没有生成可交付结果。"
+        ),
+        TaskEventType.WAITING_FOR_INPUT.value: (
+            "这个任务还需要补充信息，请重新说明要求或查询任务状态。"
+        ),
+        TaskEventType.PAUSED.value: "这个任务已暂停，请稍后查询任务状态。",
+        TaskEventType.COMPLETED.value: (
+            "任务已经完成，但结果通知失败了，请重新查询任务状态。"
+        ),
+    }.get(
+        str(event_type),
+        "任务状态已经更新，但通知处理失败了，请重新查询任务状态。",
+    )

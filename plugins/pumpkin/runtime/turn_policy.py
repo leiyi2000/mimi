@@ -62,6 +62,10 @@ class ConversationTurnPolicy(DefaultTurnPolicy):
                 if tool.required_capabilities.issubset(capabilities)
             ),
             capabilities=capabilities,
+            allow_skill_loading=(
+                item.source_type is AgentInboxSource.USER_MESSAGE
+                and item.payload.get("address_only_message") is not True
+            ),
         )
 
     def _capabilities(
@@ -87,5 +91,5 @@ class ConversationTurnPolicy(DefaultTurnPolicy):
                 return self._USER_ACTION_TASK_EVENT_CAPABILITIES
             return self._TASK_EVENT_CAPABILITIES
         if item.payload.get("address_only_message") is True:
-            return frozenset()
+            return frozenset({TurnCapability.CHAT_REPLY})
         return self._USER_CAPABILITIES
