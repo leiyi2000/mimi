@@ -1,7 +1,8 @@
 import os
 import logging
-import threading
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import ClassVar
 import tomllib
@@ -11,6 +12,9 @@ log = logging.getLogger(__name__)
 
 
 class PluginManager:
+    _RESTART_INITIAL_DELAY_SECONDS = 1.0
+    _RESTART_MAX_DELAY_SECONDS = 60.0
+    _RESTART_STABLE_AFTER_SECONDS = 300.0
     _CHILD_LOG_LEVELS: ClassVar[dict[str, int]] = {
         "DEBUG": logging.DEBUG,
         "INFO": logging.INFO,
@@ -31,7 +35,10 @@ class PluginManager:
                 log.info(f"load plugin {plugin.name} from {plugin}")
 
         self._validate_command_manifests()
-        self.processes: list[subprocess.Popen] = []
+        self.processes: list[subprocess.Popen[str]] = []
+        self._process_lock = threading.Lock()
+        self._monitor_threads: list[threading.Thread] = []
+        self._stop_event = threading.Event()
 
     def _validate_command_manifests(self) -> None:
         owners: dict[str, str] = {}
@@ -61,59 +68,150 @@ class PluginManager:
                 return level
         return logging.ERROR if is_stderr else logging.INFO
 
-    def start(self):
-        def stream_log(stream, prefix, is_stderr=False):
-            with stream:
-                for line in stream:
-                    line = line.strip()
-                    if line:
-                        level = self._resolve_log_level(
-                            line,
-                            is_stderr=is_stderr,
-                        )
-                        log.log(level, f"[{prefix}] {line}")
+    def _stream_log(self, stream, prefix: str, *, is_stderr: bool) -> None:
+        with stream:
+            for line in stream:
+                line = line.strip()
+                if line:
+                    level = self._resolve_log_level(
+                        line,
+                        is_stderr=is_stderr,
+                    )
+                    log.log(level, f"[{prefix}] {line}")
 
-        for plugin in self.plugins:
-            # hardcode run main.py
-            cmd = ["uv", "run", "main.py"]
-            process = subprocess.Popen(
-                cmd,
-                cwd=plugin,
-                env=os.environ.copy(),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                bufsize=1,
+    def _spawn_plugin(self, plugin: Path) -> subprocess.Popen[str]:
+        process = subprocess.Popen(
+            ["uv", "run", "main.py"],
+            cwd=plugin,
+            env=os.environ.copy(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            bufsize=1,
+        )
+        if process.stdout is None or process.stderr is None:
+            process.kill()
+            process.wait()
+            raise RuntimeError(f"plugin {plugin.name} log pipes are unavailable")
+
+        threading.Thread(
+            target=self._stream_log,
+            args=(process.stdout, plugin.name),
+            kwargs={"is_stderr": False},
+            daemon=True,
+        ).start()
+        threading.Thread(
+            target=self._stream_log,
+            args=(process.stderr, plugin.name),
+            kwargs={"is_stderr": True},
+            daemon=True,
+        ).start()
+
+        with self._process_lock:
+            self.processes.append(process)
+        log.info("plugin %s run with pid %s", plugin.name, process.pid)
+        return process
+
+    def _monitor_plugin(
+        self,
+        plugin: Path,
+        process: subprocess.Popen[str],
+    ) -> None:
+        restart_delay = self._RESTART_INITIAL_DELAY_SECONDS
+        started_at = time.monotonic()
+
+        while True:
+            return_code = process.wait()
+            with self._process_lock:
+                if process in self.processes:
+                    self.processes.remove(process)
+
+            if self._stop_event.is_set():
+                return
+
+            running_seconds = time.monotonic() - started_at
+            if running_seconds >= self._RESTART_STABLE_AFTER_SECONDS:
+                restart_delay = self._RESTART_INITIAL_DELAY_SECONDS
+
+            log.error(
+                "plugin %s exited with code %s after %.1fs; restarting in %.1fs",
+                plugin.name,
+                return_code,
+                running_seconds,
+                restart_delay,
+            )
+            if self._stop_event.wait(restart_delay):
+                return
+
+            try:
+                process = self._spawn_plugin(plugin)
+            except OSError:
+                log.exception(
+                    "plugin %s restart failed; retrying in %.1fs",
+                    plugin.name,
+                    restart_delay,
+                )
+                restart_delay = min(
+                    restart_delay * 2,
+                    self._RESTART_MAX_DELAY_SECONDS,
+                )
+                continue
+
+            if self._stop_event.is_set():
+                process.terminate()
+                process.wait()
+                with self._process_lock:
+                    if process in self.processes:
+                        self.processes.remove(process)
+                return
+
+            started_at = time.monotonic()
+            restart_delay = min(
+                restart_delay * 2,
+                self._RESTART_MAX_DELAY_SECONDS,
             )
 
-            threading.Thread(
-                target=stream_log,
-                args=(process.stdout, plugin.name, False),
+    def start(self) -> None:
+        if self._monitor_threads:
+            raise RuntimeError("plugin manager is already started")
+
+        self._stop_event.clear()
+        for plugin in self.plugins:
+            process = self._spawn_plugin(plugin)
+            monitor = threading.Thread(
+                target=self._monitor_plugin,
+                args=(plugin, process),
+                name=f"plugin-monitor-{plugin.name}",
                 daemon=True,
-            ).start()
+            )
+            monitor.start()
+            self._monitor_threads.append(monitor)
 
-            threading.Thread(
-                target=stream_log,
-                args=(process.stderr, plugin.name, True),
-                daemon=True,
-            ).start()
+    def stop(self) -> None:
+        self._stop_event.set()
+        with self._process_lock:
+            processes = list(self.processes)
 
-            log.info(f"plugin {plugin.name} run with pid {process.pid}")
-            self.processes.append(process)
-
-    def stop(self):
-        for process in self.processes:
-            process.terminate()
+        for process in processes:
+            if process.poll() is None:
+                process.terminate()
+        for process in processes:
             try:
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
-        self.processes.clear()
+
+        for monitor in self._monitor_threads:
+            monitor.join(timeout=10)
+
+        with self._process_lock:
+            self.processes.clear()
+        self._monitor_threads.clear()
         log.info("all plugins stopped")
 
-    def restart(self):
+    def restart(self) -> None:
         self.stop()
         self.start()
         log.info("all plugins restarted")

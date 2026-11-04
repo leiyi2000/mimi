@@ -13,9 +13,12 @@ async def main():
     manager = PluginManager()
     manager.start()
 
-    client = Client.load_from_env()
-    async for event in client:
-        pass
+    try:
+        client = Client.load_from_env()
+        async for event in client:
+            pass
+    finally:
+        manager.stop()
 
 
 if __name__ == "__main__":
