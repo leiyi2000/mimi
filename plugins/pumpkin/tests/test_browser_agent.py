@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import base64
+import json
+import tempfile
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
 
 from browser.worker import BrowserWorker, WorkerRequestError
 from core.domain import ModelMessage, ModelResponse, ToolCall
-from providers.browser_worker import BrowserWorkerRun
+from providers.browser_worker import BrowserWorkerClient, BrowserWorkerRun
 from providers.public_url import PublicUrlError, PublicUrlGuard
 from runtime.browser_agent import (
     BrowserAgentRunner,
@@ -110,6 +114,46 @@ def response(*calls: ToolCall) -> ModelResponse:
         provider="fake",
         model="fake",
     )
+
+
+@pytest.mark.asyncio
+async def test_browser_worker_client_reads_large_protocol_frame():
+    payload = "x" * (asyncio.streams._DEFAULT_LIMIT + 1)
+
+    async def handle(reader, writer):
+        request = json.loads(await reader.readline())
+        writer.write(
+            json.dumps(
+                {
+                    "version": 1,
+                    "request_id": request["request_id"],
+                    "ok": True,
+                    "result": {"payload": payload},
+                },
+                separators=(",", ":"),
+            ).encode()
+            + b"\n"
+        )
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    with tempfile.TemporaryDirectory(
+        prefix="pumpkin-browser-",
+        dir="/tmp",
+    ) as directory:
+        socket_path = Path(directory) / "worker.sock"
+        server = await asyncio.start_unix_server(handle, path=socket_path)
+        try:
+            result = await BrowserWorkerClient(
+                socket_path=socket_path,
+                token="test-token",
+            ).health()
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    assert result == {"payload": payload}
 
 
 @pytest.mark.asyncio

@@ -93,7 +93,10 @@ class BrowserWorkerClient:
             )
         try:
             reader, writer = await asyncio.wait_for(
-                asyncio.open_unix_connection(self.socket_path),
+                asyncio.open_unix_connection(
+                    self.socket_path,
+                    limit=MAX_FRAME_BYTES,
+                ),
                 timeout=self.timeout,
             )
             try:
