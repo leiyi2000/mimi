@@ -13,7 +13,7 @@ from core.domain import (
     ModelMessage,
     ModelResponse,
     ParticipationAction,
-    ParticipationAudience,
+    ConversationContinuation,
     ParticipationIntent,
     ParticipationPhase,
     ParticipationReason,
@@ -57,10 +57,21 @@ class ChatProvider:
         phase = self.calls % 2
         self.calls += 1
         if phase == 0:
+            inbox_source = json.loads(messages[-1].content)["payload"]["inbox"][
+                "source_type"
+            ]
             call = ToolCall(
                 f"send-{turn}",
                 "send_napcat_reply",
-                {"text": "收到", "idempotency_key": f"chat-{turn}"},
+                {
+                    "text": "收到",
+                    "response_mode": (
+                        "task_status"
+                        if inbox_source == AgentInboxSource.TASK_EVENT.value
+                        else "casual_chat"
+                    ),
+                    "idempotency_key": f"chat-{turn}",
+                },
             )
         else:
             call = ToolCall(
@@ -69,7 +80,7 @@ class ChatProvider:
                 {
                     "outcome": "replied",
                     "sent_message_ids": [str(101 + turn)],
-                    "topic_state": "active",
+                    "continuation": "closed",
                 },
             )
         yield ModelResponse(
@@ -94,7 +105,11 @@ class AddressOnlyProvider:
             call = ToolCall(
                 "send-address-reply",
                 "send_napcat_reply",
-                {"text": "在呢，怎么啦？", "idempotency_key": "address-reply"},
+                {
+                    "text": "在呢，怎么啦？",
+                    "response_mode": "casual_chat",
+                    "idempotency_key": "address-reply",
+                },
             )
         else:
             call = ToolCall(
@@ -103,7 +118,7 @@ class AddressOnlyProvider:
                 {
                     "outcome": "replied",
                     "sent_message_ids": ["101"],
-                    "topic_state": "active",
+                    "continuation": "closed",
                 },
             )
         self.calls += 1
@@ -191,7 +206,11 @@ class CompletionFailureProvider:
             call = ToolCall(
                 "send-reply",
                 "send_napcat_reply",
-                {"text": "第一条", "idempotency_key": "first-reply"},
+                {
+                    "text": "第一条",
+                    "response_mode": "casual_chat",
+                    "idempotency_key": "first-reply",
+                },
             )
         elif self.calls == 1:
             call = ToolCall(
@@ -200,7 +219,7 @@ class CompletionFailureProvider:
                 {
                     "outcome": "replied",
                     "sent_message_ids": ["not-sent"],
-                    "topic_state": "active",
+                    "continuation": "closed",
                 },
             )
         elif self.calls == 2:
@@ -210,7 +229,7 @@ class CompletionFailureProvider:
                 {
                     "outcome": "replied",
                     "sent_message_ids": ["101"],
-                    "topic_state": "active",
+                    "continuation": "closed",
                 },
             )
         else:
@@ -235,7 +254,11 @@ class RepeatedCompletionFailureProvider:
             call = ToolCall(
                 "send-reply",
                 "send_napcat_reply",
-                {"text": "第一条", "idempotency_key": "first-reply"},
+                {
+                    "text": "第一条",
+                    "response_mode": "casual_chat",
+                    "idempotency_key": "first-reply",
+                },
             )
         else:
             call = ToolCall(
@@ -244,7 +267,7 @@ class RepeatedCompletionFailureProvider:
                 {
                     "outcome": "replied",
                     "sent_message_ids": ["not-sent"],
-                    "topic_state": "active",
+                    "continuation": "closed",
                 },
             )
         self.calls += 1
@@ -737,7 +760,9 @@ async def test_duplicate_event_is_archived_and_not_sent_twice(tmp_path):
     await runtime.close()
 
 
-async def test_runtime_restart_recovers_pending_conversation_inbox(tmp_path):
+async def test_runtime_restart_discards_pending_conversation_without_topic(
+    tmp_path,
+):
     config = replace(
         PumpkinConfig.from_env(),
         data_dir=str(tmp_path),
@@ -764,12 +789,60 @@ async def test_runtime_restart_recovers_pending_conversation_inbox(tmp_path):
     await restarted.start()
     await restarted.wait_for_idle(timeout=1)
 
-    assert len(client.sent) == 1
+    assert client.sent == []
+    inbox = await restarted.store.list_pending_agent_inputs(
+        "conversation:group:1"
+    )
+    assert inbox == ()
     events = await restarted.store.list_agent_events(
         "conversation:group:1:session"
     )
-    assert events[-1].event_type.value == "turn.completed"
+    assert events == ()
     await restarted.close()
+
+
+async def test_stale_queued_follow_up_is_discarded_before_model_call(tmp_path):
+    config = replace(
+        PumpkinConfig.from_env(),
+        data_dir=str(tmp_path),
+        db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+    )
+    provider = ChatProvider()
+    runtime = PumpkinRuntime(
+        config,
+        client=FakeClient(),
+        provider_chat=provider,
+    )
+    await runtime.start()
+    await runtime.sessions.activate(
+        "group:1",
+        summary="direct",
+        sender_id="7",
+        message_id="wake",
+        explicit_wake=True,
+    )
+    topic = await runtime.sessions.topic_context("group:1")
+    assert topic is not None
+    await runtime.sessions.end_topic("group:1", topic_id=topic.topic_id)
+
+    await runtime._conversation_agent("group:1").send(
+        {
+            "message_id": "follow-up",
+            "sender_id": "7",
+            "participation_intent": "follow_up",
+            "topic_id": topic.topic_id,
+            "message": {"raw_text": "过期补充"},
+        },
+        source_type=AgentInboxSource.USER_MESSAGE,
+        item_id="message:follow-up",
+    )
+    await runtime.wait_for_idle(timeout=1)
+
+    assert provider.calls == 0
+    assert await runtime.store.list_pending_agent_inputs(
+        "conversation:group:1"
+    ) == ()
+    await runtime.close()
 
 
 async def test_chat_does_not_invoke_task_provider(tmp_path):
@@ -840,6 +913,9 @@ async def test_chat_can_acknowledge_before_task_execution_finishes(tmp_path):
         assert len(client.sent) == 1
         assert getattr(client.sent[0][1][-1], "text", "") == "我先整理一下。"
         assert runtime.task_runtime.execution_tasks()
+        assert await runtime.sessions.current("group:1") is SessionState.EXPIRED
+        await runtime.handle_event(group_event(7, "我和群友聊点别的"))
+        assert len(client.sent) == 1
     finally:
         task_provider.release.set()
         await runtime.close()
@@ -936,7 +1012,9 @@ async def test_unaddressed_group_message_is_only_archived(tmp_path):
     await runtime.close()
 
 
-async def test_same_sender_follow_up_budget_accepts_only_two_turns(tmp_path):
+async def test_closed_direct_turn_does_not_accept_same_sender_follow_up(
+    tmp_path,
+):
     base = PumpkinConfig.from_env()
     config = replace(
         base,
@@ -966,15 +1044,15 @@ async def test_same_sender_follow_up_budget_accepts_only_two_turns(tmp_path):
     await runtime.handle_event(group_event(35, "第三句补充"))
     await runtime.wait_for_idle(timeout=1)
 
-    assert len(client.sent) == 3
+    assert len(client.sent) == 1
     row = await runtime.store.get_session("group:1")
     assert row is not None
-    assert row.cooling_message_count == 2
-    assert row.participation_phase == ParticipationPhase.COOLING.value
+    assert row.cooling_message_count == 0
+    assert row.participation_phase == ParticipationPhase.QUIET.value
     events = await runtime.store.list_agent_events(
         "conversation:group:1:session"
     )
-    assert sum(item.event_type.value == "turn.started" for item in events) == 3
+    assert sum(item.event_type.value == "turn.started" for item in events) == 1
     await runtime.close()
 
 
@@ -1172,6 +1250,11 @@ async def test_other_member_reply_to_accepted_message_is_expansion(tmp_path):
     before = await runtime.store.get_session("group:1")
     assert direct_decision.intent is ParticipationIntent.DIRECT
     assert before is not None
+    assert await runtime.sessions.set_topic_continuation(
+        "group:1",
+        ConversationContinuation.GROUP_OPEN,
+        topic_id=direct_decision.topic_id,
+    )
 
     expansion = runtime.adapter.adapt(
         group_event(
@@ -1224,24 +1307,15 @@ async def test_group_open_allows_bounded_expansion_without_reset(tmp_path):
     before = await runtime.store.get_session("group:1")
     assert before is not None
 
-    completion = await runtime.chat_tools.chat_turn_complete(
-        ToolContext(
-            scope_id="group:1",
-            sender_id="7",
-            message_id="wake",
-            sender_name="member",
-            agent_role=AgentRole.CHAT,
-            run_id="open-group-topic",
-        ),
-        {
-            "outcome": "ignored",
-            "sent_message_ids": [],
-            "topic_state": "active",
-            "topic_audience": ParticipationAudience.GROUP_OPEN.value,
-        },
+    topic = await runtime.sessions.topic_context("group:1")
+    assert topic is not None
+    opened_topic = await runtime.sessions.set_topic_continuation(
+        "group:1",
+        ConversationContinuation.GROUP_OPEN,
+        topic_id=topic.topic_id,
     )
     opened = await runtime.store.get_session("group:1")
-    assert not completion.is_error
+    assert opened_topic
     assert opened is not None
     assert opened.expires_at == before.expires_at
     assert opened.activated_at == before.activated_at
@@ -1258,6 +1332,95 @@ async def test_group_open_allows_bounded_expansion_without_reset(tmp_path):
     assert decision.action is ParticipationAction.ACCEPT
     assert decision.intent is ParticipationIntent.EXPANSION
     assert decision.reason is ParticipationReason.GROUP_OPEN_TOPIC
+    await runtime.close()
+
+
+async def test_visible_reply_can_request_requester_input(tmp_path):
+    runtime = PumpkinRuntime(
+        replace(
+            PumpkinConfig.from_env(),
+            data_dir=str(tmp_path),
+            db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+        ),
+        client=FakeClient(),
+    )
+    await runtime.start()
+    now = datetime.now(UTC)
+    await runtime.sessions.activate(
+        "group:1",
+        summary="direct",
+        now=now,
+        sender_id="7",
+        message_id="wake",
+        explicit_wake=True,
+    )
+    topic = await runtime.sessions.topic_context("group:1")
+    assert topic is not None
+    context = ToolContext(
+        scope_id="group:1",
+        sender_id="7",
+        message_id="wake",
+        sender_name="member",
+        agent_role=AgentRole.CHAT,
+        run_id="request-input",
+        topic_id=topic.topic_id,
+        inbox_source=AgentInboxSource.USER_MESSAGE,
+    )
+    sent = await runtime.chat_tools.send_chat_reply(
+        context,
+        {
+            "text": "你更偏向哪一种？",
+            "response_mode": "casual_chat",
+            "idempotency_key": "request-input",
+        },
+    )
+    assert not sent.is_error
+    completed = await runtime.chat_tools.chat_turn_complete(
+        context,
+        {
+            "outcome": "replied",
+            "sent_message_ids": sent.content["message_ids"],
+            "continuation": "requester_input",
+        },
+    )
+    assert not completed.is_error
+
+    decision = await runtime.sessions.decide_participation(
+        runtime.adapter.adapt(group_event(390, "我偏第一种", sender_id=7)),
+        direct=False,
+        now=now + timedelta(seconds=1),
+    )
+    assert decision.intent is ParticipationIntent.FOLLOW_UP
+    assert decision.topic_id == topic.topic_id
+    await runtime.close()
+
+
+async def test_ignored_turn_cannot_open_continuation(tmp_path):
+    runtime = PumpkinRuntime(
+        replace(
+            PumpkinConfig.from_env(),
+            data_dir=str(tmp_path),
+            db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+        ),
+        client=FakeClient(),
+    )
+    await runtime.start()
+    result = await runtime.chat_tools.chat_turn_complete(
+        ToolContext(
+            scope_id="group:1",
+            sender_id="7",
+            message_id="wake",
+            sender_name="member",
+            agent_role=AgentRole.CHAT,
+            run_id="invalid-open",
+        ),
+        {
+            "outcome": "ignored",
+            "sent_message_ids": [],
+            "continuation": "group_open",
+        },
+    )
+    assert result.error_code == "CONTINUATION_REQUIRES_REPLY"
     await runtime.close()
 
 
@@ -1292,6 +1455,13 @@ async def test_follow_up_and_expansion_consume_one_shared_budget(tmp_path):
         ),
         direct=False,
         now=now + timedelta(seconds=1),
+    )
+    topic = await runtime.sessions.topic_context("group:1")
+    assert topic is not None
+    assert await runtime.sessions.set_topic_continuation(
+        "group:1",
+        ConversationContinuation.GROUP_OPEN,
+        topic_id=topic.topic_id,
     )
     expansion = await runtime.sessions.decide_participation(
         runtime.adapter.adapt(
@@ -1352,6 +1522,8 @@ async def test_topic_active_alone_does_not_open_or_refresh_topic(tmp_path):
     )
     before = await runtime.store.get_session("group:1")
     assert before is not None
+    topic = await runtime.sessions.topic_context("group:1")
+    assert topic is not None
 
     completion = await runtime.chat_tools.chat_turn_complete(
         ToolContext(
@@ -1361,11 +1533,12 @@ async def test_topic_active_alone_does_not_open_or_refresh_topic(tmp_path):
             sender_name="member",
             agent_role=AgentRole.CHAT,
             run_id="active-only",
+            topic_id=topic.topic_id,
         ),
         {
             "outcome": "ignored",
             "sent_message_ids": [],
-            "topic_state": "active",
+            "continuation": "closed",
         },
     )
     decision = await runtime.sessions.decide_participation(
@@ -1379,9 +1552,9 @@ async def test_topic_active_alone_does_not_open_or_refresh_topic(tmp_path):
     after = await runtime.store.get_session("group:1")
     assert not completion.is_error
     assert decision.action is ParticipationAction.ARCHIVE_ONLY
-    assert decision.reason is ParticipationReason.DIFFERENT_SENDER
+    assert decision.reason is ParticipationReason.INACTIVE_SESSION
     assert after is not None
-    assert after.expires_at == before.expires_at
+    assert after.state == SessionState.EXPIRED.value
     assert after.cooling_message_count == 0
     await runtime.close()
 
@@ -1453,6 +1626,13 @@ async def test_concurrent_expansions_share_follow_up_budget(tmp_path):
         sender_id="7",
         message_id="wake",
         explicit_wake=True,
+    )
+    topic = await runtime.sessions.topic_context("group:1")
+    assert topic is not None
+    assert await runtime.sessions.set_topic_continuation(
+        "group:1",
+        ConversationContinuation.GROUP_OPEN,
+        topic_id=topic.topic_id,
     )
     messages = [
         runtime.adapter.adapt(
@@ -1797,6 +1977,13 @@ async def test_expansion_outside_direct_window_is_ambient(tmp_path):
         message_id="wake",
         explicit_wake=True,
     )
+    topic = await runtime.sessions.topic_context("group:1")
+    assert topic is not None
+    assert await runtime.sessions.set_topic_continuation(
+        "group:1",
+        ConversationContinuation.GROUP_OPEN,
+        topic_id=topic.topic_id,
+    )
     message = runtime.adapter.adapt(
         group_event(
             48,
@@ -1981,6 +2168,7 @@ async def test_long_chat_reply_is_rendered_as_image(tmp_path):
         ),
         {
             "text": "一" * 81,
+            "response_mode": "professional_answer",
             "idempotency_key": "long-chat-1",
         },
     )
@@ -1993,6 +2181,48 @@ async def test_long_chat_reply_is_rendered_as_image(tmp_path):
     outbound = await runtime.store.recent_outbound_messages("group:1")
     assert outbound[0].text == "一" * 81
     assert outbound[0].source == "chat"
+    await runtime.close()
+
+
+async def test_response_mode_must_match_inbox_source(tmp_path):
+    runtime = PumpkinRuntime(
+        replace(
+            PumpkinConfig.from_env(),
+            data_dir=str(tmp_path),
+            db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+        ),
+        client=FakeClient(),
+    )
+    await runtime.start()
+    task_event_context = ToolContext(
+        scope_id="group:1",
+        sender_id="7",
+        message_id="message-1",
+        sender_name="member",
+        agent_role=AgentRole.CHAT,
+        run_id="task-event-mode",
+        inbox_source=AgentInboxSource.TASK_EVENT,
+    )
+    invalid = await runtime.chat_tools.send_chat_reply(
+        task_event_context,
+        {
+            "text": "任务暂停了。",
+            "response_mode": "casual_chat",
+            "idempotency_key": "invalid-task-mode",
+        },
+    )
+    valid = await runtime.chat_tools.send_chat_reply(
+        task_event_context,
+        {
+            "text": "任务暂停了。",
+            "response_mode": "task_status",
+            "idempotency_key": "valid-task-mode",
+        },
+    )
+
+    assert invalid.error_code == "RESPONSE_MODE_SOURCE_MISMATCH"
+    assert not valid.is_error
+    assert valid.content["response_mode"] == "task_status"
     await runtime.close()
 
 
@@ -2018,6 +2248,7 @@ async def test_chat_reply_drops_model_supplied_quote_target(tmp_path):
         ),
         {
             "text": "收到",
+            "response_mode": "casual_chat",
             "reply_to_message_id": "message-1",
             "idempotency_key": "no-quote",
         },
@@ -2058,6 +2289,7 @@ async def test_long_chat_text_segments_are_rendered_as_image(tmp_path):
         ),
         {
             "segments": [{"type": "text", "text": "一" * 81}],
+            "response_mode": "professional_answer",
             "idempotency_key": "long-chat-segment-1",
         },
     )
@@ -2088,6 +2320,7 @@ async def test_chat_reply_rejects_model_supplied_sticker_segment(tmp_path):
             run_id="chat-run",
         ),
         {
+            "response_mode": "casual_chat",
             "segments": [
                 {
                     "type": "mface",
@@ -2126,6 +2359,7 @@ async def test_chat_reply_rejects_cq_media_control_code_in_text(tmp_path):
         ),
         {
             "text": "[CQ:image,file=https://public.example/image.png]",
+            "response_mode": "casual_chat",
             "idempotency_key": "forged-cq-image",
         },
     )
@@ -2157,6 +2391,7 @@ async def test_chat_reply_rejects_cq_control_code_in_text_segment(tmp_path):
         ),
         {
             "segments": [{"type": "text", "text": "[CQ:face,id=66]"}],
+            "response_mode": "casual_chat",
             "idempotency_key": "forged-cq-face",
         },
     )
@@ -2188,6 +2423,7 @@ async def test_short_chat_replies_are_sent_as_separate_messages(tmp_path):
         ),
         {
             "messages": ["这次没做完。", "步骤已经用光了。", "我先收敛结果。"],
+            "response_mode": "casual_chat",
             "idempotency_key": "short-replies-1",
         },
     )
@@ -2229,6 +2465,7 @@ async def test_follow_up_turn_allows_only_one_reply_message(tmp_path):
         context,
         {
             "messages": ["第一条", "第二条"],
+            "response_mode": "casual_chat",
             "idempotency_key": "too-many-follow-up-replies",
         },
     )
@@ -2238,11 +2475,19 @@ async def test_follow_up_turn_allows_only_one_reply_message(tmp_path):
 
     first = await runtime.chat_tools.send_chat_reply(
         context,
-        {"text": "只回复这一条", "idempotency_key": "follow-up-first"},
+        {
+            "text": "只回复这一条",
+            "response_mode": "casual_chat",
+            "idempotency_key": "follow-up-first",
+        },
     )
     second = await runtime.chat_tools.send_chat_reply(
         context,
-        {"text": "不能再发", "idempotency_key": "follow-up-second"},
+        {
+            "text": "不能再发",
+            "response_mode": "casual_chat",
+            "idempotency_key": "follow-up-second",
+        },
     )
 
     assert not first.is_error
@@ -2283,7 +2528,11 @@ async def test_outbound_chat_reply_does_not_extend_session_expiry(tmp_path):
             participation_intent=ParticipationIntent.DIRECT,
             max_reply_messages=2,
         ),
-        {"text": "收到", "idempotency_key": "no-outbound-renew"},
+        {
+            "text": "收到",
+            "response_mode": "casual_chat",
+            "idempotency_key": "no-outbound-renew",
+        },
     )
 
     after = await runtime.store.get_session("group:1")
@@ -2325,6 +2574,7 @@ async def test_partial_chat_batch_records_confirmed_messages(tmp_path):
         context,
         {
             "messages": ["第一条", "第二条"],
+            "response_mode": "casual_chat",
             "idempotency_key": "partial-batch",
         },
     )
@@ -2337,7 +2587,7 @@ async def test_partial_chat_batch_records_confirmed_messages(tmp_path):
         {
             "outcome": "replied",
             "sent_message_ids": ["101"],
-            "topic_state": "active",
+            "continuation": "closed",
         },
     )
     assert not completed.is_error
@@ -2374,6 +2624,7 @@ async def test_unknown_outbox_result_is_not_retried(tmp_path):
     )
     arguments = {
         "text": "发送结果未知",
+        "response_mode": "casual_chat",
         "idempotency_key": "unknown-chat-1",
     }
 
@@ -2409,6 +2660,7 @@ async def test_chat_idempotency_is_isolated_by_scope(tmp_path):
             ),
             {
                 "text": scope_id,
+                "response_mode": "casual_chat",
                 "idempotency_key": "same-model-key",
             },
         )
@@ -2446,7 +2698,7 @@ async def test_chat_completion_reports_exact_current_turn_message_ids(tmp_path):
         {
             "outcome": "replied",
             "sent_message_ids": ["102", "previous-turn"],
-            "topic_state": "active",
+            "continuation": "closed",
         },
     )
 
@@ -2469,7 +2721,7 @@ async def test_chat_completion_reports_exact_current_turn_message_ids(tmp_path):
         {
             "outcome": "replied",
             "sent_message_ids": [],
-            "topic_state": "active",
+            "continuation": "closed",
         },
     )
     assert empty.is_error
@@ -2480,7 +2732,7 @@ async def test_chat_completion_reports_exact_current_turn_message_ids(tmp_path):
         {
             "outcome": "ignored",
             "sent_message_ids": ["101", "102"],
-            "topic_state": "active",
+            "continuation": "closed",
         },
     )
     assert ignored.is_error
@@ -2491,7 +2743,7 @@ async def test_chat_completion_reports_exact_current_turn_message_ids(tmp_path):
         {
             "outcome": "replied",
             "sent_message_ids": ["101", "102"],
-            "topic_state": "active",
+            "continuation": "closed",
         },
     )
     assert not completed.is_error
@@ -2513,6 +2765,8 @@ async def test_model_can_end_active_group_topic(tmp_path):
         summary="active topic",
         explicit_wake=True,
     )
+    topic = await runtime.sessions.topic_context("group:1")
+    assert topic is not None
 
     result = await runtime.chat_tools.chat_turn_complete(
         ToolContext(
@@ -2522,11 +2776,12 @@ async def test_model_can_end_active_group_topic(tmp_path):
             sender_name="member",
             agent_role=AgentRole.CHAT,
             run_id="topic-end",
+            topic_id=topic.topic_id,
         ),
         {
             "outcome": "ignored",
             "sent_message_ids": [],
-            "topic_state": "ended",
+            "continuation": "closed",
             "reason": "the model judged the topic complete",
         },
     )
@@ -2536,7 +2791,7 @@ async def test_model_can_end_active_group_topic(tmp_path):
     await runtime.close()
 
 
-async def test_chat_completion_requires_explicit_topic_state(tmp_path):
+async def test_chat_completion_requires_explicit_continuation(tmp_path):
     base = PumpkinConfig.from_env()
     runtime = PumpkinRuntime(
         replace(
@@ -2561,7 +2816,7 @@ async def test_chat_completion_requires_explicit_topic_state(tmp_path):
     )
 
     assert result.is_error
-    assert result.error_code == "INVALID_TOPIC_STATE"
+    assert result.error_code == "INVALID_CONVERSATION_CONTINUATION"
     await runtime.close()
-    assert result.error_code == "INVALID_TOPIC_STATE"
+    assert result.error_code == "INVALID_CONVERSATION_CONTINUATION"
     await runtime.close()

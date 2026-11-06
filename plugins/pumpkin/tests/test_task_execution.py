@@ -102,7 +102,7 @@ class TaskProvider:
                     {
                         "outcome": "replied",
                         "sent_message_ids": ["202"],
-                        "topic_state": "active",
+                        "continuation": "closed",
                     },
                 )
         else:

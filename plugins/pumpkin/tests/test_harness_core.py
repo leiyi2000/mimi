@@ -374,6 +374,134 @@ def test_session_projection_limits_completed_turn_history():
     assert projection.last_sequence == sequence
 
 
+def test_group_session_projection_keeps_only_current_topic():
+    from core.domain import AgentEvent
+
+    events = []
+    sequence = 0
+    for turn_id, topic_id in (
+        ("old-turn", "old-topic"),
+        ("current-turn", "current-topic"),
+    ):
+        sequence += 1
+        events.append(
+            AgentEvent(
+                str(sequence),
+                "agent",
+                "session",
+                "group:1",
+                sequence,
+                AgentEventType.TURN_STARTED,
+                {
+                    "source_type": AgentInboxSource.USER_MESSAGE.value,
+                    "topic_id": topic_id,
+                    "participation_intent": "direct",
+                },
+                turn_id=turn_id,
+            )
+        )
+        sequence += 1
+        events.append(
+            AgentEvent(
+                str(sequence),
+                "agent",
+                "session",
+                "group:1",
+                sequence,
+                AgentEventType.USER_MESSAGE,
+                {"content": topic_id, "topic_id": topic_id},
+                turn_id=turn_id,
+            )
+        )
+        if turn_id == "old-turn":
+            sequence += 1
+            events.append(
+                AgentEvent(
+                    str(sequence),
+                    "agent",
+                    "session",
+                    "group:1",
+                    sequence,
+                    AgentEventType.TURN_COMPLETED,
+                    {},
+                    turn_id=turn_id,
+                )
+            )
+
+    projection = SessionProjection.from_events(tuple(events))
+
+    assert [message.content for message in projection.messages] == [
+        "current-topic"
+    ]
+    assert projection.open_turn_id == "current-turn"
+
+
+def test_task_event_projection_excludes_previous_chat_topic():
+    from core.domain import AgentEvent
+
+    events = (
+        AgentEvent(
+            "1",
+            "agent",
+            "session",
+            "group:1",
+            1,
+            AgentEventType.TURN_STARTED,
+            {
+                "source_type": AgentInboxSource.USER_MESSAGE.value,
+                "topic_id": "chat-topic",
+            },
+            turn_id="chat-turn",
+        ),
+        AgentEvent(
+            "2",
+            "agent",
+            "session",
+            "group:1",
+            2,
+            AgentEventType.USER_MESSAGE,
+            {"content": "chat context"},
+            turn_id="chat-turn",
+        ),
+        AgentEvent(
+            "3",
+            "agent",
+            "session",
+            "group:1",
+            3,
+            AgentEventType.TURN_COMPLETED,
+            {},
+            turn_id="chat-turn",
+        ),
+        AgentEvent(
+            "4",
+            "agent",
+            "session",
+            "group:1",
+            4,
+            AgentEventType.TURN_STARTED,
+            {"source_type": AgentInboxSource.TASK_EVENT.value},
+            turn_id="task-turn",
+        ),
+        AgentEvent(
+            "5",
+            "agent",
+            "session",
+            "group:1",
+            5,
+            AgentEventType.USER_MESSAGE,
+            {"content": "task context"},
+            turn_id="task-turn",
+        ),
+    )
+
+    projection = SessionProjection.from_events(events)
+
+    assert [message.content for message in projection.messages] == [
+        "task context"
+    ]
+
+
 def test_session_projection_ignores_orphan_turn_after_history_gap():
     from core.domain import AgentEvent
 

@@ -9,10 +9,10 @@ from datetime import datetime, timedelta, UTC
 
 from .config import ActivationConfig
 from .domain import (
+    ConversationContinuation,
     InboundMessage,
     MessageSegmentType,
     ParticipationAction,
-    ParticipationAudience,
     ParticipationDecision,
     ParticipationIntent,
     ParticipationPhase,
@@ -35,9 +35,10 @@ _KEYCAP = "\N{COMBINING ENCLOSING KEYCAP}"
 
 @dataclass(frozen=True, slots=True)
 class ParticipationContext:
+    topic_id: str
     last_direct_sender_id: str | None
     summary: str
-    audience: ParticipationAudience
+    continuation: ConversationContinuation
     accepted_message_ids: tuple[str, ...]
     last_activity_at: datetime | None
 
@@ -52,21 +53,23 @@ class ParticipationContext:
         if message_id:
             message_ids += (message_id,)
         return ParticipationContext(
+            topic_id=self.topic_id,
             last_direct_sender_id=self.last_direct_sender_id,
             summary=self.summary,
-            audience=self.audience,
+            continuation=self.continuation,
             accepted_message_ids=message_ids[-_ACCEPTED_TOPIC_MESSAGE_LIMIT:],
             last_activity_at=accepted_at,
         )
 
-    def with_audience(
+    def with_continuation(
         self,
-        audience: ParticipationAudience,
+        continuation: ConversationContinuation,
     ) -> ParticipationContext:
         return ParticipationContext(
+            topic_id=self.topic_id,
             last_direct_sender_id=self.last_direct_sender_id,
             summary=self.summary,
-            audience=audience,
+            continuation=continuation,
             accepted_message_ids=self.accepted_message_ids,
             last_activity_at=self.last_activity_at,
         )
@@ -74,9 +77,10 @@ class ParticipationContext:
     def serialize(self) -> str:
         return json.dumps(
             {
+                "topic_id": self.topic_id,
                 "last_direct_sender_id": self.last_direct_sender_id,
                 "summary": self.summary,
-                "audience": self.audience.value,
+                "continuation": self.continuation.value,
                 "accepted_message_ids": list(self.accepted_message_ids),
                 "last_activity_at": (
                     self.last_activity_at.isoformat()
@@ -97,9 +101,10 @@ class ParticipationContext:
         active_at: datetime,
     ) -> ParticipationContext:
         return cls(
+            topic_id=uuid.uuid4().hex,
             last_direct_sender_id=sender_id,
             summary=summary,
-            audience=ParticipationAudience.REQUESTER_ONLY,
+            continuation=ConversationContinuation.REQUESTER_INPUT,
             accepted_message_ids=(message_id,) if message_id else (),
             last_activity_at=active_at,
         )
@@ -120,23 +125,19 @@ class ParticipationContext:
             else ()
         )
         try:
-            audience = ParticipationAudience(
-                str(
-                    payload.get(
-                        "audience",
-                        ParticipationAudience.REQUESTER_ONLY.value,
-                    )
-                )
+            continuation = ConversationContinuation(
+                str(payload.get("continuation", ConversationContinuation.CLOSED))
             )
         except ValueError:
-            audience = ParticipationAudience.REQUESTER_ONLY
+            continuation = ConversationContinuation.CLOSED
         last_activity_at = _parse_datetime(payload.get("last_activity_at"))
         return cls(
+            topic_id=str(payload.get("topic_id") or ""),
             last_direct_sender_id=(
                 str(sender_id) if sender_id is not None else None
             ),
             summary=str(payload.get("summary", value)),
-            audience=audience,
+            continuation=continuation,
             accepted_message_ids=message_ids[-_ACCEPTED_TOPIC_MESSAGE_LIMIT:],
             last_activity_at=last_activity_at,
         )
@@ -366,6 +367,16 @@ class ChatSessionService:
                         explicit_wake=True,
                     )
                 )
+            current_row = (
+                await self.store.get_session(message.scope_id)
+                if accepted
+                else None
+            )
+            topic_id = (
+                ParticipationContext.parse(current_row.summary).topic_id
+                if current_row is not None
+                else None
+            )
             return ParticipationDecision(
                 action=(
                     ParticipationAction.ACCEPT
@@ -380,6 +391,7 @@ class ChatSessionService:
                 ),
                 remaining_budget=self.config.follow_up_turn_budget,
                 max_reply_messages=self.config.direct_reply_limit,
+                topic_id=topic_id,
             )
         if state is not SessionState.ACTIVE:
             return self._archive_only(
@@ -391,7 +403,11 @@ class ChatSessionService:
         if row is None:
             return self._archive_only(ParticipationReason.INACTIVE_SESSION)
         participation = ParticipationContext.parse(row.summary)
-        if participation.last_direct_sender_id == message.sender_id:
+        if (
+            participation.continuation
+            is ConversationContinuation.REQUESTER_INPUT
+            and participation.last_direct_sender_id == message.sender_id
+        ):
             if _is_reaction_only_message(message):
                 return self._archive_only(
                     ParticipationReason.REACTION_ONLY_FOLLOW_UP
@@ -400,7 +416,7 @@ class ChatSessionService:
             accepted_reason = ParticipationReason.SAME_SENDER_FOLLOW_UP
             expired_reason = ParticipationReason.FOLLOW_UP_WINDOW_EXPIRED
             exhausted_reason = ParticipationReason.FOLLOW_UP_BUDGET_EXHAUSTED
-        elif (
+        elif participation.continuation is ConversationContinuation.GROUP_OPEN and (
             message.reply_to_message_id is not None
             and message.reply_to_message_id
             in participation.accepted_message_ids
@@ -411,7 +427,7 @@ class ChatSessionService:
             )
             expired_reason = ParticipationReason.EXPANSION_WINDOW_EXPIRED
             exhausted_reason = ParticipationReason.EXPANSION_BUDGET_EXHAUSTED
-        elif participation.audience is ParticipationAudience.GROUP_OPEN:
+        elif participation.continuation is ConversationContinuation.GROUP_OPEN:
             intent = ParticipationIntent.EXPANSION
             accepted_reason = ParticipationReason.GROUP_OPEN_TOPIC
             expired_reason = ParticipationReason.EXPANSION_WINDOW_EXPIRED
@@ -467,6 +483,7 @@ class ChatSessionService:
                 if intent is ParticipationIntent.FOLLOW_UP
                 else self.config.expansion_reply_limit
             ),
+            topic_id=participation.topic_id,
         )
 
     def _archive_only(
@@ -579,15 +596,20 @@ class ChatSessionService:
             ),
         )
 
-    async def set_topic_audience(
+    async def set_topic_continuation(
         self,
         scope_id: str,
-        audience: ParticipationAudience,
+        continuation: ConversationContinuation,
+        *,
+        topic_id: str | None = None,
     ) -> bool:
         lock = self._participation_locks.setdefault(scope_id, asyncio.Lock())
         async with lock:
             row = await self.store.get_session(scope_id)
             if row is None or row.state != SessionState.ACTIVE.value:
+                return False
+            participation = ParticipationContext.parse(row.summary)
+            if topic_id is not None and participation.topic_id != topic_id:
                 return False
             await self.store.save_session(
                 scope_id=scope_id,
@@ -596,22 +618,33 @@ class ChatSessionService:
                 activated_at=_aware(row.activated_at),
                 last_sent_at=_aware(row.last_sent_at),
                 expires_at=_aware(row.expires_at),
-                summary=ParticipationContext.parse(row.summary)
-                .with_audience(audience)
-                .serialize(),
+                summary=participation.with_continuation(continuation).serialize(),
                 participation_phase=ParticipationPhase(row.participation_phase),
                 cooling_message_count=row.cooling_message_count,
             )
             return True
 
-    async def end_topic(self, scope_id: str) -> None:
+    async def end_topic(
+        self,
+        scope_id: str,
+        *,
+        topic_id: str | None = None,
+    ) -> None:
         lock = self._participation_locks.setdefault(scope_id, asyncio.Lock())
         async with lock:
-            await self._end_topic(scope_id)
+            await self._end_topic(scope_id, topic_id=topic_id)
 
-    async def _end_topic(self, scope_id: str) -> None:
+    async def _end_topic(
+        self,
+        scope_id: str,
+        *,
+        topic_id: str | None = None,
+    ) -> None:
         row = await self.store.get_session(scope_id)
         if row is None:
+            return
+        participation = ParticipationContext.parse(row.summary)
+        if topic_id is not None and participation.topic_id != topic_id:
             return
         await self.store.save_conversation_control(
             scope_id,
@@ -624,10 +657,50 @@ class ChatSessionService:
             activated_at=_aware(row.activated_at),
             last_sent_at=_aware(row.last_sent_at),
             expires_at=datetime.now(UTC),
-            summary=row.summary,
+            summary=participation.with_continuation(
+                ConversationContinuation.CLOSED
+            ).serialize(),
             participation_phase=ParticipationPhase.QUIET,
             cooling_message_count=0,
         )
+
+    async def topic_context(
+        self,
+        scope_id: str,
+    ) -> ParticipationContext | None:
+        row = await self.store.get_session(scope_id)
+        if row is None:
+            return None
+        return ParticipationContext.parse(row.summary)
+
+    async def queued_message_is_current(
+        self,
+        scope_id: str,
+        *,
+        topic_id: str,
+        intent: ParticipationIntent,
+        sender_id: str | None,
+    ) -> bool:
+        if intent is ParticipationIntent.DIRECT:
+            return True
+        row = await self.store.get_session(scope_id)
+        if row is None or row.state != SessionState.ACTIVE.value:
+            return False
+        participation = ParticipationContext.parse(row.summary)
+        if not topic_id or participation.topic_id != topic_id:
+            return False
+        if intent is ParticipationIntent.FOLLOW_UP:
+            return (
+                participation.continuation
+                is ConversationContinuation.REQUESTER_INPUT
+                and participation.last_direct_sender_id == sender_id
+            )
+        if intent is ParticipationIntent.EXPANSION:
+            return (
+                participation.continuation
+                is ConversationContinuation.GROUP_OPEN
+            )
+        return False
 
     async def renew(self, scope_id: str, sent_at: datetime | None = None) -> None:
         control = await self.store.get_conversation_control(scope_id)

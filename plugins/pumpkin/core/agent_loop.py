@@ -325,6 +325,10 @@ class SessionAgentLoop:
                 "inbox_item_id": item.item_id,
                 "source_type": item.source_type,
                 "profile": self.profile.profile.value,
+                "topic_id": item.payload.get("topic_id"),
+                "participation_intent": item.payload.get(
+                    "participation_intent"
+                ),
             },
             turn_id=turn_id,
         )
@@ -354,7 +358,16 @@ class SessionAgentLoop:
         }
         await agent.session.append(
             AgentEventType.USER_MESSAGE,
-            {"content": build_dynamic_context(self.profile.tool_role, input_payload)},
+            {
+                "content": build_dynamic_context(
+                    self.profile.tool_role,
+                    input_payload,
+                ),
+                "topic_id": item.payload.get("topic_id"),
+                "participation_intent": item.payload.get(
+                    "participation_intent"
+                ),
+            },
             turn_id=turn_id,
         )
         available_tools = self.tools.tools_for(

@@ -23,11 +23,13 @@ from core.agent_loop import AgentLoopProfile, SessionAgentLoop
 from core.config import ModelConfig, PumpkinConfig
 from core.conversation import ChatSessionService
 from core.domain import (
+    AgentInboxItem,
     AgentInboxSource,
     AgentProfile,
     AgentRole,
     AgentStatus,
     ArtifactRef,
+    ParticipationIntent,
     TaskHandoff,
     ToolContext,
 )
@@ -666,9 +668,33 @@ class PumpkinRuntime:
             scope_id=scope_id,
             profile=AgentProfile.CONVERSATION,
             session_id=f"{agent_id}:session",
+            inbox_validator=self._conversation_inbox_is_current,
         )
         self._conversation_agents[scope_id] = agent
         return agent
+
+    async def _conversation_inbox_is_current(
+        self,
+        item: AgentInboxItem,
+    ) -> bool:
+        if item.source_type is not AgentInboxSource.USER_MESSAGE:
+            return True
+        try:
+            intent = ParticipationIntent(
+                str(item.payload.get("participation_intent"))
+            )
+        except ValueError:
+            return False
+        return await self.sessions.queued_message_is_current(
+            item.scope_id,
+            topic_id=str(item.payload.get("topic_id") or ""),
+            intent=intent,
+            sender_id=(
+                str(item.payload["sender_id"])
+                if item.payload.get("sender_id") is not None
+                else None
+            ),
+        )
 
     async def _assistant_context_payload(self, scope_id: str) -> dict[str, Any]:
         recent = await self.store.recent_outbound_messages(scope_id)

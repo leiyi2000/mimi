@@ -79,6 +79,7 @@ class DefaultTurnPolicy:
             participation_intent=_optional_participation_intent(
                 item.payload.get("participation_intent")
             ),
+            topic_id=_optional_string(item.payload.get("topic_id")),
             max_reply_messages=_reply_message_limit(
                 item.payload.get("max_reply_messages")
             ),

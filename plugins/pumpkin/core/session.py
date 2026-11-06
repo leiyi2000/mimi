@@ -48,6 +48,14 @@ class SessionProjection:
         default_factory=list,
         repr=False,
     )
+    _turn_topics: dict[str, str | None] = field(
+        default_factory=dict,
+        repr=False,
+    )
+    _turn_sources: dict[str, str] = field(
+        default_factory=dict,
+        repr=False,
+    )
 
     @classmethod
     def from_events(
@@ -84,6 +92,14 @@ class SessionProjection:
                 raise ValueError("cannot start a turn while another turn is open")
             self.open_turn_id = event.turn_id
             self.tool_executions = {}
+            if event.turn_id is not None:
+                topic_id = payload.get("topic_id")
+                self._turn_topics[event.turn_id] = (
+                    str(topic_id) if topic_id else None
+                )
+                self._turn_sources[event.turn_id] = str(
+                    payload.get("source_type") or ""
+                )
         elif event.event_type is AgentEventType.STEP_STARTED:
             if self.open_turn_id is None:
                 raise ValueError("cannot start a step without an open turn")
@@ -209,11 +225,44 @@ class SessionProjection:
             self.open_turn_id = None
 
     def _limit_model_history(self) -> None:
-        retained_turns = set(
-            self._terminal_turn_ids[-_MAX_COMPLETED_MODEL_TURNS:]
+        current_turn_id = self.open_turn_id or (
+            self._terminal_turn_ids[-1] if self._terminal_turn_ids else None
         )
-        if self.open_turn_id is not None:
-            retained_turns.add(self.open_turn_id)
+        current_source = (
+            self._turn_sources.get(current_turn_id, "")
+            if current_turn_id is not None
+            else ""
+        )
+        current_topic = (
+            self._turn_topics.get(current_turn_id)
+            if current_turn_id is not None
+            else None
+        )
+        if current_source == "task.event":
+            retained_turns = (
+                {current_turn_id} if current_turn_id is not None else set()
+            )
+        elif (
+            current_source == "user.message"
+            and current_topic
+            and self._is_group_scope()
+        ):
+            matching_terminal_turns = [
+                turn_id
+                for turn_id in self._terminal_turn_ids
+                if self._turn_topics.get(turn_id) == current_topic
+            ]
+            retained_turns = set(
+                matching_terminal_turns[-_MAX_COMPLETED_MODEL_TURNS:]
+            )
+            if current_turn_id is not None:
+                retained_turns.add(current_turn_id)
+        else:
+            retained_turns = set(
+                self._terminal_turn_ids[-_MAX_COMPLETED_MODEL_TURNS:]
+            )
+            if self.open_turn_id is not None:
+                retained_turns.add(self.open_turn_id)
         retained = [
             (message, turn_id)
             for message, turn_id in zip(
@@ -225,6 +274,14 @@ class SessionProjection:
         ]
         self.messages = [message for message, _turn_id in retained]
         self._message_turn_ids = [turn_id for _message, turn_id in retained]
+
+    def _is_group_scope(self) -> bool:
+        return any(
+            turn_id is not None
+            and self._turn_sources.get(turn_id) == "user.message"
+            and self._turn_topics.get(turn_id) is not None
+            for turn_id in self._message_turn_ids
+        )
 
 
 @dataclass(frozen=True, slots=True)

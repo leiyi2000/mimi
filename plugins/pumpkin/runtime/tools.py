@@ -136,16 +136,15 @@ def build_registry(
     )
     register(
         "chat_turn_complete",
-        "结束当前聊天轮次。群聊话题明显结束、转向无关内容或有人要求停止参与时，"
-        "topic_state 使用 ended，否则使用 active；sent_message_ids 必须按发送顺序完整"
+        "结束当前聊天轮次。普通回答、闲聊、沉默、拒绝和失败使用 closed；只有回复中"
+        "明确等待当前请求人补充时使用 requester_input，明确邀请群成员参与时使用 "
+        "group_open。sent_message_ids 必须按发送顺序完整"
         "复制当前轮所有发送工具返回的 message_ids，不得包含历史消息 ID。工具返回"
         "SEND_NOT_CONFIRMED 时，根据结果中的 confirmed_message_ids 修正后重试。"
-        "发送简短拒绝时 outcome 仍使用 replied；主动保持安静且未发送消息时使用 ignored。"
-        "只有当前回复明确邀请群内其他成员继续参与时，才将 topic_audience 设为 "
-        "group_open；requester_only 可关闭此前开放范围。省略该字段时保持现状。",
+        "发送简短拒绝时 outcome 仍使用 replied；主动保持安静且未发送消息时使用 ignored。",
         {
             "type": "object",
-            "required": ["outcome", "sent_message_ids", "topic_state"],
+            "required": ["outcome", "sent_message_ids", "continuation"],
             "properties": {
                 "outcome": {
                     "type": "string",
@@ -155,13 +154,9 @@ def build_registry(
                     "type": "array",
                     "items": {"type": "string"},
                 },
-                "topic_state": {
+                "continuation": {
                     "type": "string",
-                    "enum": ["active", "ended"],
-                },
-                "topic_audience": {
-                    "type": "string",
-                    "enum": ["requester_only", "group_open"],
+                    "enum": ["closed", "requester_input", "group_open"],
                 },
                 "reason": {"type": "string"},
             },
@@ -463,11 +458,20 @@ def build_registry(
         "send_napcat_reply",
         "发送当前作用域的普通聊天回复；群聊普通回复不引用消息，正文超过 80 个字符时 "
         "Runtime 会自动渲染为图片。总发送条数不得超过动态上下文中的 "
-        "max_reply_messages。",
+        "max_reply_messages。必须声明回复模式：日常交流使用 casual_chat，明确要求分析、"
+        "解释、建议或专业资料时使用 professional_answer，任务事件状态使用 task_status。",
         {
             "type": "object",
-            "required": ["idempotency_key"],
+            "required": ["response_mode", "idempotency_key"],
             "properties": {
+                "response_mode": {
+                    "type": "string",
+                    "enum": [
+                        "casual_chat",
+                        "professional_answer",
+                        "task_status",
+                    ],
+                },
                 "text": {"type": "string"},
                 "segments": {
                     "type": "array",
@@ -556,11 +560,19 @@ def build_registry(
     register(
         "send_napcat_replies",
         "按顺序发送 1-3 条短聊天消息；每条消息都应只表达一个事实，且总条数不得超过"
-        "动态上下文中的 max_reply_messages。",
+        "动态上下文中的 max_reply_messages。必须按当前内容声明 response_mode。",
         {
             "type": "object",
-            "required": ["messages", "idempotency_key"],
+            "required": ["messages", "response_mode", "idempotency_key"],
             "properties": {
+                "response_mode": {
+                    "type": "string",
+                    "enum": [
+                        "casual_chat",
+                        "professional_answer",
+                        "task_status",
+                    ],
+                },
                 "messages": {
                     "type": "array",
                     "minItems": 1,

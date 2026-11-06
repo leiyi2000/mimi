@@ -104,6 +104,11 @@ class TaskCommandService:
         )
         cached = await self.store.idempotency_get(key)
         if cached and cached.get("_status") != "in_progress":
+            if context.topic_id is not None:
+                await self.sessions.end_topic(
+                    context.scope_id,
+                    topic_id=context.topic_id,
+                )
             return ok(cached)
         source_ids = tuple(str(item) for item in arguments["source_message_ids"])
         if context.message_id is None or set(source_ids) != {context.message_id}:
@@ -181,19 +186,26 @@ class TaskCommandService:
         except (ValueError, TaskStateError) as exc:
             return error(str(exc), "TASK_CREATE_FAILED")
         started_text = task_started_text(arguments.get("acknowledgement"))
-        acknowledgement = await self.outbox.submit(
-            idempotency_key=f"task-started:{key}",
-            scope_id=context.scope_id,
-            source_event_id=context.run_id,
-            payload={
-                "text": started_text,
-                "original_text": started_text,
-                "segments": [],
-                "reply_to_message_id": context.message_id,
-                "mention_user_id": context.sender_id,
-                "source": "task_started",
-            },
-        )
+        try:
+            acknowledgement = await self.outbox.submit(
+                idempotency_key=f"task-started:{key}",
+                scope_id=context.scope_id,
+                source_event_id=context.run_id,
+                payload={
+                    "text": started_text,
+                    "original_text": started_text,
+                    "segments": [],
+                    "reply_to_message_id": context.message_id,
+                    "mention_user_id": context.sender_id,
+                    "source": "task_started",
+                },
+            )
+        finally:
+            if context.topic_id is not None:
+                await self.sessions.end_topic(
+                    context.scope_id,
+                    topic_id=context.topic_id,
+                )
         result = {
             "task_id": task_id,
             "revision": 1,

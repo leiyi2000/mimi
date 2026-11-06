@@ -7,9 +7,11 @@ from typing import Any
 
 from core.conversation import ChatSessionService
 from core.domain import (
+    AgentInboxSource,
     AgentRole,
+    ConversationContinuation,
     MessageSegmentType,
-    ParticipationAudience,
+    ResponseMode,
     ToolContext,
     ToolResult,
 )
@@ -248,6 +250,9 @@ class ChatToolService:
         context: ToolContext,
         arguments: dict[str, Any],
     ) -> ToolResult:
+        response_mode, mode_error = self._response_mode(context, arguments)
+        if mode_error is not None:
+            return mode_error
         text = str(arguments.get("text", "")).strip()
         segments = arguments.get("segments", [])
         if not text and not segments:
@@ -281,6 +286,7 @@ class ChatToolService:
             key=key,
             text=text,
             segments=segments,
+            response_mode=response_mode,
             mention_user_id=(
                 context.sender_id
                 if arguments.get("mention_user_id") == context.sender_id
@@ -295,6 +301,8 @@ class ChatToolService:
             "sent": True,
             "message_ids": result.content["message_ids"],
             "rendered_as_image": result.content["rendered_as_image"],
+            "response_mode": response_mode.value,
+            "reply_character_count": result.content["reply_character_count"],
         }
         await self.store.idempotency_put(key, content)
         self.reply_ledger.record(context.run_id, result.content["message_ids"])
@@ -305,6 +313,9 @@ class ChatToolService:
         context: ToolContext,
         arguments: dict[str, Any],
     ) -> ToolResult:
+        response_mode, mode_error = self._response_mode(context, arguments)
+        if mode_error is not None:
+            return mode_error
         messages = arguments.get("messages")
         if (
             not isinstance(messages, list)
@@ -361,6 +372,7 @@ class ChatToolService:
                 key=f"{key}:{index}:{attempt}",
                 text=text.strip(),
                 segments=[],
+                response_mode=response_mode,
                 mention_user_id=(
                     context.sender_id
                     if index == 0
@@ -409,6 +421,8 @@ class ChatToolService:
             "message_ids": message_ids,
             "message_count": len(messages),
             "rendered_as_image": False,
+            "response_mode": response_mode.value,
+            "reply_character_count": sum(len(item.strip()) for item in messages),
         }
         await self.store.idempotency_put(key, content)
         return ok(content)
@@ -465,6 +479,7 @@ class ChatToolService:
         key: str,
         text: str,
         segments: list[dict[str, Any]],
+        response_mode: ResponseMode,
         mention_user_id: str | None,
     ) -> ToolResult:
         segment_text = "".join(
@@ -483,6 +498,8 @@ class ChatToolService:
                 "segments": segments,
                 "mention_user_id": mention_user_id,
                 "source": "chat",
+                "response_mode": response_mode.value,
+                "reply_character_count": len(render_text),
             },
         )
         if item.status.value == "failed":
@@ -501,8 +518,39 @@ class ChatToolService:
             {
                 "message_ids": list(item.message_ids),
                 "rendered_as_image": len(render_text) > LONG_REPLY_TEXT_LIMIT,
+                "reply_character_count": len(render_text),
             }
         )
+
+    @staticmethod
+    def _response_mode(
+        context: ToolContext,
+        arguments: dict[str, Any],
+    ) -> tuple[ResponseMode, ToolResult | None]:
+        try:
+            mode = ResponseMode(str(arguments.get("response_mode") or ""))
+        except ValueError:
+            return (
+                ResponseMode.CASUAL_CHAT,
+                error("invalid response mode", "INVALID_RESPONSE_MODE"),
+            )
+        allowed = (
+            {ResponseMode.TASK_STATUS}
+            if context.inbox_source is AgentInboxSource.TASK_EVENT
+            else {
+                ResponseMode.CASUAL_CHAT,
+                ResponseMode.PROFESSIONAL_ANSWER,
+            }
+        )
+        if mode not in allowed:
+            return (
+                mode,
+                error(
+                    "response mode does not match the current Inbox source",
+                    "RESPONSE_MODE_SOURCE_MISMATCH",
+                ),
+            )
+        return mode, None
 
     async def chat_turn_complete(
         self,
@@ -510,20 +558,17 @@ class ChatToolService:
         arguments: dict[str, Any],
     ) -> ToolResult:
         outcome = str(arguments["outcome"])
-        topic_state = str(arguments.get("topic_state", ""))
         if outcome not in {"replied", "ignored", "failed"}:
             return error("invalid chat outcome", "INVALID_OUTCOME")
-        if topic_state not in {"active", "ended"}:
-            return error("invalid topic state", "INVALID_TOPIC_STATE")
-        raw_audience = arguments.get("topic_audience")
         try:
-            topic_audience = (
-                ParticipationAudience(str(raw_audience))
-                if raw_audience is not None
-                else None
+            continuation = ConversationContinuation(
+                str(arguments.get("continuation") or "")
             )
         except ValueError:
-            return error("invalid topic audience", "INVALID_TOPIC_AUDIENCE")
+            return error(
+                "invalid conversation continuation",
+                "INVALID_CONVERSATION_CONTINUATION",
+            )
         ids = tuple(str(item) for item in arguments.get("sent_message_ids", []))
         confirmed_ids = self.reply_ledger.message_ids(context.run_id)
         confirmed = set(confirmed_ids)
@@ -550,23 +595,46 @@ class ChatToolService:
                 },
                 "SEND_NOT_CONFIRMED",
             )
-        if topic_state == "ended":
-            await self.sessions.end_topic(context.scope_id)
-        elif topic_audience is not None:
-            await self.sessions.set_topic_audience(
-                context.scope_id,
-                topic_audience,
+        if (
+            continuation is not ConversationContinuation.CLOSED
+            and (outcome != "replied" or not confirmed_ids)
+        ):
+            return error(
+                "conversation can only remain open after a visible reply",
+                "CONTINUATION_REQUIRES_REPLY",
             )
+        if (
+            context.scope_id.startswith("group:")
+            and context.topic_id is None
+            and continuation is not ConversationContinuation.CLOSED
+        ):
+            return error(
+                "conversation topic is no longer current",
+                "STALE_CONVERSATION_TOPIC",
+            )
+        if context.topic_id is None:
+            pass
+        elif continuation is ConversationContinuation.CLOSED:
+            await self.sessions.end_topic(
+                context.scope_id,
+                topic_id=context.topic_id,
+            )
+        else:
+            updated = await self.sessions.set_topic_continuation(
+                context.scope_id,
+                continuation,
+                topic_id=context.topic_id,
+            )
+            if not updated:
+                return error(
+                    "conversation topic is no longer current",
+                    "STALE_CONVERSATION_TOPIC",
+                )
         self.reply_ledger.clear(context.run_id)
         return ok(
             {
                 "outcome": outcome,
-                "topic_state": topic_state,
-                "topic_audience": (
-                    topic_audience.value
-                    if topic_audience is not None
-                    else None
-                ),
+                "continuation": continuation.value,
                 "message_ids": list(ids),
                 "reason": arguments.get("reason"),
             }

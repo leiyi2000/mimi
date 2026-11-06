@@ -36,9 +36,16 @@ class ParticipationIntent(StrEnum):
     STOP = "stop"
 
 
-class ParticipationAudience(StrEnum):
-    REQUESTER_ONLY = "requester_only"
+class ConversationContinuation(StrEnum):
+    CLOSED = "closed"
+    REQUESTER_INPUT = "requester_input"
     GROUP_OPEN = "group_open"
+
+
+class ResponseMode(StrEnum):
+    CASUAL_CHAT = "casual_chat"
+    PROFESSIONAL_ANSWER = "professional_answer"
+    TASK_STATUS = "task_status"
 
 
 class ParticipationAction(StrEnum):
@@ -75,6 +82,7 @@ class ParticipationDecision:
     reason: ParticipationReason
     remaining_budget: int
     max_reply_messages: int
+    topic_id: str | None = None
 
 
 class TaskStatus(StrEnum):
@@ -499,6 +507,7 @@ class ToolContext:
     task_context_mode: str = "on_request"
     address_only_message: bool = False
     participation_intent: ParticipationIntent | None = None
+    topic_id: str | None = None
     max_reply_messages: int = 3
     inbox_source: AgentInboxSource | None = None
     capabilities: frozenset[TurnCapability] = frozenset()

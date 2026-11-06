@@ -183,7 +183,10 @@ class AgentInboxRepositoryMixin:
         async with lock:
             updated = await AgentInboxRow.filter(
                 item_id=item_id,
-                status=AgentInboxStatus.PENDING.value,
+                status__in=(
+                    AgentInboxStatus.PENDING.value,
+                    AgentInboxStatus.CLAIMED.value,
+                ),
             ).update(status=AgentInboxStatus.DISCARDED.value)
             return updated == 1
 

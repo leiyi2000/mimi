@@ -409,6 +409,12 @@ def test_chat_reply_schema_restricts_model_supplied_segments():
         "at",
         "face",
     ]
+    assert "response_mode" in schema["required"]
+    assert schema["properties"]["response_mode"]["enum"] == [
+        "casual_chat",
+        "professional_answer",
+        "task_status",
+    ]
 
 
 @pytest.mark.asyncio
@@ -1072,6 +1078,7 @@ async def test_image_reply_requires_current_turn_media_inspection(tmp_path):
         tool_context(run_id="chat-without-inspection"),
         {
             "text": "我猜图里是一只猫",
+            "response_mode": "casual_chat",
             "idempotency_key": "must-inspect",
         },
     )

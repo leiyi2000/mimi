@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -34,6 +35,9 @@ class Agent:
     session: AgentSession
     store: AgentStore
     driver: AgentDriver
+    inbox_validator: (
+        Callable[[AgentInboxItem], Awaitable[bool]] | None
+    ) = None
     status: AgentStatus = field(default=AgentStatus.IDLE, init=False)
     _worker: asyncio.Task[None] | None = field(default=None, init=False)
     _lifecycle_lock: asyncio.Lock = field(
@@ -57,6 +61,9 @@ class Agent:
         scope_id: str,
         profile: AgentProfile,
         session_id: str | None = None,
+        inbox_validator: (
+            Callable[[AgentInboxItem], Awaitable[bool]] | None
+        ) = None,
     ) -> Agent:
         session = AgentSession(
             store=store,
@@ -71,6 +78,7 @@ class Agent:
             session=session,
             store=store,
             driver=driver,
+            inbox_validator=inbox_validator,
         )
 
     async def send(
@@ -152,6 +160,16 @@ class Agent:
                         self._worker = None
                         self._idle.set()
                         return
+                if (
+                    self.inbox_validator is not None
+                    and not await self.inbox_validator(item)
+                ):
+                    if not await self.store.discard_agent_input(item.item_id):
+                        raise RuntimeError(
+                            "claimed stale inbox item was not discarded: "
+                            f"{item.item_id}"
+                        )
+                    continue
                 await self.driver.run_turn(self, item)
                 if not await self.store.complete_agent_input(item.item_id):
                     raise RuntimeError(

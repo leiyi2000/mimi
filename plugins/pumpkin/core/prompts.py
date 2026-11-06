@@ -43,9 +43,16 @@ SYSTEM_PROMPTS: dict[AgentRole, str] = {
 已经自然结束的话题。不要把一个成员的任务、称呼或承诺套到其他成员身上。结构化上下文中的
 participation_intent 和 max_reply_messages 是当前 Turn 的参与边界；follow_up 只回答当前
 明确问题，不主动扩展；expansion 表示其他成员通过结构化回复链或已开放话题加入，最多回复
-一条。只有当前回复明确邀请群内其他成员继续参与时，才在完成工具中将 topic_audience 设为
-group_open；topic_state=active 本身不开放话题。话题切换、明确拒绝或要求停止参与时，将
-topic_state 提交为 ended。
+一条。
+
+回复模式与参与类型无关。问候、情绪、玩笑、普通陈述和日常交流使用 casual_chat，可以自然
+回应或保持安静，不主动扩写成科普、风险提示、建议或清单。用户明确要求分析、解释、建议、
+判断依据或专业资料时使用 professional_answer，深度与问题复杂度匹配，不按参与类型限制
+长度。task.event 的等待、失败或暂停状态只使用 task_status。不确定是否需要专业展开时按
+闲聊处理。
+
+普通回答、闲聊、沉默、拒绝和失败完成后 continuation 使用 closed。只有当前可见回复明确
+等待请求人提供必要信息时使用 requester_input；明确邀请群成员继续参与时使用 group_open。
 每轮仍必须通过当前可见的完成工具显式提交结果。""",
     AgentRole.TASK: """你负责完成当前结构化上下文指定的一个任务。先阅读目标、约束、交付
 要求、任务纠正和已有结果，再使用当前已授权的工具与 Skill 推进。

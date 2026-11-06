@@ -52,6 +52,7 @@ class ReplyProvider:
                 "send_napcat_reply",
                 {
                     "text": f"回复 {turn + 1}",
+                    "response_mode": "casual_chat",
                     "idempotency_key": f"reply-{turn}",
                 },
             )
@@ -62,7 +63,7 @@ class ReplyProvider:
                 {
                     "outcome": "replied",
                     "sent_message_ids": [str(101 + turn)],
-                    "topic_state": "active",
+                    "continuation": "closed",
                 },
             )
         yield ModelResponse(
@@ -104,6 +105,7 @@ class ReplyThenTimeoutProvider:
                             "send_napcat_reply",
                             {
                                 "text": "已经成功回复",
+                                "response_mode": "casual_chat",
                                 "idempotency_key": "reply-before-timeout",
                             },
                         ),
@@ -159,7 +161,9 @@ def config_for(tmp_path) -> PumpkinConfig:
     )
 
 
-async def test_active_group_session_accepts_natural_follow_up(tmp_path):
+async def test_completed_group_turn_does_not_accept_natural_follow_up(
+    tmp_path,
+):
     client = Client()
     provider = ReplyProvider()
     runtime = ReliablePumpkinRuntime(
@@ -175,7 +179,7 @@ async def test_active_group_session_accepts_natural_follow_up(tmp_path):
     await runtime.handle_event(group_event(2, "然后呢，我今天其实有点累"))
     await runtime.wait_for_idle(timeout=1)
 
-    assert len(client.sent) == 2
+    assert len(client.sent) == 1
     assert await runtime.store.get_archived_message("group:1", "2") is not None
     await runtime.close()
 
@@ -199,7 +203,7 @@ async def test_group_message_without_explicit_wake_stays_quiet(tmp_path):
     await runtime.close()
 
 
-async def test_active_group_topic_ignores_other_members(tmp_path):
+async def test_closed_group_topic_ignores_all_ambient_members(tmp_path):
     client = Client()
     provider = ReplyProvider()
     runtime = ReliablePumpkinRuntime(
@@ -217,7 +221,7 @@ async def test_active_group_topic_ignores_other_members(tmp_path):
     await runtime.handle_event(group_event(6, "我也插一句", sender_id=8))
     await runtime.wait_for_idle(timeout=1)
 
-    assert len(client.sent) == 2
+    assert len(client.sent) == 1
     await runtime.close()
 
 
@@ -244,7 +248,7 @@ async def test_force_sleep_persists_until_explicit_wake(tmp_path):
     await runtime.wait_for_idle(timeout=1)
 
     assert len(client.sent) == 1
-    assert await runtime.sessions.current("group:1") is SessionState.ACTIVE
+    assert await runtime.sessions.current("group:1") is SessionState.EXPIRED
     await runtime.close()
 
 

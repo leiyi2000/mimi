@@ -187,6 +187,7 @@ class MessageIngress:
         )
         if decision.action is not ParticipationAction.ACCEPT:
             return
+        topic_context = await self.sessions.topic_context(message.scope_id)
         assistant_context = await self.assistant_context(message.scope_id)
         if not task_related:
             assistant_context["recent_outbound_messages"] = []
@@ -199,6 +200,17 @@ class MessageIngress:
             "direct_to_assistant": wake,
             "participation_intent": decision.intent.value,
             "participation_reason": decision.reason.value,
+            "topic_id": (
+                decision.topic_id
+                if message.conversation_type.value == "group"
+                else None
+            ),
+            "continuation": (
+                topic_context.continuation.value
+                if message.conversation_type.value == "group"
+                and topic_context is not None
+                else None
+            ),
             "remaining_follow_up_budget": decision.remaining_budget,
             "max_reply_messages": decision.max_reply_messages,
             "task_related": task_related,
