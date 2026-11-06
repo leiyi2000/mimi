@@ -50,6 +50,7 @@ class TaskProvider:
     def __init__(self):
         self.calls = {"task": 0, "chat": 0}
         self.chat_sources = []
+        self.task_inputs = []
 
     @staticmethod
     def _last_tool(messages):
@@ -106,6 +107,10 @@ class TaskProvider:
                     },
                 )
         else:
+            latest_user = next(
+                message for message in reversed(messages) if message.role == "user"
+            )
+            self.task_inputs.append(json.loads(latest_user.content)["payload"])
             call = ToolCall(
                 "complete",
                 "complete_task",
@@ -124,6 +129,53 @@ class TaskProvider:
             provider="fake",
             model="fake",
         )
+
+
+async def test_recovered_task_retains_original_request_without_handoff_messages(tmp_path):
+    config = replace(
+        PumpkinConfig.from_env(),
+        data_dir=str(tmp_path),
+        db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+    )
+    provider = TaskProvider()
+    runtime = PumpkinRuntime(config, client=Client(), provider_task=provider)
+    await runtime.store.initialize(config.db_url)
+    request = "找几张胖鱼表情包"
+    record = await runtime.store.archive(
+        InboundMessage(
+            message_id="request-1",
+            conversation_type=ConversationType.GROUP,
+            scope_id="group:1",
+            sender_id="7",
+            sender_name="member",
+            segments=(MessageSegment(MessageSegmentType.TEXT, text=request),),
+            received_at=datetime.now(UTC),
+            is_self=False,
+            raw_text=request,
+            group_id="1",
+        )
+    )
+    handoff = TaskHandoff(
+        task_id="recovered-task",
+        revision=1,
+        scope_id="group:1",
+        source_messages=(record,),
+        involved_people=(PersonRef("7", "requester", "created the task"),),
+        goal="找或制作带配字的 PNG",
+        constraints=(),
+        requested_deliverables=(),
+        allowed_skills=(),
+    )
+    try:
+        await runtime.task_service.create(handoff)
+        await runtime.task_runtime.run(replace(handoff, source_messages=()))
+        assert provider.task_inputs
+        context = provider.task_inputs[0]["inbox"]["payload"]
+        assert context["task_handoff"]["source_messages"] == []
+        assert context["original_user_requests"][0]["text"] == request
+        assert context["task_handoff"]["goal"] == handoff.goal
+    finally:
+        await runtime.store.close()
 
 
 async def test_task_agent_delivery_and_completion_are_scoped(tmp_path):

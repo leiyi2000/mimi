@@ -8,6 +8,9 @@ from core.domain import (
     AgentInboxSource,
     AgentInboxTarget,
     TaskEvent,
+    TaskEventType,
+    TaskStatus,
+    ToolResult,
     is_user_visible_task_event,
 )
 from persistence.repositories import TaskRuntimeStore
@@ -26,12 +29,14 @@ class TaskEventNotifier:
         conversation_agent: Callable[[str], Agent],
         event_payload: Callable[[TaskEvent], dict[str, Any]],
         snapshot_payload: Callable[[Any], dict[str, Any]],
+        deliver: Callable[[TaskEvent], Awaitable[ToolResult]] | None = None,
     ) -> None:
         self.store = store
         self.assistant_context = assistant_context
         self.conversation_agent = conversation_agent
         self.event_payload = event_payload
         self.snapshot_payload = snapshot_payload
+        self.deliver = deliver
 
     async def notify(self, event: TaskEvent) -> None:
         if not is_user_visible_task_event(event.event_type):
@@ -39,6 +44,25 @@ class TaskEventNotifier:
         row = await self.store.get_task(event.task_id)
         if row is None:
             return
+        if row.scope_id != event.scope_id or row.revision != event.revision:
+            return
+        event_data = self.event_payload(event)
+        if (
+            self.deliver is not None
+            and event.event_type is TaskEventType.COMPLETED
+            and event.status in {TaskStatus.COMPLETED, TaskStatus.PARTIALLY_COMPLETED}
+            and event.artifacts
+        ):
+            result = await self.deliver(event)
+            if not result.is_error:
+                return
+            event_data = {
+                **event_data,
+                "event_type": TaskEventType.FAILED.value,
+                "summary": "结果已生成，但发送未能确认。请稍后查询任务结果。",
+                "waiting_reason": None,
+                "artifacts": [],
+            }
         tasks = await self.store.list_tasks(event.scope_id)
         snapshot = next(
             (item for item in tasks if item.task_id == event.task_id),
@@ -48,7 +72,7 @@ class TaskEventNotifier:
             **await self.assistant_context(event.scope_id),
             "task_id": event.task_id,
             "revision": event.revision,
-            "task_event": self.event_payload(event),
+            "task_event": event_data,
             "task": self.snapshot_payload(snapshot) if snapshot else None,
             "task_context_mode": "related",
             "address_only_message": False,

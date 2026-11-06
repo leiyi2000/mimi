@@ -5,7 +5,13 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from core.config import PumpkinConfig
-from core.domain import ArtifactRef, TaskHandoff, ToolContext, ToolResult
+from core.domain import (
+    ArtifactRef,
+    TaskHandoff,
+    ToolContext,
+    ToolErrorScope,
+    ToolResult,
+)
 from persistence.repositories import CapabilityStore
 
 
@@ -84,12 +90,14 @@ def error(
     error_code: str,
     *,
     retryable: bool = False,
+    error_scope: ToolErrorScope = ToolErrorScope.OPERATION,
 ) -> ToolResult:
     return ToolResult(
         content=content,
         is_error=True,
         error_code=error_code,
         retryable=retryable,
+        error_scope=error_scope,
     )
 
 

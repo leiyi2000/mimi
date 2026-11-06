@@ -127,29 +127,52 @@ Pumpkin 每个 QQ scope 只有一个长期 Conversation Agent。`runtime/ingress
 归档、唤醒边界和写入持久化 Inbox；消息进入 Turn/Step AgentLoop 后由 Session Event
 恢复模型上下文。Conversation Inbox 在尚未领取的条目中优先处理用户消息，后台 TaskEvent
 单 Turn 最多使用 6 个模型步骤，避免任务通知长期阻塞明确唤醒。TaskEvent 全量持久化，
-但只有等待输入、失败、暂停和完成事件进入 Conversation Inbox；候选 Artifact、进度和
+但只有等待输入、失败、暂停和无产物的完成事件进入 Conversation Inbox；带产物的完成
+事件由 `TaskEventNotifier` 直接调用 `DeliveryService.send_event`，通过 Artifact gate 和
+Outbox 交付，不等待串行 Conversation Agent。交付失败只发布必要失败通知，恢复查询同时
+检查事件关联的 Outbox 防止重复交付。候选 Artifact、进度和
 描述更新不触发用户回复。`runtime/task_runtime.py`
 独立负责任务调度、并发、revision 过期、取消和恢复；Task Executor 只执行任务并登记
 Artifact，不直接发送 QQ 消息。Task Executor 最后两个模型步骤只允许终态工具；步骤耗尽
-但已有已验证 Artifact 时，由 Runtime 以可审计的部分完成事件保留现有交付物。
+但已有已验证 Artifact 且没有待核验纠正条件时，由 Runtime 提交部分完成结果；存在纠正
+条件时仅保留候选产物，不复制条件 ID 宣称验收通过。网页资源错误使用
+`ToolErrorScope.RESOURCE`，不会因重复同源失败终止整项任务；权限和操作错误仍有界止损。
 群聊参与资格由 Ingress 和 `ChatSessionService` 共同执行。每次明确唤醒创建独立
 `topic_id`；普通回答默认关闭话题，只有 Conversation Agent 在可见回复后显式提交
 `requester_input` 或 `group_open`，请求人或群成员才能在 5 分钟空闲窗口和 15 分钟硬上限
 内继续。排队的追问和扩散在领取时再次校验话题，已关闭或过期的条目直接丢弃。任务创建
 成功后即使确认发送结果未知也关闭聊天话题。群聊 Session Projection 只向模型保留当前
 `topic_id` 的 Turn，TaskEvent 不引入无关聊天，私聊仍保留最近四个已结束 Turn。
+回复已确认的助手消息时，`AgentSession.reply_reference` 仅投影同 scope 的原始问题与
+实际发送正文作为有界 `reference_only` 资料，不恢复旧工具、任务权限或话题状态。
 聊天发送工具必须声明 `casual_chat`、`professional_answer` 或 `task_status` 回复模式；
 模式只约束表达方式，不按参与类型限制回答长度。
+`reply_and_complete` 复用 ChatToolService 发送校验与回复台账，一次发送并结束 Turn，
+由 Runtime 管理幂等键和确认消息 ID。用户消息返回普通正文时，AgentLoop 持久化合成的
+工具调用并走同一路径；已发送回复不重复发送，空正文不能静默成功。TaskEvent 和 Task
+Executor 不使用正文自动发送路径。
+合并回复的幂等值绑定当前 Turn，不同回合不能复用上一条发送结果。
+跨插件 Agent 命令仍以 `commands.toml` 为唯一稳定契约，不共享插件代码。首个开放链路是
+Music `点歌`：Conversation Agent 按需加载 Chat-only `music-command` Skill，Runtime
+校验目标命令显式设置 `agent = true` 且不是管理命令，再经 Pumpkin Outbox 向当前 scope
+发送受限纯文本。NapCat 将机器人自发文本作为 `message_sent` 回流，Music 只允许该事件
+进入点歌处理；登录、登出和账号信息仍只接受原有用户事件与管理员边界。Pumpkin 只记录
+命令消息 ID，不把“已发送”声明为音乐卡片已成功。
 `runtime/artifacts.py` 负责 Artifact 校验、原子写入、来源指纹和纠正门禁。聊天回复和
 确定性任务终态通知统一写入 Outbox，再由唯一 sender 发送。候选 Artifact 事件不具备
 交付 capability；只有完成或部分完成的终态 revision 才能交付。纠正验收条件使用稳定 ID
-并兼容旧文本，违规次数按纠正、revision 和原因隔离。任务状态迁移由确定性 TaskService
+并兼容旧文本，违规次数按纠正、revision 和原因隔离。
+`runtime/task_verification.py` 使用当前任务模型单次独立核验纠正条件，只输入实际候选
+内容和 Runtime 证据引用，不接受执行器历史或完成声明作为证明。只有全部条件 passed
+才允许完成；unknown、格式不可读和模型失败保留候选文件。成功核验缓存复用 idempotency，
+绑定 task、scope、revision、条件和内容摘要；完成锁内再次核对，TaskEvent 仅记录摘要证据。
+模型核验不提供客观语义保证，未被纠正的原任务沿用原契约。任务状态迁移由确定性 TaskService
 校验。`persistence/` 只提供 Tortoise 模型、按领域 Repository 和
 `PumpkinStore` 组合入口，不承载恢复或验收策略；启动恢复由 `runtime/recovery.py`
 编排。基础设施由 `core/services.py` 的具名 Service Definition 通过插件管理器装配；
 `runtime/turn_policy.py` 按强类型 Inbox 来源生成每轮 capability/loadout，工具执行层
-再次校验 capability。`runtime/task_events.py` 是用户可见 TaskEvent 写入 Conversation
-Inbox 的唯一发布者；实时发布与启动恢复复用同一事件可见性策略。
+再次校验 capability。`runtime/task_events.py` 是用户可见 TaskEvent 的唯一通知入口，
+按产物和终态选择直接交付或 Conversation Inbox；实时通知与启动恢复复用同一策略。
 
 Pumpkin 在消息归档后把群聊顶层 `image` 和 `mface` 段登记为持久化候选，不等待网络
 下载。`runtime/stickers.py` 的单 worker 异步完成安全下载、内容及感知去重、视觉分类、
@@ -176,6 +199,12 @@ Pumpkin 的 `search_web` 继续通过 `httpx` 调用受认证搜索 API；`fetch
 重定向，并在每次请求前解析、校验并固定全部公网 DNS 地址。重定向由 Provider 有界处理，
 每个目标重新执行 DNS 校验；响应按页面和文件各自上限流式读取。`wreq` 对象与异常不会
 越过 Provider 边界，也不会失败后静默回退到 `httpx`。
+
+搜索请求只传 `query` 与 `max_results`，不固定地区和语言路由。网页图片以独立的候选
+URL 与 alt 元数据返回；图片文件在登记 Artifact 前经过解码和尺寸校验，下载结果同时向
+模型提供受限首帧预览，原始文件保持不变。TaskRuntime 从归档消息恢复
+`original_user_requests`，与助手整理的 handoff 分开展示；原话和明确纠正定义执行目标，
+技能授权不允许把查找现成资源自行改为创作。内容相关性仍由 Agent 依据预览与原请求验收。
 
 需要 JavaScript、公开页面交互、截图或 PDF 时，Task Agent 只调用高层
 `delegate_browser_task`。Mimi 内的短生命周期 Browser Agent 使用独立模型上下文和受控

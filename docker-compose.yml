@@ -83,6 +83,7 @@ services:
         environment:
             BROWSER_WORKER_SOCKET: /run/pumpkin-browser/control.sock
             BROWSER_WORKER_TOKEN: ${PUMPKIN_BROWSER_WORKER_TOKEN:-disabled}
+            OBSCURA_FONT_DIR: /usr/share/fonts
         volumes:
             - pumpkin_browser_runtime:/run/pumpkin-browser
         tmpfs:

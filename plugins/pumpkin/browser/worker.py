@@ -54,8 +54,10 @@ ALLOWED_TOOLS = frozenset(
         "browser_markdown",
         "browser_links",
         "browser_interactive_elements",
+        "browser_detect_forms",
         "browser_click",
         "browser_fill",
+        "browser_fill_form",
         "browser_type",
         "browser_press_key",
         "browser_scroll",
@@ -66,6 +68,8 @@ ALLOWED_TOOLS = frozenset(
     }
 )
 _REF = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+_FORM_FIELD_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$")
+_FORM_OPTION_VALUE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 
 
 class WorkerRequestError(RuntimeError):
@@ -87,9 +91,16 @@ class BrowserRun:
 
 
 class BrowserWorker:
-    def __init__(self, *, token: str, obscura_path: str) -> None:
+    def __init__(
+        self,
+        *,
+        token: str,
+        obscura_path: str,
+        font_dir: str = "/fonts",
+    ) -> None:
         self.token = token
         self.obscura_path = obscura_path
+        self.font_dir = font_dir
         self._run: BrowserRun | None = None
         self._lease_lock = asyncio.Lock()
 
@@ -159,7 +170,7 @@ class BrowserWorker:
                     "mcp",
                     "--stealth",
                     "--font-dir",
-                    "/fonts",
+                    self.font_dir,
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
@@ -198,14 +209,22 @@ class BrowserWorker:
                 params.get("arguments"),
             )
         process = run.process
-        if process.returncode is not None or process.stdin is None or process.stdout is None:
+        if (
+            process.returncode is not None
+            or process.stdin is None
+            or process.stdout is None
+        ):
             raise WorkerRequestError(
-                WorkerFault(WorkerErrorCode.MCP_FAILED, "Obscura process is not running")
+                WorkerFault(
+                    WorkerErrorCode.MCP_FAILED, "Obscura process is not running"
+                )
             )
         encoded = json.dumps(message, separators=(",", ":")).encode() + b"\n"
         if len(encoded) > MAX_FRAME_BYTES:
             raise WorkerRequestError(
-                WorkerFault(WorkerErrorCode.OUTPUT_TOO_LARGE, "MCP request is too large")
+                WorkerFault(
+                    WorkerErrorCode.OUTPUT_TOO_LARGE, "MCP request is too large"
+                )
             )
         async with run.request_lock:
             try:
@@ -214,15 +233,31 @@ class BrowserWorker:
                 if "id" not in message:
                     return {"notification": True}
                 raw = await asyncio.wait_for(process.stdout.readline(), timeout=60)
-            except (BrokenPipeError, ConnectionError, TimeoutError) as exc:
+            except TimeoutError as exc:
                 raise WorkerRequestError(
                     WorkerFault(
-                        WorkerErrorCode.MCP_FAILED,
-                        "Obscura MCP request failed",
+                        WorkerErrorCode.MCP_TIMEOUT,
+                        "Obscura MCP request timed out",
+                        retryable=True,
+                    )
+                ) from exc
+            except (BrokenPipeError, ConnectionError) as exc:
+                raise WorkerRequestError(
+                    WorkerFault(
+                        WorkerErrorCode.PROCESS_FAILED,
+                        "Obscura MCP process disconnected",
                         retryable=True,
                     )
                 ) from exc
         if not raw or len(raw) > MAX_FRAME_BYTES:
+            if process.returncode is not None:
+                raise WorkerRequestError(
+                    WorkerFault(
+                        WorkerErrorCode.PROCESS_FAILED,
+                        "Obscura MCP process stopped",
+                        retryable=True,
+                    )
+                )
             raise WorkerRequestError(
                 WorkerFault(WorkerErrorCode.MCP_PROTOCOL_ERROR, "invalid MCP response")
             )
@@ -262,14 +297,18 @@ class BrowserWorker:
         method = str(message.get("method", ""))
         if method not in ALLOWED_MCP_METHODS:
             raise WorkerRequestError(
-                WorkerFault(WorkerErrorCode.INVALID_REQUEST, "MCP method is not allowed")
+                WorkerFault(
+                    WorkerErrorCode.INVALID_REQUEST, "MCP method is not allowed"
+                )
             )
         if method == "tools/call":
             params = message.get("params")
             name = params.get("name") if isinstance(params, dict) else None
             if name not in ALLOWED_TOOLS:
                 raise WorkerRequestError(
-                    WorkerFault(WorkerErrorCode.INVALID_REQUEST, "MCP tool is not allowed")
+                    WorkerFault(
+                        WorkerErrorCode.INVALID_REQUEST, "MCP tool is not allowed"
+                    )
                 )
 
     @staticmethod
@@ -281,12 +320,14 @@ class BrowserWorker:
             BrowserWorker._invalid("MCP arguments must be an object")
         allowed_keys = {
             "browser_navigate": {"url"},
-            "browser_snapshot": set(),
-            "browser_markdown": set(),
-            "browser_links": set(),
-            "browser_interactive_elements": set(),
+            "browser_snapshot": {"max_chars"},
+            "browser_markdown": {"max_chars"},
+            "browser_links": {"limit", "internal_only"},
+            "browser_interactive_elements": {"limit"},
+            "browser_detect_forms": set(),
             "browser_click": {"ref"},
             "browser_fill": {"ref", "value"},
+            "browser_fill_form": {"fields", "submit_ref"},
             "browser_type": {"ref", "text"},
             "browser_press_key": {"key"},
             "browser_scroll": {"direction", "amount"},
@@ -299,6 +340,64 @@ class BrowserWorker:
             BrowserWorker._invalid("MCP arguments contain forbidden fields")
         if name == "browser_navigate":
             await BrowserWorker._validate_public_url(str(arguments.get("url", "")))
+        if name == "browser_fill_form":
+            fields = arguments.get("fields")
+            if not isinstance(fields, list) or not 1 <= len(fields) <= 64:
+                BrowserWorker._invalid("form fields must contain 1 to 64 items")
+            sanitized_fields: list[dict[str, str]] = []
+            for field in fields:
+                if not isinstance(field, dict):
+                    BrowserWorker._invalid("form field must be an object")
+                if set(field) - {"ref", "field_name", "value", "type"}:
+                    BrowserWorker._invalid("form field contains forbidden fields")
+                if not {"value", "type"} <= set(field):
+                    BrowserWorker._invalid("form field is incomplete")
+                ref = str(field.get("ref", ""))
+                field_name = str(field.get("field_name", ""))
+                if bool(ref) == bool(field_name):
+                    BrowserWorker._invalid(
+                        "form field requires exactly one safe locator"
+                    )
+                field_type = str(field["type"])
+                if field_type not in {
+                    "text",
+                    "check",
+                    "uncheck",
+                    "select",
+                }:
+                    BrowserWorker._invalid("invalid form field type")
+                value = str(field["value"])
+                if len(value) > 2000:
+                    BrowserWorker._invalid("form field value is too large")
+                if ref:
+                    if not _REF.fullmatch(ref):
+                        BrowserWorker._invalid("invalid form field reference")
+                    sanitized_fields.append(
+                        {"ref": ref, "value": value, "type": field_type}
+                    )
+                    continue
+                if not _FORM_FIELD_NAME.fullmatch(field_name):
+                    BrowserWorker._invalid("invalid form field name")
+                selector = f'[name="{field_name}"]'
+                obscura_value = value
+                if field_type in {"check", "uncheck"}:
+                    if not _FORM_OPTION_VALUE.fullmatch(value):
+                        BrowserWorker._invalid("invalid form option value")
+                    selector += f'[value="{value}"]'
+                    obscura_value = ""
+                sanitized_fields.append(
+                    {
+                        "selector": selector,
+                        "value": obscura_value,
+                        "type": field_type,
+                    }
+                )
+            submit_ref = arguments.get("submit_ref")
+            if submit_ref is not None and not _REF.fullmatch(str(submit_ref)):
+                BrowserWorker._invalid("invalid form submit reference")
+            arguments = {"fields": sanitized_fields}
+            if submit_ref is not None:
+                arguments["submit_ref"] = str(submit_ref)
         if "ref" in arguments and not _REF.fullmatch(str(arguments["ref"])):
             BrowserWorker._invalid("invalid element reference")
         for key in ("value", "text"):
@@ -326,8 +425,7 @@ class BrowserWorker:
             )
             addresses = {record[4][0] for record in records}
             if not addresses or any(
-                not ipaddress.ip_address(address).is_global
-                for address in addresses
+                not ipaddress.ip_address(address).is_global for address in addresses
             ):
                 BrowserWorker._invalid("navigation URL is not public")
         except WorkerRequestError:
@@ -371,9 +469,7 @@ class BrowserWorker:
 
     @staticmethod
     def _invalid(message: str) -> None:
-        raise WorkerRequestError(
-            WorkerFault(WorkerErrorCode.INVALID_REQUEST, message)
-        )
+        raise WorkerRequestError(WorkerFault(WorkerErrorCode.INVALID_REQUEST, message))
 
 
 async def _serve_client(
@@ -401,7 +497,8 @@ async def _serve_client(
             request_id,
             WorkerFault(WorkerErrorCode.INVALID_REQUEST, "invalid request"),
         )
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # The protocol boundary must return a stable fault for any worker failure.
         response = response_error(
             request_id,
             WorkerFault(
@@ -417,7 +514,9 @@ async def _serve_client(
 
 
 async def main() -> None:
-    socket_path = Path(os.environ.get("BROWSER_WORKER_SOCKET", "/run/pumpkin-browser/control.sock"))
+    socket_path = Path(
+        os.environ.get("BROWSER_WORKER_SOCKET", "/run/pumpkin-browser/control.sock")
+    )
     token = os.environ.get("BROWSER_WORKER_TOKEN", "")
     if not token:
         raise RuntimeError("BROWSER_WORKER_TOKEN is required")
@@ -426,6 +525,7 @@ async def main() -> None:
     worker = BrowserWorker(
         token=token,
         obscura_path=os.environ.get("OBSCURA_PATH", "/usr/local/bin/obscura"),
+        font_dir=os.environ.get("OBSCURA_FONT_DIR", "/fonts"),
     )
     server = await asyncio.start_unix_server(
         lambda reader, writer: _serve_client(worker, reader, writer),

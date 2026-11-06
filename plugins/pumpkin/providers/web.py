@@ -199,6 +199,12 @@ class SearchResult:
 
 
 @dataclass(frozen=True, slots=True)
+class PageImage:
+    url: str
+    alt: str
+
+
+@dataclass(frozen=True, slots=True)
 class FetchedPage:
     url: str
     content_type: str
@@ -206,6 +212,7 @@ class FetchedPage:
     text: str
     links: tuple[str, ...]
     truncated: bool
+    images: tuple[PageImage, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,10 +231,13 @@ class _HtmlExtractor(HTMLParser):
         self.title: list[str] = []
         self.text: list[str] = []
         self.links: list[str] = []
+        self.images: list[tuple[str, str]] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in {"script", "style", "noscript", "template"}:
             self.ignored_depth += 1
+        if self.ignored_depth:
+            return
         if tag == "title":
             self.in_title = True
         values = dict(attrs)
@@ -240,6 +250,8 @@ class _HtmlExtractor(HTMLParser):
         )
         if candidate and len(self.links) < 100:
             self.links.append(candidate)
+        if tag in {"img", "source"} and candidate and len(self.images) < 100:
+            self.images.append((candidate, values.get("alt") or ""))
 
     def handle_endtag(self, tag: str) -> None:
         if tag in {"script", "style", "noscript", "template"}:
@@ -295,17 +307,13 @@ class WebSearchProvider:
         if not 1 <= len(query) <= 300:
             raise WebProviderError("SEARCH_QUERY_INVALID")
         started_at = time.monotonic()
+        request_payload = {"query": query, "max_results": self.max_results}
         try:
             if self._search_client is not None:
                 async with self._host_semaphore(self.api_url):
                     response = await self._search_client.post(
                         self.api_url,
-                        json={
-                            "query": query,
-                            "max_results": self.max_results,
-                            "zone": "cn",
-                            "language": "zh-CN",
-                        },
+                        json=request_payload,
                         headers=self._headers(),
                     )
             else:
@@ -317,12 +325,7 @@ class WebSearchProvider:
                 ):
                     response = await client.post(
                         self.api_url,
-                        json={
-                            "query": query,
-                            "max_results": self.max_results,
-                            "zone": "cn",
-                            "language": "zh-CN",
-                        },
+                        json=request_payload,
                         headers=self._headers(),
                     )
         except (httpx.HTTPError, TimeoutError) as exc:
@@ -362,6 +365,8 @@ class WebSearchProvider:
                 raise WebProviderError("SEARCH_API_ERROR")
             data = payload.get("data", payload) if isinstance(payload, dict) else {}
             raw_items = data.get("results", []) if isinstance(data, dict) else []
+            if not isinstance(raw_items, list):
+                raise TypeError("search results must be an array")
         except (ValueError, TypeError) as exc:
             raise WebProviderError("SEARCH_INVALID_RESPONSE") from exc
         results: list[SearchResult] = []
@@ -692,12 +697,14 @@ class WebSearchProvider:
     def _parse(self, url: str, content_type: str, content: str) -> FetchedPage:
         title = ""
         raw_links: list[str] = []
+        raw_images: list[tuple[str, str]] = []
         if content_type in {"text/html", "application/xhtml+xml"}:
             parser = _HtmlExtractor()
             parser.feed(content)
             title = " ".join(parser.title)[:300]
             text = "\n".join(parser.text)
             raw_links = parser.links
+            raw_images = parser.images
         else:
             text = content
         text = re.sub(r"[ \t]+", " ", text)
@@ -707,6 +714,16 @@ class WebSearchProvider:
             for link in raw_links
             if urlsplit(urljoin(url, link)).scheme in {"http", "https"}
         )
+        images: dict[str, PageImage] = {}
+        for candidate, alt in raw_images:
+            image_url = urljoin(url, candidate)
+            parsed = urlsplit(image_url)
+            if (
+                parsed.scheme in {"http", "https"}
+                and parsed.hostname
+                and len(image_url) <= 2048
+            ):
+                images.setdefault(image_url, PageImage(image_url, alt[:300]))
         return FetchedPage(
             url=url,
             content_type=content_type,
@@ -714,6 +731,7 @@ class WebSearchProvider:
             text=text[: self.max_fetch_chars],
             links=links[:100],
             truncated=len(text) > self.max_fetch_chars,
+            images=tuple(images.values())[:30],
         )
 
     @staticmethod

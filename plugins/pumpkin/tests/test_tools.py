@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from dataclasses import replace
 from datetime import datetime, UTC
 from pathlib import Path
+from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from PIL import Image
 
 from core.config import AudioProviderKind, PumpkinConfig
+from core.agent_loop import _tool_content
 from core.domain import (
     AgentRole,
     ArtifactRef,
@@ -31,7 +35,14 @@ from core.tools import (
 )
 from providers.audio import GeneratedAudio, VoiceSummary
 from providers.media import FetchedMedia
+from providers.web import DownloadedFile
 from runtime.app import PumpkinRuntime
+from runtime.browser_agent import (
+    BrowserArtifact,
+    BrowserArtifactMode,
+    BrowserRunResult,
+    BrowserTaskStatus,
+)
 from providers.text_image import LONG_REPLY_TEXT_LIMIT
 
 
@@ -65,6 +76,99 @@ def task_handoff(task_id: str = "task-1") -> TaskHandoff:
         requested_deliverables=(),
         allowed_skills=("audio-render",),
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("valid", (True, False))
+async def test_downloaded_images_are_decoded_and_visually_available(tmp_path, valid):
+    config = replace(PumpkinConfig.from_env(), data_dir=str(tmp_path))
+    runtime = PumpkinRuntime(config, client=object())
+    await runtime.store.initialize(f"sqlite://{tmp_path / 'pumpkin.db'}")
+    runtime.task_runtime.runs["task-1"] = task_handoff()
+    context = tool_context(run_id="task-run", task_id="task-1", revision=1)
+    output = BytesIO()
+    with Image.new("RGB", (32, 24), "blue") as image:
+        image.save(output, format="GIF")
+    content = output.getvalue() if valid else b"GIF89a-invalid"
+    runtime.web_plugin.provider.download_file = AsyncMock(
+        return_value=DownloadedFile(
+            url="https://public.example/fish.gif",
+            content_type="image/gif",
+            content_disposition=None,
+            content=content,
+        )
+    )
+    try:
+        result = await runtime.web_plugin.download_file(
+            runtime.capability_services,
+            context,
+            {"url": "https://public.example/fish.gif", "idempotency_key": "fish"},
+        )
+        if valid:
+            assert not result.is_error
+            assert Path(result.artifacts[0].path).read_bytes() == content
+            assert result.images[0]["media_type"] == "image/png"
+            assert _tool_content(result)[1]["type"] == "image"
+            with Image.open(BytesIO(base64.b64decode(result.images[0]["data"]))) as preview:
+                assert preview.size == (32, 24)
+        else:
+            assert result.is_error
+            assert result.error_code == "DOWNLOAD_IMAGE_INVALID"
+            assert not list(tmp_path.rglob("*.gif"))
+    finally:
+        await runtime.store.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_browser_run_does_not_persist_process_screenshot(tmp_path):
+    base = PumpkinConfig.from_env()
+    config = replace(
+        base,
+        data_dir=str(tmp_path),
+        db_url=f"sqlite://{tmp_path / 'pumpkin.db'}",
+    )
+    runtime = PumpkinRuntime(config, client=object())
+    await runtime.store.initialize(config.db_url)
+    runtime.task_runtime.runs["task-1"] = replace(
+        task_handoff(),
+        allowed_skills=("browser-delegation",),
+    )
+    runtime.browser_plugin.runner = SimpleNamespace(
+        run=AsyncMock(
+            return_value=BrowserRunResult(
+                status=BrowserTaskStatus.FAILED,
+                summary="browser process failed",
+                artifacts=(
+                    BrowserArtifact(
+                        BrowserArtifactMode.SCREENSHOT,
+                        b"\x89PNG\r\n\x1a\nprocess-state",
+                        "image/png",
+                    ),
+                ),
+                error_code="BROWSER_PROCESS_FAILED",
+                retryable=True,
+            )
+        )
+    )
+
+    result = await runtime.registry.execute(
+        "delegate_browser_task",
+        tool_context(run_id="task-run", task_id="task-1", revision=1),
+        {
+            "goal": "capture the completed result",
+            "start_url": "https://example.com/form",
+            "expected_output": "screenshot",
+            "interaction_mode": "public_interaction",
+            "artifact_mode": "screenshot",
+            "idempotency_key": "failed-browser-run",
+        },
+    )
+
+    assert result.is_error
+    assert result.error_code == "BROWSER_PROCESS_FAILED"
+    assert result.artifacts == ()
+    assert not (tmp_path / "artifacts").exists()
+    await runtime.store.close()
 
 
 @pytest.mark.asyncio

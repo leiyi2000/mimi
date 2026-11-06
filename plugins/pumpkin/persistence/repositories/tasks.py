@@ -7,6 +7,7 @@ from persistence.models import (
     AgentInboxRow,
     ArtifactAssessmentRow,
     CorrectionViolationRow,
+    OutboxRow,
     TaskCorrectionRow,
     TaskDescriptionRow,
     TaskEventRow,
@@ -14,6 +15,7 @@ from persistence.models import (
 )
 from core.domain import (
     ArtifactDeliveryStatus,
+    OutboxStatus,
     EvidenceRef,
     TaskCorrection,
     TaskDescription,
@@ -334,10 +336,18 @@ class TaskRepositoryMixin:
                 ]
             ).only("item_id")
         }
+        delivered = {
+            row.source_event_id
+            for row in await OutboxRow.filter(
+                source_event_id__in=[event.event_id for event in rows],
+                status=OutboxStatus.SENT.value,
+            ).only("source_event_id")
+        }
         return tuple(
             self._event(row)
             for row in rows
             if f"task-event:{row.event_id}" not in notified
+            and row.event_id not in delivered
         )
 
     async def create_correction(

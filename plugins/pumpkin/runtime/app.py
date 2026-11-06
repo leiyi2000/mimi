@@ -53,6 +53,7 @@ from providers.model import (
 from providers.stickers import ModelStickerClassifier, StickerClassifier
 from providers.text_image import TextImageRenderer
 from runtime.artifacts import ArtifactService
+from runtime.agent_commands import AgentCommandManifest, AgentCommandService
 from runtime.chat_tools import ChatToolService
 from runtime.delivery import DeliveryService
 from runtime.ingress import MessageIngress
@@ -68,6 +69,7 @@ from runtime.payloads import (
 )
 from runtime.reply_ledger import TurnReplyLedger
 from runtime.task_commands import TaskCommandService
+from runtime.task_verification import TaskVerificationService
 from runtime.task_events import TaskEventNotifier
 from runtime.task_runtime import TaskRuntime
 from runtime.stickers import StickerService
@@ -270,6 +272,7 @@ class PumpkinRuntime:
                                 conversation_agent=self._conversation_agent,
                                 event_payload=event_payload,
                                 snapshot_payload=snapshot_payload,
+                                deliver=lambda event: self.delivery_service.send_event(event),
                             ),
                         ),
                     ),
@@ -415,8 +418,13 @@ class PumpkinRuntime:
                                         system_prompt=static_prompt(AgentRole.CHAT),
                                         persona=CHAT_PERSONA,
                                         completion_tools=frozenset(
-                                            {"chat_turn_complete", "create_task"}
+                                            {
+                                                "chat_turn_complete",
+                                                "reply_and_complete",
+                                                "create_task",
+                                            }
                                         ),
+                                        text_response_tool="reply_and_complete",
                                         max_steps=config.max_steps,
                                         source_step_limits=(
                                             (AgentInboxSource.TASK_EVENT, 6),
@@ -505,12 +513,27 @@ class PumpkinRuntime:
             idempotency_key=self.idempotency_key,
             reply_ledger=self.reply_ledger,
         )
+        self.agent_commands = AgentCommandService(
+            manifest=AgentCommandManifest(
+                Path(__file__).resolve().parents[2] / "music" / "commands.toml"
+            ),
+            outbox=self.outbox,
+            reply_ledger=self.reply_ledger,
+            idempotency_key=self.idempotency_key,
+        )
+        self.task_verification = TaskVerificationService(
+            store=self.store,
+            task_service=self.task_service,
+            provider=self.provider_task,
+            data_dir=config.data_dir,
+        )
         self.task_commands = TaskCommandService(
             config,
             store=self.store,
             task_service=self.task_service,
             task_runtime=self.task_runtime,
             artifact_service=self.artifact_service,
+            verification_service=self.task_verification,
             delivery_service=self.delivery_service,
             outbox=self.outbox,
             sessions=self.sessions,
@@ -523,6 +546,7 @@ class PumpkinRuntime:
             self.chat_tools,
             self.task_commands,
             sticker=self.stickers,
+            agent_command=self.agent_commands,
             trace=self.trace,
             registry=self.registry,
         )

@@ -4,7 +4,9 @@ from collections.abc import Callable
 from typing import Any
 
 from core.domain import (
+    AgentRole,
     OutboxStatus,
+    TaskEvent,
     TaskEventType,
     TaskStatus,
     ToolContext,
@@ -43,6 +45,31 @@ class DeliveryService:
         self.requester_id = requester_id
         self.source_message_id = source_message_id
         self.reply_ledger = reply_ledger
+
+    async def send_event(self, event: TaskEvent) -> ToolResult:
+        context = ToolContext(
+            scope_id=event.scope_id,
+            sender_id=None,
+            sender_name=None,
+            message_id=None,
+            agent_role=AgentRole.CHAT,
+            run_id=event.event_id,
+            task_id=event.task_id,
+            revision=event.revision,
+        )
+        try:
+            return await self.send(
+                context,
+                {
+                    "task_id": event.task_id,
+                    "revision": event.revision,
+                    "artifacts": [artifact.artifact_id for artifact in event.artifacts],
+                    "text": event.summary,
+                    "idempotency_key": f"task-event:{event.event_id}",
+                },
+            )
+        finally:
+            self.reply_ledger.clear(event.event_id)
 
     async def send(
         self,

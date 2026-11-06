@@ -184,7 +184,7 @@ class OutboxSender:
         await self._append_event(
             finished,
             AgentEventType.OUTBOX_SENT,
-            extra={"rendered_as_image": rendered_as_image},
+            extra={"rendered_as_image": rendered_as_image, "text": original_text},
         )
 
     def _prepare(

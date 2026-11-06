@@ -34,3 +34,7 @@
 | [Pumpkin Browser Agent 与 Obscura MCP](20261028-pumpkin-obscura-browser/design.md) | - | - | implemented |
 | [Pumpkin 对话与任务运行时边界](20261029-pumpkin-runtime-boundaries/design.md) | - | - | implemented |
 | [Pumpkin 话题边界与对话模式](20261106-pumpkin-conversation-modes/design.md) | - | - | implemented |
+| [Pumpkin 代发安全聊天指令](20261106-pumpkin-agent-command-delegation/design.md) | - | - | implemented |
+| [Pumpkin 现成图片发现与任务原意](20261106-pumpkin-image-discovery/design.md) | - | - | implemented |
+| [Pumpkin 对话和任务可靠性优化](20261106-pumpkin-runtime-simplification/design.md) | - | - | implemented |
+| [Pumpkin 纠正验收证据与行为回归](20261106-pumpkin-evidence-evaluation/design.md) | - | - | implemented |

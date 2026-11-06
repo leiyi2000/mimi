@@ -1,6 +1,8 @@
 import logging
 import asyncio
 import argparse
+from enum import StrEnum
+from dataclasses import dataclass
 
 import httpx
 from dotenv import load_dotenv
@@ -15,6 +17,19 @@ from service import MusicService, MusicError
 log = logging.getLogger(__name__)
 
 QR_POLL_INTERVAL = 3
+
+
+class MusicCommand(StrEnum):
+    LOGIN = "login"
+    LOGOUT = "logout"
+    PROFILE = "profile"
+    REQUEST = "request"
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedCommand:
+    command: MusicCommand
+    argument: str = ""
 
 
 class LoginSession:
@@ -45,6 +60,52 @@ def parse_query(query: str) -> tuple[str, str]:
     else:
         song_name, artist_name = query, ""
     return song_name.strip(), artist_name.strip()
+
+
+def parse_command_event(event, admins: frozenset[str]) -> ParsedCommand | None:
+    if len(event.message) != 1 or not isinstance(event.message[0], Text):
+        return None
+    text = event.message[0].text
+    request = command_argument(text, "点歌")
+    if request is not None:
+        return ParsedCommand(MusicCommand.REQUEST, request)
+    if getattr(event, "post_type", "message") == "message_sent":
+        return None
+    login = command_argument(text, "网易云登录")
+    if login is not None and str(event.user_id) in admins:
+        return ParsedCommand(MusicCommand.LOGIN, login)
+    if (
+        command_argument(text, "网易云登出") == ""
+        and str(event.user_id) in admins
+    ):
+        return ParsedCommand(MusicCommand.LOGOUT)
+    if command_argument(text, "网易云信息") == "":
+        return ParsedCommand(MusicCommand.PROFILE)
+    return None
+
+
+async def dispatch_command(
+    event,
+    command: ParsedCommand,
+    *,
+    service: MusicService,
+    auth: NeteaseAuth,
+    session: LoginSession,
+) -> None:
+    match command.command:
+        case MusicCommand.LOGIN:
+            if command.argument:
+                asyncio.create_task(
+                    handle_set_cookie(event, auth, command.argument)
+                )
+            else:
+                asyncio.create_task(handle_login(event, auth, session))
+        case MusicCommand.LOGOUT:
+            asyncio.create_task(handle_logout(event, auth))
+        case MusicCommand.PROFILE:
+            asyncio.create_task(handle_profile(event, auth))
+        case MusicCommand.REQUEST:
+            await handle_request(event, service, command.argument)
 
 
 async def handle_request(event, service: MusicService, text: str) -> None:
@@ -187,32 +248,17 @@ async def main(config: Config) -> None:
         try:
             client = NapCatClient(url, config.napcat_token)
             async for event in client:
-                match event:
-                    case MessageEvent(message=[Text(text=text)]) if (
-                        arg := command_argument(text, "网易云登录")
-                    ) is not None:
-                        if str(event.user_id) not in config.admins:
-                            continue
-                        if arg:
-                            asyncio.create_task(handle_set_cookie(event, auth, arg))
-                        else:
-                            asyncio.create_task(
-                                handle_login(event, auth, login_session)
-                            )
-                    case MessageEvent(message=[Text(text=text)]) if (
-                        command_argument(text, "网易云登出") == ""
-                    ):
-                        if str(event.user_id) not in config.admins:
-                            continue
-                        asyncio.create_task(handle_logout(event, auth))
-                    case MessageEvent(message=[Text(text=text)]) if (
-                        command_argument(text, "网易云信息") == ""
-                    ):
-                        asyncio.create_task(handle_profile(event, auth))
-                    case MessageEvent(message=[Text(text=text)]) if (
-                        arg := command_argument(text, "点歌")
-                    ) is not None:
-                        await handle_request(event, service, arg)
+                if not isinstance(event, MessageEvent):
+                    continue
+                command = parse_command_event(event, config.admins)
+                if command is not None:
+                    await dispatch_command(
+                        event,
+                        command,
+                        service=service,
+                        auth=auth,
+                        session=login_session,
+                    )
         except Exception:  # noqa: BLE001
             import traceback
 

@@ -193,6 +193,7 @@ class MessageIngress:
             assistant_context["recent_outbound_messages"] = []
         payload = {
             **assistant_context,
+            "reply_to_message_id": message.reply_to_message_id,
             "message_id": message.message_id,
             "sender_id": message.sender_id,
             "sender_name": message.sender_name,

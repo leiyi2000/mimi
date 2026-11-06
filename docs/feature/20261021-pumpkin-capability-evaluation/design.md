@@ -7,6 +7,10 @@ commits: []
 
 # Pumpkin 群聊能力评测设计
 
+可执行的短链路回归入口为 `plugins/pumpkin/evaluate.py`，其离线协议回放和显式真实模型
+模式单独报告，见 [纠正验收证据与行为回归](../20261106-pumpkin-evidence-evaluation/design.md)。
+该入口不实现本文开放式用户 Agent 与 50 回合流程，本文仍为未完成的设计。
+
 ## 1. 目标与结论
 
 本评测不是让多个模型互相扮演用户，也不是用固定脚本逐条检查 Pumpkin 是否输出了

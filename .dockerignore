@@ -15,3 +15,4 @@ plugins/**/__pycache__
 plugins/**/*.py[oc]
 plugins/**/.pytest_cache
 plugins/**/.ruff_cache
+plugins/**/tests/output

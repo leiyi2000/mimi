@@ -4,10 +4,15 @@ from typing import Any, Protocol
 
 from core.domain import AgentRole, ToolContext, ToolResult, TurnCapability
 from core.tools import TraceCallback, Tool, ToolRegistry
+from runtime.agent_commands import MUSIC_QUERY_MAX_CHARS
 from runtime.payloads import TASK_ACKNOWLEDGEMENT_MAX_CHARS
 
 
 class ChatToolHost(Protocol):
+    async def reply_and_complete(
+        self, context: ToolContext, arguments: dict[str, Any]
+    ) -> ToolResult: ...
+
     async def search_messages(
         self, context: ToolContext, arguments: dict[str, Any]
     ) -> ToolResult: ...
@@ -39,6 +44,12 @@ class StickerToolHost(Protocol):
     ) -> ToolResult: ...
 
     async def remove_quoted_sticker(
+        self, context: ToolContext, arguments: dict[str, Any]
+    ) -> ToolResult: ...
+
+
+class AgentCommandToolHost(Protocol):
+    async def send_music_command(
         self, context: ToolContext, arguments: dict[str, Any]
     ) -> ToolResult: ...
 
@@ -86,6 +97,7 @@ def build_registry(
     task: TaskToolHost | None = None,
     *,
     sticker: StickerToolHost | None = None,
+    agent_command: AgentCommandToolHost | None = None,
     trace: TraceCallback | None = None,
     registry: ToolRegistry | None = None,
 ) -> ToolRegistry:
@@ -133,6 +145,30 @@ def build_registry(
         },
         _unsupported,
         allowed_roles=frozenset(AgentRole),
+    )
+    register(
+        "reply_and_complete",
+        "发送文本并结束聊天，Runtime 自动确认消息 ID。优先用于普通回答；"
+        "只有明确追问才保留 continuation，其余使用 closed。",
+        {
+            "type": "object",
+            "required": ["text", "response_mode", "continuation"],
+            "properties": {
+                "text": {"type": "string"},
+                "response_mode": {
+                    "type": "string",
+                    "enum": ["casual_chat", "professional_answer"],
+                },
+                "continuation": {
+                    "type": "string",
+                    "enum": ["closed", "requester_input", "group_open"],
+                },
+            },
+        },
+        chat.reply_and_complete,
+        read_only=False,
+        allowed_roles=frozenset({AgentRole.CHAT}),
+        required_capabilities=frozenset({TurnCapability.CHAT_REPLY}),
     )
     register(
         "chat_turn_complete",
@@ -501,8 +537,39 @@ def build_registry(
         required_capabilities=frozenset({TurnCapability.CHAT_REPLY}),
     )
     register(
+        "send_music_command",
+        "向当前会话代发 Music 清单明确开放的点歌命令。只传歌曲查询和稳定幂等键；"
+        "不能指定命令名、目标会话或消息段。成功只代表指令已发出，随后直接使用返回的"
+        "message_ids 结束聊天轮次，不追加确认。",
+        {
+            "type": "object",
+            "required": ["query", "idempotency_key"],
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": MUSIC_QUERY_MAX_CHARS,
+                },
+                "idempotency_key": {"type": "string"},
+            },
+        },
+        (
+            agent_command.send_music_command
+            if agent_command is not None
+            else _unsupported
+        ),
+        skill_name="music-command",
+        read_only=False,
+        idempotency_required=True,
+        allowed_roles=frozenset({AgentRole.CHAT}),
+        required_capabilities=frozenset({TurnCapability.CHAT_REPLY}),
+    )
+    register(
         "create_task",
         "为需要延后执行或生成可交付结果的请求创建一个单一任务；普通聊天和状态查询不使用。"
+        "goal 忠实概括原始请求，不扩大执行方式；constraints 和 requested_deliverables "
+        "只记录用户提出或已确认的要求，不自行增加格式、数量、配字或限制。"
+        "allowed_skills 是可用能力，不代表用户授权改变目标；只授予完成原请求需要的能力。"
         "allowed_skills 只填写 Task Executor 可用的执行 Skill。acknowledgement 必须是"
         "一句简短自然的即时消息，只确认开始处理，不完整复述请求，不解释工具、执行步骤或"
         "投递位置，也不承诺完成时间。创建成功后 Runtime 负责发送确认并结束当前 "

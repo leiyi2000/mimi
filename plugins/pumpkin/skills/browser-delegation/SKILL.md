@@ -31,6 +31,15 @@ JavaScript、点击或填写公开页面、等待异步内容、截图或导出 
 购买、支付、发布、删除、授权或其他高影响操作。不得在参数中传 selector、脚本、Header、
 代理或模型配置。
 
+公开表单应在一次委派内完成。Browser Agent 会先检测表单，再以安全元素引用或检测得到的
+精确字段名批量填写；字段名只由 Worker 内部转换为受限 selector，父 Agent 仍不得传
+selector。不要把逐题点击拆成多次委派，也不要在部分完成后声称“继续上一浏览器状态”，
+因为每次委派都使用全新页面状态。提交后必须重新观察最终页面，只有观察到明确成功文本并
+在该状态截图，才能报告完成。
+
+批量填写后只再调用一次表单检测；当 `unfilled_field_names` 为空时直接生成所需截图并
+完成，不要逐项补填或反复截图。
+
 截图要求 `expected_output=screenshot` 且 `artifact_mode=screenshot`；PDF 同理。返回
 `partially_completed` 时保留已验证结果，并明确未完成部分。同一逻辑委派必须复用稳定的
 `idempotency_key`；只有目标或起始 URL 实质变化时才使用新键。

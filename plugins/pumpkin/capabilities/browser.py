@@ -87,10 +87,7 @@ class BrowserCapabilityPlugin:
                             },
                             "interaction_mode": {
                                 "type": "string",
-                                "enum": [
-                                    item.value
-                                    for item in BrowserInteractionMode
-                                ],
+                                "enum": [item.value for item in BrowserInteractionMode],
                             },
                             "artifact_mode": {
                                 "type": "string",
@@ -174,8 +171,13 @@ class BrowserCapabilityPlugin:
             artifact_mode=artifact_mode,
         )
         artifacts = []
+        candidates = (
+            ()
+            if run_result.status is BrowserTaskStatus.FAILED
+            else run_result.artifacts
+        )
         try:
-            for index, candidate in enumerate(run_result.artifacts, start=1):
+            for index, candidate in enumerate(candidates, start=1):
                 if candidate.kind is BrowserArtifactMode.SCREENSHOT:
                     if (
                         candidate.media_type != "image/png"
@@ -229,7 +231,7 @@ class BrowserCapabilityPlugin:
         return result(
             payload,
             artifacts=tuple(artifacts),
-            is_error=run_result.status is BrowserTaskStatus.FAILED,
+            is_error=run_result.status is not BrowserTaskStatus.COMPLETED,
             error_code=run_result.error_code,
             retryable=run_result.retryable,
             suppress_final_text=bool(artifacts),

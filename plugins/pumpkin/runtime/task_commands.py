@@ -30,6 +30,7 @@ from runtime.outbox import OutboxSender
 from runtime.payloads import event_payload, snapshot_payload, task_started_text
 from runtime.task_runtime import TaskRuntime
 from runtime.task_events import ConversationInboxPublisher
+from runtime.task_verification import TaskVerificationService
 
 
 class TaskCommandService:
@@ -43,6 +44,7 @@ class TaskCommandService:
         task_service: TaskService,
         task_runtime: TaskRuntime,
         artifact_service: ArtifactService,
+        verification_service: TaskVerificationService,
         delivery_service: DeliveryService,
         outbox: OutboxSender,
         sessions: ChatSessionService,
@@ -56,6 +58,7 @@ class TaskCommandService:
         self.task_service = task_service
         self.task_runtime = task_runtime
         self.artifact_service = artifact_service
+        self.verification_service = verification_service
         self.delivery_service = delivery_service
         self.outbox = outbox
         self.sessions = sessions
@@ -749,6 +752,18 @@ class TaskCommandService:
             )
             if criteria_violation is not None:
                 return criteria_violation
+            try:
+                candidate = await self.verification_service.prepare(
+                    context, artifacts, str(arguments["summary"]),
+                )
+            except (ValueError, OSError):
+                return error(
+                    "Candidate content cannot be inspected; retain it as unverified.",
+                    "TASK_VERIFICATION_EVIDENCE_MISSING",
+                )
+            verification = await self.verification_service.verify(context, candidate)
+            if verification is not None:
+                return verification
             event_id = uuid.uuid5(uuid.NAMESPACE_URL, key).hex
             result = {
                 "outcome": status.value,
@@ -757,6 +772,11 @@ class TaskCommandService:
                 "event_id": event_id,
             }
             async with self.task_runtime.task_lock(context.task_id):
+                stale = await self.verification_service.recheck(
+                    context, artifacts, str(arguments["summary"]), candidate,
+                )
+                if stale is not None:
+                    return stale
                 event = await self.task_service.complete(
                     task_id=context.task_id,
                     revision=context.revision,

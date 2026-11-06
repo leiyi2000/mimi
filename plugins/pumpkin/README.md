@@ -8,10 +8,11 @@ Pumpkin 是 Mimi 的 QQ 群聊和私聊 AI 插件。每条消息先写入
 - 任务由 Conversation Agent 创建，Task Executor 独立执行并只提交 TaskEvent 和
   已验证 Artifact，不具备 QQ 发送权限。群聊和私聊使用同一套 scope 隔离、任务执行与
   交付链路；私聊结果直接发送，不附加群聊式引用或 `@`。
-- TaskEvent 全量持久化；只有等待输入、失败、暂停和完成事件使用固定 ID 写入 Conversation
+- TaskEvent 全量持久化；等待输入、失败、暂停和无产物的完成事件使用固定 ID 写入 Conversation
   Inbox，不占用用户消息 Inbox。候选 Artifact、进度和描述更新仅供任务查询与审计，不会
   触发回复；启动时只补投未通知的用户可见事件。Conversation Agent 根据持久化事实表达
-  终态，并只交付该 revision 已显式通过验收的 Artifact。
+  终态。带产物的完成事件由 Runtime 直接交付该 revision 已显式通过验收的 Artifact，
+  不等待聊天队列；交付失败会明确提示，恢复时不会重复发送结果未知的交付。
 - 所有聊天和任务交付经持久化 Outbox 发送；正文超过 80 个字符时由 Outbox 自动渲染
   为图片。普通聊天只接受文本、`@` 和内置表情段，不解析模型拼接的 CQ 控制码；任务
   图片、文件和语音必须通过已验证 Artifact 交付。发送结果不确定时记为 `unknown`，
@@ -26,7 +27,8 @@ Pumpkin 是 Mimi 的 QQ 群聊和私聊 AI 插件。每条消息先写入
 - Conversation Turn 因模型或运行时错误失败且本轮尚未成功发送消息时会发送明确回执；
   已有确认回复时保留内部失败事实，但不再补发相互矛盾的失败提示。
 - 私聊模型上下文保留当前 Turn 和最近 4 个已结束 Turn；群聊只保留当前 `topic_id` 的
-  Turn，TaskEvent 不引入无关聊天。完整 Session Event 仍持久化用于恢复。
+  Turn，TaskEvent 不引入无关聊天。引用已确认的助手消息时只恢复该问题与实际回答作为
+  参考，不恢复历史任务权限；没有引用的新唤醒继续隔离旧话题。完整 Session Event 仍持久化用于恢复。
 - 群聊只在 `@` 助手、使用助手名前缀或回复助手消息时明确激活，每次明确激活创建新的
   `topic_id`。普通回答、闲聊、沉默、拒绝和失败默认关闭话题；只有助手在可见回复中明确
   等待请求人补充时提交 `requester_input`，或明确邀请群成员参与时提交 `group_open`，
@@ -36,16 +38,27 @@ Pumpkin 是 Mimi 的 QQ 群聊和私聊 AI 插件。每条消息先写入
 - 普通文本回复必须声明 `casual_chat`、`professional_answer` 或 `task_status`。
   日常交流不主动扩写成专业分析；明确要求分析、解释、建议或资料时才使用专业回答。回复
   深度由问题决定，不按 `DIRECT`、`FOLLOW_UP` 或 `EXPANSION` 设置字符数限制。
+  文本回答优先使用 `reply_and_complete`，一次提交回复与话题状态；Runtime 自动管理发送
+  确认和结束。普通正文也经过同一校验发送，空输出不会被标为成功，已发送回复不会重复。
+- 用户明确要求 Pumpkin 点歌时，Conversation Agent 可按需加载 `music-command` Skill，
+  由 Runtime 从 Music `commands.toml` 校验 `agent = true` 后，经 Outbox 代发一条真实
+  `点歌 <歌曲名>[-歌手名]` 文本。该能力不创建任务、不生成音频，也不接触 Music 的
+  Cookie、搜索或卡片签名；发送成功只表示指令已发出，Music 的后续卡片或错误才是终态。
 - `闭嘴`、`别说了`、`助手名退下` 和 `退下助手名` 会把当前作用域写入持久休眠状态；
   重启不会自动解除，直到下一次明确唤醒。助手自己的回复、任务确认和失败回执不会延长
   会话 TTL。
 - 普通聊天不使用 QQ 引用回复。任务事件保留原请求消息和请求人上下文，由 Conversation
-  Agent 在独立 Turn 中定向表达和交付，群内其他成员不会继承任务完成话术。
+  Agent 定向表达文本状态，产物由 Runtime 直接交付，群内其他成员不会继承任务完成话术。
 - 任务状态查询由 Conversation Agent 根据上下文调用 `get_task_status`，Runtime 只校验
   任务作用域、revision 和工具权限，不通过中文关键词改写用户意图。
 - 用户否定既有结果后，Conversation Agent 会把纠正关联到原任务并创建新 revision。
   被否定 Artifact 的内容、来源和生成策略会失效；验收条件使用稳定 ID，连续两次在同一
   revision 违反同一纠正原因时任务停止，不同原因和新 revision 不会互相累计。
+  纠正任务完成前还会独立检查当前候选图片或 UTF-8 正文，单次使用任务模型核验全部条件。
+  条件 ID 或执行器的完成声明不能代替内容证据；缺证据、核验失败或无法确认时保留候选文件。
+  提交前再次检查 revision、条件和文件摘要。模型核验仍可能误判；原任务无纠正条件时沿用原有验收契约。
+- 网页读取或下载的单个来源失败不会直接终止整项任务，可以继续换来源；重复 URL 在当前
+  任务 Turn 复用不可重试失败。预算耗尽时保留候选文件，有未核验纠正条件时不自动宣称验收通过。
 - 模型使用 OpenAI-compatible Chat Completions 协议，未配置模型时会明确记录不可用，
   不会伪造回复或任务完成。
 
@@ -96,8 +109,37 @@ Conversation Agent 的稳定决策原则和有个人边界的亲近人格由独�
 [`docs/feature/20261023-pumpkin-task-performance/design.md`](../../docs/feature/20261023-pumpkin-task-performance/design.md)。
 终态交付、稳定验收条件和纠正计数设计见
 [`docs/feature/20261023-pumpkin-delivery-gating/design.md`](../../docs/feature/20261023-pumpkin-delivery-gating/design.md)。
+纠正内容核验和短链路评测见
+[`docs/feature/20261106-pumpkin-evidence-evaluation/design.md`](../../docs/feature/20261106-pumpkin-evidence-evaluation/design.md)。
 
-`search_web` 使用 `httpx` 访问配置的搜索 API。`fetch_url` 使用固定 Chrome Linux
+## 行为回归评测
+
+在插件目录执行 `uv run python evaluate.py --assistant-name eval-assistant`，通过 Fake
+NapCat 和独立插件进程运行六类短回归。默认使用脚本模型，报告标记为 `contract_replay`，
+仅验证消息、评分和失败回执协议，不能证明模型变聪明。默认报告写入 Git 忽略的
+`tests/output/behavior-evaluation.json`；`--case` 可重复指定案例，`--output` 可更改位置。
+报告不保存提示词、完整对话或媒体正文。
+
+真实模型模式需显式使用 `--live --env-file .env.dev --assistant-name eval-assistant
+--judge-base-url <独立评审端点> --judge-model <评审模型>`，评审密钥通过
+`PUMPKIN_EVAL_JUDGE_API_KEY` 提供。入口只继承模型设置，Fake NapCat 和数据目录独立，
+不连接真实 QQ，也不继承生产搜索、图片、音频、代码或浏览器服务凭据。
+因此现成资源案例也检验工具不可用时是否如实反馈，不能作为生产搜索召回率评测。
+评审只读取可见输入、出站消息和实际媒体；没有证据或评审不可用时记为 `unknown`，
+不会计为通过。任务型案例观察至 `--timeout` 窗口结束，超时未交付不能推定完成。
+失败回执案例使用确定性的模型故障注入，报告单独标记；它不衡量模型推理能力。
+这套短回归独立于开放式 50 回合群聊评测，不替代其验收。
+
+## 网页与媒体
+
+`search_web` 使用 `httpx` 访问配置的搜索 API，搜索请求只发送 `query` 和
+`max_results`，不固定地区或语言路由。
+任务执行上下文独立保留归档用户原话，执行摘要不能擅自扩大目标或增加交付要求。
+网页读取会单独返回最多 30 个图片候选及 alt 文本；图片下载在登记前验证解码和尺寸，
+并返回最多 1280 × 1280 的首帧视觉预览供 Agent 核对内容。候选链接和可解码状态都不等于
+符合任务，仍需显式交付验收；查找现成资源失败时不能自行改为生成。
+
+`fetch_url` 使用固定 Chrome Linux
 Profile 的 `wreq` Transport 读取任意公网来源，并通过 `output=text|artifact`
 区分网页正文与通用文件 Artifact。不同 URL 的文件支持并发下载，单 host 并发仍受配置
 限制；同一 URL 会在 Turn 内去重。抓取仍会拒绝内网地址，逐跳校验并固定 DNS，限制重定向
@@ -111,6 +153,14 @@ Worker 通过共享 Unix Domain Socket 与 Mimi 通信，只加入独立公网�
 密钥、数据库或插件数据。首版全局并发为 1，容量满时明确拒绝。启用前设置独立随机 Token，
 并使用 `docker compose --profile browser build --pull browser-worker` 构建镜像；未启用时
 该 Skill 不进入能力目录，不影响 `search_web` 和 `fetch_url`。
+
+公开表单在单次 Browser Agent 运行内通过安全元素引用或检测得到的精确字段名批量填写。
+字段名模式由 Worker 内部转换为受限 selector，模型不能传 selector 或任意 JavaScript。
+每次委派仍使用全新页面状态，父 Task 不能通过重新委派续填。交互任务完成前
+必须在最后一次页面变更后重新读取页面；`completed` 的证据文本必须能在该最终观察中找到，
+截图或 PDF 也必须在同一最终状态生成。失败运行中的过程截图不会登记为 Artifact。Worker
+镜像包含 CJK 与 Emoji 字体；MCP 超时和子进程断开使用不同错误码，便于区分页面超时与
+浏览器进程故障。
 
 网页搜索、代码执行、图片生成、HTML 图文渲染、Markdown 报告渲染和音频合成均为按需
 Skill。Markdown 渲染支持标题、引用、列表、表格、代码块和来源链接；配图只引用当前

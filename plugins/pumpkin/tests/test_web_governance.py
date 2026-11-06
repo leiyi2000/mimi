@@ -103,6 +103,63 @@ def _provider(
     )
 
 
+def test_page_extracts_image_candidates_separately_from_navigation():
+    provider = _provider(FakeWebTransport(lambda *_: None))
+    page = provider._parse(
+        "https://public.example/gallery/",
+        "text/html",
+        '<a href="/next">Next</a><img src="cover.jpg" alt="胖鱼">'
+        '<img data-src="//cdn.example/fish.gif" alt="鱼表情">'
+        '<img src="data:image/png;base64,AA"><img src="cover.jpg">'
+        '<script><img src="/fake.png"></script>',
+    )
+
+    assert [(image.url, image.alt) for image in page.images] == [
+        ("https://public.example/gallery/cover.jpg", "胖鱼"),
+        ("https://cdn.example/fish.gif", "鱼表情"),
+    ]
+    assert page.links == (
+        "https://public.example/next",
+        "https://public.example/gallery/cover.jpg",
+        "https://cdn.example/fish.gif",
+        "https://public.example/gallery/cover.jpg",
+    )
+
+
+def test_long_page_keeps_image_candidates_in_bounded_model_context():
+    result = ToolResult(content={
+        "text": "正文" * 6000,
+        "links": ["https://public.example/" + "x" * 2000] * 10,
+        "images": [
+            {"url": f"https://cdn.example/{index}/" + "x" * 2000, "alt": "鱼"}
+            for index in range(30)
+        ],
+    })
+    model_content = _tool_content(result, max_chars=8000)
+    payload = json.loads(model_content)
+
+    assert len(model_content) <= 8000
+    assert payload["content"]["images"]
+    assert payload["content"]["images"][0]["alt"] == "鱼"
+    assert payload["content"]["model_content_truncated"]
+    assert len(result.content["images"]) == 30
+
+
+@pytest.mark.parametrize("results", ({}, "invalid", None))
+async def test_search_rejects_malformed_result_collection(results):
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200, json={"data": {"results": results}}, request=request
+            )
+        )
+    ) as client:
+        provider = _provider(FakeWebTransport(lambda *_: None))
+        provider._search_client = client
+        with pytest.raises(WebProviderError, match="SEARCH_INVALID_RESPONSE"):
+            await provider.search("test")
+
+
 def test_task_budget_defaults_and_notices(monkeypatch):
     for name in (
         "PUMPKIN_MAX_STEPS",
@@ -298,6 +355,10 @@ def test_web_model_content_is_bounded_without_mutating_full_result():
 @pytest.mark.asyncio
 async def test_search_uses_httpx_without_calling_web_transport():
     def respond(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content) == {
+            "query": "test",
+            "max_results": 3,
+        }
         return httpx.Response(
             200,
             json={

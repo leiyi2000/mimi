@@ -513,6 +513,11 @@ class ToolContext:
     capabilities: frozenset[TurnCapability] = frozenset()
 
 
+class ToolErrorScope(StrEnum):
+    OPERATION = "operation"
+    RESOURCE = "resource"
+
+
 @dataclass(frozen=True, slots=True)
 class ToolResult:
     content: Any
@@ -523,6 +528,7 @@ class ToolResult:
     images: tuple[dict[str, Any], ...] = ()
     mention_sender: bool = False
     suppress_final_text: bool = False
+    error_scope: ToolErrorScope = ToolErrorScope.OPERATION
 
 
 @dataclass(frozen=True, slots=True)

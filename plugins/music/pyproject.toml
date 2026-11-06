@@ -10,5 +10,14 @@ dependencies = [
     "python-dotenv>=1.2.2",
 ]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
 [tool.ruff.lint]
 ignore = ["I001"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.0",
+]

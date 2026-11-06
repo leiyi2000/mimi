@@ -196,11 +196,19 @@ class TaskRuntime:
                 handoff.task_id,
                 through_revision=handoff.revision,
             )
+            original_requests = []
+            for message_id in row.source_message_ids or []:
+                record = await self.store.get_archived_message(
+                    handoff.scope_id, str(message_id)
+                )
+                if record is not None:
+                    original_requests.append(self.record_payload(record))
             context = {
                 **await self.assistant_context(handoff.scope_id),
                 "task_id": handoff.task_id,
                 "revision": handoff.revision,
                 "task_handoff": self.handoff_payload(handoff),
+                "original_user_requests": original_requests,
                 "task_description": None,
                 "previous_task_events": [],
                 "task_corrections": [
@@ -323,16 +331,14 @@ class TaskRuntime:
     ) -> ToolCall | None:
         if not artifacts:
             return None
-        artifact_ids = [artifact.artifact_id for artifact in artifacts]
-        accepted_criteria = [
-            str(reference["criterion_id"])
+        if any(
+            correction.get("acceptance_criteria")
+            or correction.get("acceptance_criteria_refs")
             for correction in item.payload.get("task_corrections", [])
             if isinstance(correction, dict)
-            for reference in correction.get("acceptance_criteria_refs", [])
-            if isinstance(reference, dict) and reference.get("criterion_id")
-        ]
-        if not accepted_criteria:
-            accepted_criteria = ["已生成并验证可交付产物"]
+        ):
+            return None
+        artifact_ids = [artifact.artifact_id for artifact in artifacts]
         key = f"runtime-artifact-fallback:{handoff.task_id}:{handoff.revision}"
         return ToolCall(
             tool_use_id=uuid.uuid5(uuid.NAMESPACE_URL, key).hex,
@@ -340,13 +346,12 @@ class TaskRuntime:
             arguments={
                 "status": TaskStatus.PARTIALLY_COMPLETED.value,
                 "summary": (
-                    "已生成并验证可交付产物，Runtime 在步骤预算耗尽后"
-                    "保留并提交现有结果"
+                    "已生成可交付文件，先交付现有结果；其余要求尚未核验"
                 ),
                 "remaining": [
-                    "模型步骤预算耗尽，未能继续核验或完善其余要求"
+                    "尚未完成其余要求的核验或完善"
                 ],
-                "accepted_criteria": accepted_criteria,
+                "accepted_criteria": ["已生成并验证可交付产物"],
                 "artifact_ids": artifact_ids,
                 "idempotency_key": key,
             },

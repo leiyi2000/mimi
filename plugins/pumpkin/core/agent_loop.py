@@ -24,6 +24,7 @@ from .domain import (
     ModelMessage,
     ToolCall,
     ToolExecutionStatus,
+    ToolErrorScope,
     ToolResult,
     TurnEndReason,
 )
@@ -94,6 +95,12 @@ def _bounded_tool_payload(payload: dict[str, Any], max_chars: int) -> str:
         source_text = content.get("text")
         if isinstance(source_text, str):
             content["text"] = ""
+            if isinstance(content.get("images"), list) and content["images"]:
+                links = content.get("links", [])
+                while links and len(_json_text(bounded)) > max_chars:
+                    links.pop()
+                while len(content["images"]) > 1 and len(_json_text(bounded)) > max_chars:
+                    content["images"].pop()
             if len(_json_text(bounded)) <= max_chars:
                 low = 0
                 high = len(source_text)
@@ -119,6 +126,7 @@ def _bounded_tool_payload(payload: dict[str, Any], max_chars: int) -> str:
             "is_error": bool(bounded.get("is_error", False)),
             "error_code": bounded.get("error_code"),
             "retryable": bounded.get("retryable", False),
+            "error_scope": bounded.get("error_scope", ToolErrorScope.OPERATION.value),
         }
     )
 
@@ -133,6 +141,7 @@ def _tool_content(
         "is_error": result.is_error,
         "error_code": result.error_code,
         "retryable": result.retryable,
+        "error_scope": result.error_scope.value,
         "artifacts": [
             {
                 "artifact_id": artifact.artifact_id,
@@ -178,6 +187,7 @@ class AgentLoopProfile:
     persona: str | None = None
     authorized_skills: frozenset[str] | None = None
     completion_tools: frozenset[str] = frozenset()
+    text_response_tool: str | None = None
     max_steps: int = DEFAULT_MAX_STEPS
     reserved_completion_steps: int = 0
     source_step_limits: tuple[tuple[AgentInboxSource, int], ...] = ()
@@ -333,6 +343,17 @@ class SessionAgentLoop:
             turn_id=turn_id,
         )
         source_event = self.profile.turn_policy.source_event(item)
+        if item.source_type is AgentInboxSource.USER_MESSAGE:
+            reply_id = item.payload.get("reply_to_message_id")
+            reference = (
+                await agent.session.reply_reference(str(reply_id))
+                if reply_id else None
+            )
+            if reference:
+                await agent.session.append(
+                    AgentEventType.RUNTIME_NOTICE, {"content": reference},
+                    turn_id=turn_id,
+                )
         if source_event is not None:
             await agent.session.append(
                 source_event,
@@ -513,6 +534,64 @@ class SessionAgentLoop:
                 )
                 return
             if not assistant.tool_calls:
+                if (
+                    self.profile.text_response_tool
+                    and item.source_type is AgentInboxSource.USER_MESSAGE
+                ):
+                    call = ToolCall(
+                        uuid.uuid4().hex,
+                        self.profile.text_response_tool,
+                        {
+                            "text": (
+                                assistant.content
+                                if isinstance(assistant.content, str) else ""
+                            ),
+                            "response_mode": "casual_chat",
+                            "continuation": "closed",
+                        },
+                    )
+                    await agent.session.append(
+                        AgentEventType.ASSISTANT_MESSAGE,
+                        {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "tool_use_id": call.tool_use_id,
+                                    "name": call.name,
+                                    "arguments": call.arguments,
+                                },
+                            ],
+                            "runtime_generated": True,
+                        },
+                        turn_id=turn_id,
+                        step_id=step_id,
+                    )
+                    await agent.session.append(
+                        AgentEventType.TOOL_CALLED,
+                        {
+                            "tool_call_id": call.tool_use_id,
+                            "name": call.name,
+                            "arguments": call.arguments,
+                        },
+                        turn_id=turn_id,
+                        step_id=step_id,
+                    )
+                    results = await self._execute_calls(
+                        agent, (call,),
+                        turn_id=turn_id,
+                        step_id=step_id,
+                        visible=visible,
+                        authorized=authorized,
+                        item=item,
+                        loadout=loadout,
+                        tool_budget=tool_budget,
+                    )
+                    await self._complete_step_and_turn(
+                        agent, turn_id, step_id,
+                        outcome="failed" if results[0].is_error else "completed",
+                        reason=results[0].error_code or "reply confirmed",
+                    )
+                    return
                 if finalizing or self.profile.profile is AgentProfile.TASK:
                     await agent.session.append(
                         AgentEventType.STEP_COMPLETED,
@@ -567,6 +646,7 @@ class SessionAgentLoop:
                         verified_artifacts[artifact.artifact_id] = artifact
                 if (
                     result.is_error
+                    and result.error_scope is not ToolErrorScope.RESOURCE
                     and result.error_code
                     and (
                         not result.retryable
@@ -847,6 +927,7 @@ class SessionAgentLoop:
                 ),
                 "error_code": result.error_code,
                 "retryable": result.retryable,
+                "error_scope": result.error_scope.value,
             },
             turn_id=turn_id,
             step_id=step_id,

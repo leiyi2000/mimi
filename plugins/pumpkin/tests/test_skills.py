@@ -61,6 +61,7 @@ def test_skill_catalog_and_role_boundaries():
     assert {item["skill_name"] for item in skills.catalog(AgentRole.CHAT)} == {
         "group-history",
         "media-inspection",
+        "music-command",
         "sticker-reply",
         "web-search",
     }

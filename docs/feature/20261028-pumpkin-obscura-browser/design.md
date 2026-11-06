@@ -275,7 +275,7 @@ delegate_browser_task(
 - `read_only=false`，因为页面交互可能产生无法完全证明的外部副作用；
 - `parallel_safe=false`；
 - `completion_required=true`；
-- 独立 `BROWSER_DELEGATE` 预算，默认单 Task 最多 2 次；
+- 独立 `BROWSER_DELEGATE` 预算，默认单 Task 最多 4 次；
 - 当前 Task、scope 和 revision 必须有效。
 
 父 Agent 不能传 Browser system prompt、MCP 工具名、selector、Cookie、Header、代理或任意
@@ -317,9 +317,9 @@ Browser Agent 复用 Pumpkin 的统一 `ModelProvider` 接口和模型凭据，�
 
 ```text
 browser_navigate
-  -> browser_snapshot / browser_markdown
+  -> browser_snapshot / browser_markdown / browser_detect_forms
   -> browser_interactive_elements
-  -> browser_click / browser_fill / browser_scroll
+  -> browser_click / browser_fill / browser_fill_form / browser_scroll
   -> browser_wait_for_text
   -> browser_markdown / browser_links
   -> browser_screenshot / browser_pdf
@@ -343,9 +343,11 @@ Browser Agent 默认最多 20 次 MCP 工具调用、24 个模型 Step、180 秒
 | `browser_markdown` | 截断字符数 |
 | `browser_links` | 限制数量，重新校验 URL |
 | `browser_interactive_elements` | 截断数量和字段 |
+| `browser_detect_forms` | 只读检测表单结构、安全元素引用和原始字段名/选项值 |
 | `browser_click` | 只接受当前 snapshot 的 `ref` |
 | `browser_fill` | 只接受安全 `ref`，限制值长度 |
 | `browser_type` | 只接受安全 `ref`，限制值长度 |
+| `browser_fill_form` | 最多 64 个字段，接受安全 `ref` 或检测结果中的精确字段名，禁止模型传 selector，可选安全提交 ref |
 | `browser_press_key` | 仅允许受控按键，不接受 selector |
 | `browser_scroll` | 有界距离，不接受 selector |
 | `browser_wait_for_text` | 有界超时和文本长度 |
@@ -359,7 +361,6 @@ Browser Agent 默认最多 20 次 MCP 工具调用、24 个模型 Step、180 秒
 - `browser_storage_state` 及恢复登录态的工具；
 - `browser_tab_new/list/switch/close`；
 - Cookie、Storage、Header、请求拦截、网络修改类工具；
-- `browser_fill_form`，首版逐字段预检，避免批量绕过；
 - `browser_select_option` 和 `browser_extract`，当前上游 Schema 依赖 selector，无法满足
   首版只接受安全 `ref` 的契约；
 - 所有不在编译期白名单内的新上游工具。
@@ -370,6 +371,13 @@ Worker 启动时允许 `tools/list` 用于兼容探针，但实际 `tools/call` 
 ### 7.4 参数净化与元素预检
 
 - click、fill、type 和 select 只允许 `ref`，删除并拒绝 `selector`。
+- `browser_fill_form` 可使用检测结果中的精确 `field_name`；Worker 仅对通过字符白名单的
+  字段名和选项值生成固定 `[name="..."][value="..."]` selector，不接受模型提供的
+  selector。
+- `browser_detect_forms` 按字段名汇总已填和未填题组；批量填写后
+  `unfilled_field_names` 为空即形成确定性完成证据，避免逐项重复检查。
+- 滚动不递增页面数据版本；同一版本内的表单检测和底部快照证据合并保留。完成门禁要求至少
+  一条页面证据命中，截图/PDF 仍单独校验类型和页面版本。
 - 操作 ref 前先读取当前 interactive metadata；ref 过期时要求重新 snapshot，不做文本
   模糊匹配。
 - fill/type 拒绝 password、file、hidden、不可见、禁用和无法确认类型的控件。
@@ -400,10 +408,13 @@ BrowserRunResult
 `BrowserFact` 包含事实文本和来源 URL；`BrowserLink` 包含标题和公开 URL。Runner 执行：
 
 1. Schema、长度、URL 和状态一致性校验。
-2. 去除无法关联到已访问公开 URL 的来源。
-3. 将 MCP 图片或 PDF content block 解码、验签和限流后写入当前 revision。
-4. 检查 Task revision 仍是启动时 revision；不一致则停止 Artifact 写入和结果交付。
-5. 把结构化摘要返回父 Task Agent，不返回完整 Browser Agent 对话和页面快照。
+2. `completed` 必须提供最终观察中的精确证据文本；最后一次交互后没有重新观察时降级为
+   `partially_completed`。
+3. 截图或 PDF 必须在最后一次交互后的同一页面代次生成。
+4. 去除无法关联到已访问公开 URL 的来源。
+5. 将 MCP 图片或 PDF content block 解码、验签和限流后写入当前 revision。
+6. 检查 Task revision 仍是启动时 revision；不一致则停止 Artifact 写入和结果交付。
+7. 把结构化摘要返回父 Task Agent，不返回完整 Browser Agent 对话和页面快照。
 
 Browser Agent 不能自行宣告父 Task 完成。父 Task Agent 仍需综合其他工具结果，由现有
 TaskRuntime 和交付门禁决定最终状态。
@@ -492,9 +503,9 @@ Mimi 或 Worker 重启后不恢复浏览器会话。恢复中的父 Task 可基�
 
 | 配置 | 建议默认值 | 说明 |
 | --- | ---: | --- |
-| `PUMPKIN_TASK_BROWSER_DELEGATE_LIMIT` | 2 | 单 Task 的高层委派次数 |
-| `PUMPKIN_BROWSER_AGENT_MAX_STEPS` | 24 | 子 Agent 模型步骤 |
-| `PUMPKIN_BROWSER_MCP_CALL_LIMIT` | 20 | 单次委派 MCP 调用数 |
+| `PUMPKIN_TASK_BROWSER_DELEGATE_LIMIT` | 4 | 单 Task 的高层委派次数 |
+| `PUMPKIN_BROWSER_MAX_STEPS` | 36 | 子 Agent 模型步骤 |
+| `PUMPKIN_BROWSER_MAX_MCP_CALLS` | 40 | 单次委派 MCP 调用数 |
 | `PUMPKIN_BROWSER_REASONING_EFFORT` | `low` | 子 Agent 独立推理深度 |
 | `PUMPKIN_BROWSER_RUN_TIMEOUT_SECONDS` | 180 | 单次委派总时长 |
 | `PUMPKIN_BROWSER_MCP_TIMEOUT_SECONDS` | 30 | 单次 MCP 调用上限 |
@@ -522,8 +533,10 @@ Mimi 或 Worker 重启后不恢复浏览器会话。恢复中的父 Task 可基�
 | `BROWSER_ELEMENT_REJECTED` | 否 | 控件类型、ref 或交互模式不允许 |
 | `BROWSER_AGENT_LIMIT_REACHED` | 否 | 子 Agent 达到步骤或 MCP 预算 |
 | `BROWSER_TIMEOUT` | 视阶段 | run 或 MCP 调用超时 |
+| `BROWSER_MCP_TIMEOUT` | 是 | 单次 Obscura MCP 调用超过 60 秒 |
 | `BROWSER_OUTCOME_UNKNOWN` | 否 | 页面副作用结果未知，禁止盲重试 |
 | `BROWSER_PROCESS_FAILED` | 是 | Obscura 异常退出或协议损坏 |
+| `BROWSER_COMPLETION_UNVERIFIED` | 否 | 最终页面证据或同状态产物不足 |
 | `BROWSER_OUTPUT_INVALID` | 否 | 子 Agent 终态结果不符合 Schema |
 | `BROWSER_CAPTURE_TOO_LARGE` | 否 | 截图或 PDF 超限 |
 | `BROWSER_ARTIFACT_FAILED` | 否 | Artifact 校验或写入失败 |
@@ -621,6 +634,9 @@ Cookie、Token、截图/PDF、MCP 原始帧、模型原始消息和 stderr 原�
 - JavaScript 动态渲染、ref 点击、公开表单、等待、滚动和提取；
 - 私网、环回和元数据地址拒绝；
 - 中文和 Emoji 截图非空，PDF 签名有效；
+- 长表单使用安全 `ref` 或检测得到的字段名批量填写，模型提供的 selector 和任意脚本仍被
+  拒绝；
+- 提交后未重新观察、证据文本不匹配或截图早于最终页面状态时不得返回 `completed`；
 - 超时、MCP 损坏、子进程崩溃和取消均回收 PID 与临时目录；
 - `SIGTERM` 无效时按时 `SIGKILL`，退出码被检查；
 - 当前镜像 digest、版本和工具 Schema 通过兼容探针。

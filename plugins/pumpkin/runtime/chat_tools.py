@@ -245,6 +245,37 @@ class ChatToolService:
             ),
         )
 
+    async def reply_and_complete(
+        self,
+        context: ToolContext,
+        arguments: dict[str, Any],
+    ) -> ToolResult:
+        try:
+            ConversationContinuation(str(arguments.get("continuation", "closed")))
+        except ValueError:
+            return error(
+                "invalid conversation continuation",
+                "INVALID_CONVERSATION_CONTINUATION",
+            )
+        if not self.reply_ledger.message_ids(context.run_id):
+            sent = await self.send_chat_reply(
+                context,
+                {
+                    **arguments,
+                    "idempotency_key": f"reply-and-complete:{context.run_id}",
+                },
+            )
+            if sent.is_error:
+                return sent
+        return await self.chat_turn_complete(
+            context,
+            {
+                "outcome": "replied",
+                "sent_message_ids": list(self.reply_ledger.message_ids(context.run_id)),
+                "continuation": arguments.get("continuation", "closed"),
+            },
+        )
+
     async def send_chat_reply(
         self,
         context: ToolContext,
