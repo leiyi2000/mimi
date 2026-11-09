@@ -20,6 +20,7 @@ class ArtifactRepositoryMixin:
         content_sha256: str | None = None,
         source_fingerprint: str | None = None,
         strategy_fingerprint: str | None = None,
+        delivery_status: ArtifactDeliveryStatus = ArtifactDeliveryStatus.CANDIDATE,
     ) -> None:
         await ArtifactRow.get_or_create(
             artifact_id=artifact.artifact_id,
@@ -43,7 +44,7 @@ class ArtifactRepositoryMixin:
                 "content_sha256": content_sha256,
                 "source_fingerprint": source_fingerprint,
                 "strategy_fingerprint": strategy_fingerprint,
-                "delivery_status": ArtifactDeliveryStatus.CANDIDATE.value,
+                "delivery_status": delivery_status.value,
             },
         )
 

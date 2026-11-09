@@ -666,7 +666,7 @@ async def test_single_audio_delivery_matches_task_outcome(
         scope_id="group:1",
         status=status,
         summary="audio completed",
-        remaining=(),
+        remaining=("补充文字祝福",) if status is TaskStatus.PARTIALLY_COMPLETED else (),
         accepted_criteria=("audio generated",),
         artifacts=(artifact,),
         artifact_ids=(artifact.artifact_id,),

@@ -1,6 +1,6 @@
 ---
 name: browser-delegation
-description: 委派隔离 Browser Agent 处理 JavaScript 页面、公开交互、截图或 PDF。
+description: 委派隔离 Browser Controller 处理 JavaScript 页面、公开交互、截图或 PDF。
 allowed-tools:
   - delegate_browser_task
 agent-roles:
@@ -22,24 +22,24 @@ anti-triggers:
 priority: 78
 ---
 
-静态网页、JSON 和公开文件优先使用 `search_web` 与 `fetch_url`。只有目标需要执行
-JavaScript、点击或填写公开页面、等待异步内容、截图或导出 PDF 时，才调用
-`delegate_browser_task`。一次委派描述完整且可验收的子任务，不要把每个点击拆成独立委派。
+静态网页、JSON 和公开文件优先使用 `search_web` 或 `fetch_url`。只有目标需要
+JavaScript、公开页面交互、截图或 PDF 时，才调用 `delegate_browser_task`。
 
-默认使用 `read_only`。只有用户目标明确需要低风险公开页面交互时才使用
-`public_interaction`。禁止委派登录、密码、Cookie、Token、验证码、付费墙绕过、上传、
-购买、支付、发布、删除、授权或其他高影响操作。不得在参数中传 selector、脚本、Header、
-代理或模型配置。
+调用时只传 `goal`。`goal` 应完整说明：
 
-公开表单应在一次委派内完成。Browser Agent 会先检测表单，再以安全元素引用或检测得到的
-精确字段名批量填写；字段名只由 Worker 内部转换为受限 selector，父 Agent 仍不得传
-selector。不要把逐题点击拆成多次委派，也不要在部分完成后声称“继续上一浏览器状态”，
-因为每次委派都使用全新页面状态。提交后必须重新观察最终页面，只有观察到明确成功文本并
-在该状态截图，才能报告完成。
+- 要处理的公开页面；
+- 用户要达成的最终状态；
+- 需要返回的事实、链接、截图或 PDF；
+- 用户明确要求的截图范围、成功状态和禁止提交等限制。
 
-批量填写后只再调用一次表单检测；当 `unfilled_field_names` 为空时直接生成所需截图并
-完成，不要逐项补填或反复截图。
+不要传步骤、点击顺序、selector、脚本、Header、Cookie、幂等键、内部模式或验收参数。
+不要把一个目标拆成多次委派，也不要在部分完成后尝试继续旧页面。Browser Controller
+会自行规划、观察并生成受限 Python 程序，通过 Safe Browser SDK 连续操作和核验页面。
+父 Task 不生成或传递脚本；浏览器程序不接触原始 Playwright、JavaScript、Cookie、
+Storage、网络接口或文件系统。
 
-截图要求 `expected_output=screenshot` 且 `artifact_mode=screenshot`；PDF 同理。返回
-`partially_completed` 时保留已验证结果，并明确未完成部分。同一逻辑委派必须复用稳定的
-`idempotency_key`；只有目标或起始 URL 实质变化时才使用新键。
+禁止委派登录、秘密、验证码绕过、上传、购买、支付、发布、删除、授权或其他高影响操作。
+可逆页面交互必须来自用户原话的明确授权，不能由父 Agent 自行扩大；当前不支持提交。
+
+工具返回 `completed` 时，结果已通过最终页面证据门禁。返回
+`partially_completed` 或 `failed` 时，直接向用户说明已确认结果和缺口，不重新委派。

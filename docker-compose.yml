@@ -29,6 +29,8 @@ services:
             - ./data/qimei:/data
     mimi:
         build: .
+        init: true
+        stop_grace_period: 30s
         container_name: mimi
         env_file:
             - .env
@@ -74,18 +76,37 @@ services:
                 aliases:
                     - sandbox
     browser-worker:
+        init: true
+        stop_grace_period: 15s
         profiles:
             - browser
         build:
             context: ./plugins/pumpkin/browser
         container_name: mimi-browser-worker
         restart: unless-stopped
+        healthcheck:
+            test: ["CMD", "python", "-m", "browser.worker", "--healthcheck"]
+            interval: 10s
+            timeout: 5s
+            retries: 3
+            start_period: 15s
         environment:
             BROWSER_WORKER_SOCKET: /run/pumpkin-browser/control.sock
             BROWSER_WORKER_TOKEN: ${PUMPKIN_BROWSER_WORKER_TOKEN:-disabled}
-            OBSCURA_FONT_DIR: /usr/share/fonts
+            BROWSER_WORKER_REQUEST_TIMEOUT_SECONDS: ${BROWSER_WORKER_REQUEST_TIMEOUT_SECONDS:-65}
+            BROWSER_WORKER_NAVIGATION_TIMEOUT_SECONDS: ${PUMPKIN_BROWSER_NAVIGATION_TIMEOUT_SECONDS:-20}
+            BROWSER_WORKER_ACTION_TIMEOUT_SECONDS: ${PUMPKIN_BROWSER_ACTION_TIMEOUT_SECONDS:-8}
+            BROWSER_WORKER_LEASE_SECONDS: ${BROWSER_WORKER_LEASE_SECONDS:-900}
+            BROWSER_WORKER_HEARTBEAT_TIMEOUT_SECONDS: ${BROWSER_WORKER_HEARTBEAT_TIMEOUT_SECONDS:-30}
+            BROWSER_WORKER_SDK_SOCKET_DIR: /run/pumpkin-browser-sdk
+            BROWSER_CODE_RUNNER_SOCKET: /run/pumpkin-browser-sdk/runner.sock
+            BROWSER_CODE_RUNNER_TOKEN: ${BROWSER_CODE_RUNNER_TOKEN:-}
         volumes:
             - pumpkin_browser_runtime:/run/pumpkin-browser
+            - pumpkin_browser_sdk:/run/pumpkin-browser-sdk
+        depends_on:
+            browser-code-runner:
+                condition: service_healthy
         tmpfs:
             - /tmp:size=256m,mode=1777
         read_only: true
@@ -93,11 +114,44 @@ services:
             - ALL
         security_opt:
             - no-new-privileges:true
-        pids_limit: 64
+        pids_limit: 128
         mem_limit: 1g
         cpus: 1.0
         networks:
             - browser_egress
+    browser-code-runner:
+        init: true
+        stop_grace_period: 5s
+        profiles:
+            - browser
+        build:
+            context: ./plugins/pumpkin/browser
+            dockerfile: Runner.Dockerfile
+        container_name: mimi-browser-code-runner
+        restart: unless-stopped
+        network_mode: none
+        environment:
+            BROWSER_CODE_RUNNER_SOCKET: /run/pumpkin-browser-sdk/runner.sock
+            BROWSER_WORKER_SDK_SOCKET_DIR: /run/pumpkin-browser-sdk
+            BROWSER_CODE_RUNNER_TOKEN: ${BROWSER_CODE_RUNNER_TOKEN:-}
+            BROWSER_CODE_RUNNER_MAX_OUTPUT_CHARS: ${BROWSER_CODE_RUNNER_MAX_OUTPUT_CHARS:-20480}
+        volumes:
+            - pumpkin_browser_sdk:/run/pumpkin-browser-sdk
+        healthcheck:
+            test: ["CMD", "python", "-m", "browser.code_runner", "--healthcheck"]
+            interval: 10s
+            timeout: 5s
+            retries: 3
+        tmpfs:
+            - /tmp:size=64m,mode=1777
+        read_only: true
+        cap_drop:
+            - ALL
+        security_opt:
+            - no-new-privileges:true
+        pids_limit: 16
+        mem_limit: 256m
+        cpus: 1.0
 
 networks:
     pumpkin_internal:
@@ -105,3 +159,4 @@ networks:
 
 volumes:
     pumpkin_browser_runtime:
+    pumpkin_browser_sdk:

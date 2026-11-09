@@ -8,6 +8,7 @@ from core.domain import (
     AgentEventType,
     AgentInboxItem,
     AgentInboxTarget,
+    ArtifactDeliveryStatus,
     ArtifactRef,
     InboundMessage,
     MessageRecord,
@@ -420,6 +421,7 @@ class ArtifactRepository(Protocol):
         content_sha256: str | None = None,
         source_fingerprint: str | None = None,
         strategy_fingerprint: str | None = None,
+        delivery_status: ArtifactDeliveryStatus = ArtifactDeliveryStatus.CANDIDATE,
     ) -> None: ...
 
     async def get_artifacts(

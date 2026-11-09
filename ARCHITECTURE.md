@@ -58,7 +58,8 @@ flowchart LR
 | `qimei` | 通过 Unidbg 与原生库注册 QIMEI36 | `data/qimei/` 仅缓存 APK |
 | `mimi` | 根进程与全部插件子进程 | 插件数据卷 |
 | `code-runner` | Pumpkin 隔离代码执行 | 单次请求临时目录 |
-| `browser-worker` | Pumpkin 单租约 Obscura stdio MCP 进程 | 单次委派临时目录 |
+| `browser-worker` | Pumpkin 单租约 Playwright Chromium 进程 | 单次委派临时目录 |
+| `browser-code-runner` | 无网络 Safe Python 程序沙箱与 SDK broker | 单次程序子进程 |
 
 `mimi/main.py` 创建 `PluginManager`。管理器扫描 `plugins/` 的直接子目录，读取
 `commands.toml` 并做全局、大小写不敏感的命令去重，然后在每个插件目录执行
@@ -84,7 +85,7 @@ plugins/
   music/                  # 网易云搜索、登录与音乐卡片
   yasuo/                  # 群消息归档、撤回海报与查询 API
   pumpkin/                # Harness Agent、TaskRuntime、Artifact 与能力插件
-    browser/              # 隔离 Browser Worker、UDS 协议与 Obscura 生命周期
+    browser/              # 隔离 Playwright Worker、UDS 协议与公网出口代理
 qimei/
   src/main/java/qimei/    # QIMEI HTTP、APK 校验、Unidbg 调用
 ```
@@ -152,19 +153,19 @@ Artifact，不直接发送 QQ 消息。Task Executor 最后两个模型步骤只
 工具调用并走同一路径；已发送回复不重复发送，空正文不能静默成功。TaskEvent 和 Task
 Executor 不使用正文自动发送路径。
 合并回复的幂等值绑定当前 Turn，不同回合不能复用上一条发送结果。
-跨插件 Agent 命令仍以 `commands.toml` 为唯一稳定契约，不共享插件代码。首个开放链路是
-Music `点歌`：Conversation Agent 按需加载 Chat-only `music-command` Skill，Runtime
-校验目标命令显式设置 `agent = true` 且不是管理命令，再经 Pumpkin Outbox 向当前 scope
-发送受限纯文本。NapCat 将机器人自发文本作为 `message_sent` 回流，Music 只允许该事件
-进入点歌处理；登录、登出和账号信息仍只接受原有用户事件与管理员边界。Pumpkin 只记录
-命令消息 ID，不把“已发送”声明为音乐卡片已成功。
+Music `点歌`：Conversation Agent 按需加载 Chat-only `music-command` Skill，通过普通
+聊天回复发送纯文本 `点歌 <歌曲名>[-歌手名]`。NapCat 将机器人自发文本作为
+`message_sent` 回流，Music 只允许该事件进入点歌处理；登录、登出和账号信息仍只接受
+原有用户事件与管理员边界。Pumpkin 不把该回复声明为音乐卡片已成功。
 `runtime/artifacts.py` 负责 Artifact 校验、原子写入、来源指纹和纠正门禁。聊天回复和
 确定性任务终态通知统一写入 Outbox，再由唯一 sender 发送。候选 Artifact 事件不具备
 交付 capability；只有完成或部分完成的终态 revision 才能交付。纠正验收条件使用稳定 ID
 并兼容旧文本，违规次数按纠正、revision 和原因隔离。
 `runtime/task_verification.py` 使用当前任务模型单次独立核验纠正条件，只输入实际候选
 内容和 Runtime 证据引用，不接受执行器历史或完成声明作为证明。只有全部条件 passed
-才允许完成；unknown、格式不可读和模型失败保留候选文件。成功核验缓存复用 idempotency，
+才允许完成；部分完成只核验声明已满足的纠正条件，并要求进度说明和剩余事项，
+不把未满足的成功条件计为纠正违规。产物拒绝门禁和浏览器图片核验仍生效。
+unknown、格式不可读和模型失败保留候选文件。成功核验缓存复用 idempotency，
 绑定 task、scope、revision、条件和内容摘要；完成锁内再次核对，TaskEvent 仅记录摘要证据。
 模型核验不提供客观语义保证，未被纠正的原任务沿用原契约。任务状态迁移由确定性 TaskService
 校验。`persistence/` 只提供 Tortoise 模型、按领域 Repository 和
@@ -206,14 +207,93 @@ URL 与 alt 元数据返回；图片文件在登记 Artifact 前经过解码和�
 `original_user_requests`，与助手整理的 handoff 分开展示；原话和明确纠正定义执行目标，
 技能授权不允许把查找现成资源自行改为创作。内容相关性仍由 Agent 依据预览与原请求验收。
 
-需要 JavaScript、公开页面交互、截图或 PDF 时，Task Agent 只调用高层
-`delegate_browser_task`。Mimi 内的短生命周期 Browser Agent 使用独立模型上下文和受控
-MCP 工具集，通过共享 Unix Domain Socket 调用 `browser-worker`。Worker 每次委派启动一个
-全新的 Obscura stdio MCP 子进程，拥有唯一 lease、临时 HOME、DOM、Cookie、Storage 和
-元素引用；终态、取消或超时后强制回收。Worker 不挂载插件数据或 Mimi secrets，只加入
-独立公网出站网络；Mimi 不加入该网络。公网 URL 在 Mimi 与 Worker 两侧校验，原始
-selector、脚本、Cookie、Header、Storage 和高影响操作不进入工具契约。截图和 PDF 返回
-Mimi 后写入当前 Task revision 的 Artifact，再走既有验收与 Outbox 交付。
+需要动态页面读取、公开页面交互、截图或 PDF 时，Task Agent 只调用高层
+`delegate_browser_task`。Mimi 内的短生命周期 Browser Controller 使用隔离模型上下文，
+但与 Conversation/Task 共用 `AgentLoop` 的步骤调度、Provider 调用、工具调用数量校验和
+Trace。Browser Profile 固定每步一个工具调用、禁止并行，模型结果由 Controller 执行并
+回灌下一步，预算耗尽前必须收敛到显式终态。Browser 不接入 Session 的 Turn/Step 事件、
+Skill 渐进加载、通用工具批次或 Conversation/Task 完成工具；单动作、页面版本、动作后
+断言、副作用冻结和最终证据门禁仍由 Controller 独立拥有。
+公开工具只接收一个完整 `goal`；Browser Profile 在共享 `AgentLoop` 的首个步骤根据目标和
+归档用户原话生成起始 URL、交互授权、输出类型、能力与证据约束，不启动独立 Compiler
+循环。工具预算只计委派次数，不按 URL 缓存浏览器结果；
+浏览器 capability 按 scope/task/revision 绑定唯一完整目标。Controller 通过协议 v3 的
+`execute_program` 与共享 Unix Domain Socket 调用 `browser-worker`。Worker
+每次委派启动全新的 Playwright、Chromium、BrowserContext 和 Page，拥有唯一 lease、
+临时 profile、DOM、Cookie 和 Storage；终态、取消或超时后强制回收。
+Worker 不挂载插件数据或 Mimi secrets，只加入独立公网出站网络；Mimi 不加入该网络。
+Chromium 的 HTTP、HTTPS 和 WebSocket 连接统一经过 run 专属本地代理，代理逐连接解析
+域名、拒绝非公网地址并直连已验证 IP，重定向和子资源不会绕过检查。公网 URL 仍在 Mimi
+与 Worker 两侧校验。Browser Agent 生成受限 Python 程序，通过 `browser_execute` 调用
+注入的 Safe Browser SDK；不接触原始 Playwright、locator、JavaScript 或网络接口。
+`browser-code-runner` 独立容器使用非 root、只读文件系统、无网络与资源上限，
+每段程序启动独立子进程并安装 Linux seccomp；子进程仅持有预连接 pipe，
+SDK capability 由 supervisor broker 注入，不能读取 SDK socket 或其他进程。
+Worker 只解析通用 HTML/ARIA、label、fieldset 和 open shadow DOM，不推断题目与站点语义。
+观察同时保留普通 DOM 容器、真实父引用与直接文字，find 可按局部文字、tag、form_name
+和 within 范围定位重复入口。投影和范围筛选在浏览器内批量读取，不逐节点往返。
+模型观察以默认字段表无损压缩，并只发送一次最新观察；累计动作记录独立回灌，
+不随纯观察程序清空。另保留最多 24 KiB 的程序源码与小型返回值历史，
+不复制旧观察或动作台账，省略时显式标记。进度记录仅在本次委派内用于恢复执行，
+不能替代实时页面证据，也不进入持久化日志。SDK 返回完整属性对象。
+Cookie、Header、Storage、CDP 和高影响操作
+不进入工具契约。截图和 PDF 返回
+Mimi 后写入当前 Task revision 的 Artifact。成功结果只包含最终页面状态的产物；
+部分完成的过程截图标为 `diagnostic`，不能晋升为交付产物。浏览器截图逐张核验文字
+可读性及原任务要求，发送前通过同一内容核验服务重检，拦截历史乱码与中间态截图。
+核验证据绑定文件摘要和具体图片，无法用另一张正常图片替旧图通过验收。
+Browser Profile 契约阶段产出的受限契约通过公网 URL 与模式校验后，Controller 每轮只
+允许一个程序或完成工具。默认最多 6 次决策、3 段程序，每段最多 30 秒、32 KiB 源码；
+Worker 对一次 run 限制 200 次 SDK 调用。填值、勾选和选择后自动核验直接状态，
+`fill_many` 先预检全部项，再逐条执行，失败保留已完成动作记录。
+普通局部变量（包括 `_`）可用；双下划线运行时名称、私有属性和危险 Python 操作仍禁用。
+校验失败回灌完整错误字段，不消耗程序执行次数。每步提供剩余时间和决策次数，
+最后一次决策只开放完成工具；每段程序的超时上限同时受剩余执行时间约束。
+共享 `AgentLoop` 接受可选的单次请求截止时间，Browser Profile 使用已配置的模型时限，
+并预留一段程序时限用于最终捕获和收尾；不依赖 HTTP 分阶段超时作为整次模型调用上限。
+修改结果不确定时冻结后续修改，不重放副作用。
+完成前 Worker 刷新观察并捕获最终产物；动作序号独立于页面版本，
+`observed_after_action_seq` 必须覆盖最后动作。证据文本和 facts 必须来自最终页面，
+后台写请求仍阻断并计入诊断，不代替动作效果与目标验收；
+完成参数类型或精确引文错误允许一次只开放完成工具的纠正，重新捕获页面并执行原门禁；
+页面状态不符、观察不完整、结果未知或产物身份错误不进入此纠正路径。
+未确认动作或产物身份不一致时，只能部分完成。Controller 不维护 checkpoint、
+executing/finalizing/verifying 阶段，也不调用第二个浏览器验收模型。
+公开表单交互还需 value/checked/selected 的结构化断言，最终观察覆盖全部字段和同名
+勾选组，拒绝空字段、漏组、原生无效状态与填写后重置。非标准数量和自然语言目标
+仍由 Agent 按原请求确定，不能把通用表单覆盖视为任意业务目标的证明。
+仅允许页面内空语句或 void(0) 链接入口；其他 JavaScript URL 不开放。
+原生提交方法、提交事件、提交按钮与 Enter 在 Worker 初始化脚本中阻断。
+`TaskRuntime` 持有单调截止时间，Controller 按父任务剩余时间减交付预留执行。
+容量不足时由 Runtime 在同一次委派中
+最多等待 45 秒，并受父截止时间约束，不额外调用模型。Worker 租约绑定 Mimi 实例和
+scope/task/revision 摘要，续期和取消同时校验租约与所有者。
+Mimi 每 5 秒独立连接发送心跳，Worker 心跳失联 30 秒回收，900 秒硬租约保持兜底。
+终态、取消、版本纠正及关闭统一等待清理，重复取消不能跳过回收；
+客户端清理有 5 秒上限，失联则由 Worker 回收。根进程、Pumpkin 与 Worker 的 SIGTERM
+进入关闭流程；Compose 提供 init 与停止宽限时间，正常关闭先停止接收浏览器委派。
+Worker 串行执行 SDK 调用。每个 ref 绑定具体节点、frame 和文档代次；
+填写值、checked、selected、滚动和新观察不会使 ref 失效，节点替换、文档导航、
+frame 分离或语义改变会返回 `BROWSER_REF_STALE`，不重新按位置命中另一节点。
+动作返回同时区分执行状态和 checked、value、URL 或 ARIA 页面状态等直接效果。动作已发送
+但结果未知时封锁后续修改，不重放副作用。执行前的不可见、禁用或不可编辑状态返回精确
+批次索引与 ref 字段；执行后的 Playwright 异常按结果未知处理。
+浏览器操作标识由 Runtime 根据 scope/task/revision 与目标摘要内部生成，不暴露给 Agent。
+同一任务版本只执行一个完整浏览器目标，阻止改写目标或 URL 重开；同次委派可导航多个页面。
+运行中合并请求，终态复用结果，执行前持久化预留；中断无终态时阻止重放。
+跨委派不恢复页面。完成候选先检查当前观察出处和产物版本。
+snapshot 包含最多 48K 字符正文与 5,000 个节点引用，截断会明确标记并阻止完成。
+页面理解和控件组合由 Browser Agent 完成。SDK 的 find/get/read/assert 不开放任意
+JavaScript；不维护表单进度或站点适配器。每次观察产生新 observation_id，
+只有内容投影变化才递增 resource_version；document_epoch 以文档对象身份判断，
+iframe 导航不改变主文档代次。DOM 值存在不代表页面接受，完成仍需最终页面证据。
+SDK 请求绑定 run、execution、capability、单调序号和参数摘要；重复请求复用结果，
+冲突或乱序明确拒绝。程序执行、失败、超时和取消都会吊销执行票据。
+Controller 核对 Worker SDK 版本与能力，不授权替代交互方式或截图范围。
+终态及幂等缓存保留带 run_id 的 `execution_report`、最后观察、最近动作和结果未知状态，
+不能跨 run 推断结果。失败过程截图只登记 diagnostic Artifact，不能晋升为最终交付。
+产物来源摘要绑定 run、资源版本和捕获身份。只读结果携带已有交互报告；
+`TaskCommandService` 在完成前及完成锁内检查原交互终态，未核验交互只能部分完成。
 
 Pumpkin 的有效数据路径只有：
 

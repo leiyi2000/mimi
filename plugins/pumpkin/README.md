@@ -41,9 +41,8 @@ Pumpkin 是 Mimi 的 QQ 群聊和私聊 AI 插件。每条消息先写入
   文本回答优先使用 `reply_and_complete`，一次提交回复与话题状态；Runtime 自动管理发送
   确认和结束。普通正文也经过同一校验发送，空输出不会被标为成功，已发送回复不会重复。
 - 用户明确要求 Pumpkin 点歌时，Conversation Agent 可按需加载 `music-command` Skill，
-  由 Runtime 从 Music `commands.toml` 校验 `agent = true` 后，经 Outbox 代发一条真实
-  `点歌 <歌曲名>[-歌手名]` 文本。该能力不创建任务、不生成音频，也不接触 Music 的
-  Cookie、搜索或卡片签名；发送成功只表示指令已发出，Music 的后续卡片或错误才是终态。
+  直接回复一条 `点歌 <歌曲名>[-歌手名]` 文本。该能力不创建任务、不生成音频，也不接触
+  Music 的 Cookie、搜索或卡片签名；Music 的后续卡片或错误才是终态。
 - `闭嘴`、`别说了`、`助手名退下` 和 `退下助手名` 会把当前作用域写入持久休眠状态；
   重启不会自动解除，直到下一次明确唤醒。助手自己的回复、任务确认和失败回执不会延长
   会话 TTL。
@@ -55,8 +54,12 @@ Pumpkin 是 Mimi 的 QQ 群聊和私聊 AI 插件。每条消息先写入
   被否定 Artifact 的内容、来源和生成策略会失效；验收条件使用稳定 ID，连续两次在同一
   revision 违反同一纠正原因时任务停止，不同原因和新 revision 不会互相累计。
   纠正任务完成前还会独立检查当前候选图片或 UTF-8 正文，单次使用任务模型核验全部条件。
+  部分完成只核验声明已满足的条件，必须说明进度、失败原因和剩余事项；没有已满足条件
+  且没有交付产物时允许空条件列表，不因缺少成功证据累计纠正违规。
   条件 ID 或执行器的完成声明不能代替内容证据；缺证据、核验失败或无法确认时保留候选文件。
-  提交前再次检查 revision、条件和文件摘要。模型核验仍可能误判；原任务无纠正条件时沿用原有验收契约。
+  提交前再次检查 revision、条件和文件摘要。浏览器截图即使没有纠正条件，也逐张核验文字
+  可读性与原任务要求；发送前再次核验，以拦截旧版本遗留的乱码或中间态截图。
+  模型核验仍可能误判；其他原任务无纠正条件时沿用原有验收契约。
 - 网页读取或下载的单个来源失败不会直接终止整项任务，可以继续换来源；重复 URL 在当前
   任务 Turn 复用不可重试失败。预算耗尽时保留候选文件，有未核验纠正条件时不自动宣称验收通过。
 - 模型使用 OpenAI-compatible Chat Completions 协议，未配置模型时会明确记录不可用，
@@ -71,7 +74,7 @@ Pumpkin 是 Mimi 的 QQ 群聊和私聊 AI 插件。每条消息先写入
 | `PUMPKIN_ASSISTANT_NAME` | 动态助手名称，同时作为群聊唤醒前缀 |
 | `PUMPKIN_MODEL_PROVIDER`、`PUMPKIN_MODEL` | 默认模型配置 |
 | `PUMPKIN_MODEL_BASE_URL`、`PUMPKIN_MODEL_API_KEY` | OpenAI-compatible 端点 |
-| `PUMPKIN_CHAT_REASONING_EFFORT`、`PUMPKIN_TASK_REASONING_EFFORT` | MiniMax M3.1 Flash 思考深度；默认聊天 `low`、任务 `max` |
+| `PUMPKIN_CHAT_REASONING_EFFORT`、`PUMPKIN_TASK_REASONING_EFFORT`、`PUMPKIN_BROWSER_REASONING_EFFORT` | MiniMax M3.1 Flash 思考深度；默认聊天 `high`、任务与浏览器 `max` |
 | `PUMPKIN_CHAT_MAX_TOKENS`、`PUMPKIN_TASK_MAX_TOKENS` | 单次模型生成预算，包含 thinking；默认聊天 `4096`、任务 `8192` |
 | `PUMPKIN_DIRECT_FOLLOW_UP_WINDOW_SECONDS`、`PUMPKIN_TOPIC_MAX_LIFETIME_SECONDS`、`PUMPKIN_FOLLOW_UP_TURN_BUDGET` | 话题空闲滑动窗口、单次话题硬上限和共享 Turn 预算；默认 300 秒、900 秒、6 Turn |
 | `PUMPKIN_STOP_ALIASES` | 可选的逗号分隔停止参与别名；默认包含 `闭嘴`、`别说了` 和动态助手名组合 |
@@ -79,15 +82,18 @@ Pumpkin 是 Mimi 的 QQ 群聊和私聊 AI 插件。每条消息先写入
 | `PUMPKIN_SINGLE_TASK_TIMEOUT_SECONDS` | 单个任务总执行时限 |
 | `PUMPKIN_MAX_STEPS`、`PUMPKIN_TASK_MAX_STEPS`、`PUMPKIN_TASK_FINALIZATION_STEPS` | Conversation Agent 与 Task Executor 的最大模型步骤数默认分别为 10 和 16；任务在 50% 和 75% 时提醒模型收敛，最后 2 步只允许提交完成状态 |
 | `PUMPKIN_TASK_WEB_SEARCH_LIMIT`、`PUMPKIN_TASK_WEB_FETCH_LIMIT`、`PUMPKIN_TASK_WEB_DOWNLOAD_LIMIT` | 单个 Task Turn 的搜索、抓页和文件下载上限，默认 8、16、8 |
-| `PUMPKIN_TASK_BROWSER_DELEGATE_LIMIT` | 单个 Task Turn 的 Browser Agent 委派上限，默认 4 |
+| `PUMPKIN_TASK_BROWSER_DELEGATE_LIMIT` | 单个 Task Turn 的 Browser Controller 委派上限，默认 4 |
 | `PUMPKIN_WEB_DOWNLOAD_MAX_BYTES` | 单个公网文件下载上限，默认 20 MiB |
 | `PUMPKIN_CHAT_FALLBACK_BASE_URLS`、`PUMPKIN_TASK_FALLBACK_BASE_URLS` | 逗号分隔的备用端点 |
 | `PUMPKIN_SEARCH_API_URL`、`PUMPKIN_SEARCH_API_KEY` | 可选网页搜索服务，未配置时明确返回未配置 |
 | `PUMPKIN_SEARCH_TIMEOUT_SECONDS`、`PUMPKIN_SEARCH_MAX_RESULTS` | 单次 Web 请求超时和搜索结果上限，默认 20 秒、12 条 |
 | `PUMPKIN_FETCH_MAX_BYTES`、`PUMPKIN_FETCH_MAX_CHARS`、`PUMPKIN_IMAGE_FETCH_MAX_BYTES` | 网页正文下载、提取文本和网页图片上限，默认 2 MiB、60000 字符和 20 MiB |
 | `PUMPKIN_WEB_MODEL_CONTENT_MAX_CHARS`、`PUMPKIN_WEB_HOST_CONCURRENCY` | 模型可见单次 Web 结果上限和同 host HTTP 并发，默认 8000 字符、4 并发 |
-| `PUMPKIN_BROWSER_ENABLED`、`PUMPKIN_BROWSER_WORKER_SOCKET`、`PUMPKIN_BROWSER_WORKER_TOKEN` | 可选隔离 Browser Agent 开关、UDS 路径和 Worker 认证 Token |
-| `PUMPKIN_BROWSER_REASONING_EFFORT`、`PUMPKIN_BROWSER_TIMEOUT_SECONDS`、`PUMPKIN_BROWSER_MAX_STEPS`、`PUMPKIN_BROWSER_MAX_MCP_CALLS` | Browser Agent 独立模型推理深度、总时限、模型步骤和 MCP 调用预算；默认 `low`、300 秒、36、40 |
+| `PUMPKIN_BROWSER_ENABLED`、`PUMPKIN_BROWSER_WORKER_SOCKET`、`PUMPKIN_BROWSER_WORKER_TOKEN` | 可选隔离 Browser Controller 开关、UDS 路径和 Worker 认证 Token |
+| `PUMPKIN_BROWSER_REASONING_EFFORT`、`PUMPKIN_BROWSER_TIMEOUT_SECONDS`、`PUMPKIN_BROWSER_MAX_STEPS`、`PUMPKIN_BROWSER_MAX_PROGRAMS` | Browser Profile 的推理深度、总时限、共享 AgentLoop 步骤数和程序预算；默认 `max`、300 秒、6、3 |
+| `PUMPKIN_BROWSER_PROGRAM_TIMEOUT_SECONDS`、`PUMPKIN_BROWSER_PROGRAM_MAX_CHARS` | 单段程序时限与源码字节上限；默认 30 秒、32768，不可超过 Worker 硬上限 |
+| `BROWSER_CODE_RUNNER_TOKEN`、`BROWSER_CODE_RUNNER_MAX_OUTPUT_CHARS` | Worker/Runner 独立认证与程序输出上限，输出默认 20480 字节；Token 不注入程序子进程 |
+| `PUMPKIN_BROWSER_PARENT_RESERVE_SECONDS`、`PUMPKIN_BROWSER_CAPACITY_WAIT_SECONDS`、`PUMPKIN_BROWSER_HEARTBEAT_INTERVAL_SECONDS` | 父任务交付余量、容量等待和 Worker 心跳间隔，默认 60、45、5 秒 |
 | `PUMPKIN_CODE_RUNNER_URL`、`PUMPKIN_CODE_RUNNER_TOKEN` | 独立代码沙箱服务，默认使用 Compose 内部地址 |
 | `PUMPKIN_IMAGE_PROVIDER`、`PUMPKIN_IMAGE_API_BASE_URL`、`PUMPKIN_IMAGE_API_KEY`、`PUMPKIN_IMAGE_MODEL` | 可选图片生成适配器 |
 | `PUMPKIN_AUDIO_PROVIDER`、`PUMPKIN_AUDIO_API_BASE_URL` | 可选 TTS 适配器，支持 `minimax` 和 `qwen-local` |
@@ -147,20 +153,97 @@ Profile 的 `wreq` Transport 读取任意公网来源，并通过 `output=text|a
 或站点挑战。
 
 动态网页、公开页面交互、截图和 PDF 可按需加载 `browser-delegation` Skill。Task Agent
-只调用高层 `delegate_browser_task`；每次委派由 `browser-worker` 从
-`plugins/pumpkin/browser/` 镜像启动一个全新的 Obscura stdio MCP 进程，结束后强制回收。
+只调用高层 `delegate_browser_task` 并传入一个完整 `goal`，不提供 URL、步骤、模式、
+能力、证据条件或幂等键。Browser Profile 在共享 AgentLoop 的首个步骤根据目标和归档
+用户原话生成受限契约，不启动独立 Compiler 循环；
+短生命周期 Browser Controller 与 Conversation/Task 共用 AgentLoop 的模型步骤调度、
+Provider 调用和工具调用数量校验；Browser Profile 每步只允许一个工具调用并禁止并行，
+页面状态、动作后断言和完成证据仍由 Controller 独立维护。
+每次委派由 `browser-worker` 从
+`plugins/pumpkin/browser/` 镜像启动全新的 Playwright、Chromium、BrowserContext 和 Page，
+结束后强制回收。
 Worker 通过共享 Unix Domain Socket 与 Mimi 通信，只加入独立公网出站网络，不读取 Mimi
-密钥、数据库或插件数据。首版全局并发为 1，容量满时明确拒绝。启用前设置独立随机 Token，
-并使用 `docker compose --profile browser build --pull browser-worker` 构建镜像；未启用时
+密钥、数据库或插件数据。全局并发为 1，容量满时由 Runtime 最多等待 45 秒，
+等待消耗父任务剩余时间，不重新调用模型或增加委派次数；超时明确说明未执行操作。
+启用前设置 `PUMPKIN_BROWSER_WORKER_TOKEN` 与独立的 `BROWSER_CODE_RUNNER_TOKEN`，
+并使用 `docker compose --profile browser build browser-worker browser-code-runner` 构建镜像；未启用时
 该 Skill 不进入能力目录，不影响 `search_web` 和 `fetch_url`。
 
-公开表单在单次 Browser Agent 运行内通过安全元素引用或检测得到的精确字段名批量填写。
-字段名模式由 Worker 内部转换为受限 selector，模型不能传 selector 或任意 JavaScript。
-每次委派仍使用全新页面状态，父 Task 不能通过重新委派续填。交互任务完成前
-必须在最后一次页面变更后重新读取页面；`completed` 的证据文本必须能在该最终观察中找到，
-截图或 PDF 也必须在同一最终状态生成。失败运行中的过程截图不会登记为 Artifact。Worker
-镜像包含 CJK 与 Emoji 字体；MCP 超时和子进程断开使用不同错误码，便于区分页面超时与
-浏览器进程故障。
+Browser Agent 根据初始页面观察生成受限 Python 程序，通过 `browser_execute` 调用
+Safe Browser SDK，一段程序可循环读取、填写、勾选、选择并断言多个控件。
+独立 `browser-code-runner` 容器无网络，以非 root 与只读文件系统运行；程序子进程
+安装 Linux seccomp，仅通过预连接 pipe 调用 Worker，不读取文件、进程或共享 socket。
+Agent 不接触原始 Playwright、locator、任意 JavaScript、Cookie、Storage 或网络 API。
+Worker 使用通用 HTML/ARIA 语义生成稳定 ref，不包含站点适配规则或题目推断。
+普通 DOM 容器、父引用与局部文字也进入观察，可按 tag、form_name 与 within 缩小范围，
+定位重复的可见入口；不会开放原始选择器或任意页面脚本。
+输入值、checked、selected、滚动和新观察不会使 ref 失效；
+节点替换、文档导航、frame 分离或语义改变会明确要求重新查找。
+iframe 导航只改变对应 frame 的文档代次。每次观察产生新 ID，
+内容投影变化才递增页面版本。正文超过 48K 字符或引用超过 5,000 时明确标记截断，
+当前观察不作为完整完成证据。
+每次实际执行仍使用全新页面状态，父 Task 不能通过重新委派续填。
+Controller 每轮只允许一个程序或完成工具；默认 6 次决策、3 段程序，
+每段程序最多 30 秒，单次 run 最多 200 次 SDK 调用。填值、勾选和选择后自动核验直接状态，
+批量填写先预检全部项，执行失败保留已经确认的动作。程序变量不跨程序保留，
+页面现场保留到委派结束。程序成功和 return_value 不等于目标完成。
+Controller 保留最多 24 KiB 的程序与小型返回值记录，省略时明确标记，不重复发送旧页面
+快照；可返回自定义进度与待办供后续程序恢复，仍需用实时页面状态核验。
+普通局部变量 `_` 等可以使用，私有属性、双下划线运行时名称及危险操作继续拒绝。
+每步提供剩余时间和决策次数，最后一轮只允许完成工具。模型整次调用受
+`PUMPKIN_BROWSER_MODEL_TIMEOUT_SECONDS` 和任务截止时间共同约束；
+执行另预留一段程序时限供最终捕获和收尾，不靠 HTTP 分阶段超时兜底。
+动作结果不确定时立即冻结全部后续修改。
+填写、选择或点击后的最终状态必须由 Agent 基于最新页面证据重新确认。
+表单交互程序需返回结构化 `state_checks`（value/checked/selected）；finish 也可通过
+`value_checks`、`checked_checks`、`selected_checks` 提供确定类型的期望值，最终捕获重新比对全部
+字段和勾选组，拒绝只凭标题、遗漏字段或事后重置的完成声明。非标准题目约束仍需
+Agent 按原请求和局部文字核验，通用门禁不推断站点题型。
+目标明确指定的交互方式或截图范围由内部契约校验 Worker 实际工具与受限协议；
+支持 Safe SDK 可逆动作、视口截图和有像素上限的整页截图。
+提交按钮、Enter 提交、上传与敏感字段在 Worker 拒绝，HTTPS 写请求也在 Playwright
+请求路由中拦截，累计拦截计数只作为诊断信息。后台请求被阻断不会直接使导航或填写失败，
+完成仍要求最新页面状态与契约证据一致，不能声称服务器接受了被阻断的写入或提交。
+终态及缓存中的 `execution_report` 保留运行 ID、最后观察、最近动作和结果未知状态，
+不会用新运行的页面状态推断旧运行是否成功。只读结果附带 `prior_interaction`，
+原交互未核验时父任务不能以 completed 结项，仍可如实报告部分完成。
+父任务原话和纠正一并传入，浏览器时限受父任务剩余时间约束。
+每个任务版本最多启动一个完整浏览器目标，同次委派可以导航多个页面；
+部分完成或结果不确定后不能改写目标重新执行。新的浏览器目标需要新任务版本；
+内部编译失败或没有程序执行的失败会释放执行预留。
+浏览器单行日志记录模型/工具耗时、步骤和调用次数，不记录 URL、填写内容、页面正文或
+工具参数。
+程序校验或 SDK 参数失败会返回具体字段与调用序号，供模型基于最终观察纠正；
+连续两次无效决策后部分完成并停止。
+完成参数类型或精确引文错误可纠正一次，期间只允许重发完成工具；新的页面捕获仍需通过
+全部原有门禁。页面状态不符、观察不完整、结果未知及产物身份不符会直接终止。
+完成工具会刷新最终页面观察；证据文本和 facts 必须能在该观察中找到，
+`observed_after_action_seq` 必须覆盖最后动作，包含内容未变化的动作。
+内部契约中的精确证据条件由用户目标生成，Runtime 逐项核对；控件值变化不能证明提交成功。
+截图或 PDF 也必须在同一最终状态生成，成功结果不包含此前页面状态的截图。失败和
+部分完成运行的过程截图仅以 `diagnostic` 状态保存，
+不能通过结项或交付工具晋升为最终产物，缓存命中也保留原失败状态。Worker
+镜像包含 CJK 与 Emoji 字体。UDS v3 协议返回程序状态、动作记录、文档代次、资源版本
+和观察 ID，参数错误不会关闭 run；Playwright 超时和浏览器进程故障使用不同错误码。
+SDK 请求绑定 run、execution、capability、序号和参数摘要；重复调用复用结果，
+冲突或乱序拒绝。执行票据在程序结束、超时或取消后吊销。动作定位只使用稳定 ref；
+执行前不可见、禁用或不可编辑时返回精确批次索引与 ref 字段，
+动作发出后的 Playwright 异常按结果未知处理。
+副作用超时后禁止继续修改页面，只能观察或报告结果待确认；硬租约默认 900 秒。
+租约绑定 Mimi 进程实例与 scope/task/revision 摘要，旧租约不能续期或取消新运行。
+Mimi 每 5 秒通过独立连接续期，Worker 在心跳失联 30 秒后回收现场。
+取消、任务版本纠正和正常关闭等待浏览器释放；SIGTERM 进入异步关闭，
+重复取消不会跳过清理，清理等待最多 5 秒，失联由 Worker 心跳超时兜底。
+容量等待与心跳间隔分别通过 `PUMPKIN_BROWSER_CAPACITY_WAIT_SECONDS`、
+`PUMPKIN_BROWSER_HEARTBEAT_INTERVAL_SECONDS` 配置；Worker 超时通过
+`BROWSER_WORKER_HEARTBEAT_TIMEOUT_SECONDS`、`BROWSER_WORKER_LEASE_SECONDS` 配置，
+心跳间隔应小于失联回收时间。
+总超时保留实际计数和诊断截图，用户取消则传播取消并清理现场。
+同一 scope/task/revision 按任务版本唯一操作去重，改写目标不能从头重做。
+通用工具层只计委派预算，浏览器层按完整目标去重，不按 URL 复用不同目标的结果。
+执行前持久化预留，进程中断而
+无终态时阻止重新操作；尚未执行程序的失败释放预留。
+相同目标合并正在执行的请求并缓存终态；更换目标时明确报冲突。
 
 网页搜索、代码执行、图片生成、HTML 图文渲染、Markdown 报告渲染和音频合成均为按需
 Skill。Markdown 渲染支持标题、引用、列表、表格、代码块和来源链接；配图只引用当前

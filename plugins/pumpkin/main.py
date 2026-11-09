@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import signal
 
 from dotenv import load_dotenv
 from napcat import NapCatClient
@@ -21,6 +22,10 @@ async def main(config: PumpkinConfig) -> None:
     )
     runtime = ReliablePumpkinRuntime(config, client=client)
     await runtime.start()
+    loop = asyncio.get_running_loop()
+    execution = asyncio.current_task()
+    assert execution is not None
+    loop.add_signal_handler(signal.SIGTERM, execution.cancel)
     try:
         while True:
             try:
@@ -33,6 +38,7 @@ async def main(config: PumpkinConfig) -> None:
                 await asyncio.sleep(5)
     finally:
         await runtime.close()
+        loop.remove_signal_handler(signal.SIGTERM)
 
 
 if __name__ == "__main__":

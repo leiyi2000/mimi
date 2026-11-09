@@ -4,7 +4,6 @@ from typing import Any, Protocol
 
 from core.domain import AgentRole, ToolContext, ToolResult, TurnCapability
 from core.tools import TraceCallback, Tool, ToolRegistry
-from runtime.agent_commands import MUSIC_QUERY_MAX_CHARS
 from runtime.payloads import TASK_ACKNOWLEDGEMENT_MAX_CHARS
 
 
@@ -44,12 +43,6 @@ class StickerToolHost(Protocol):
     ) -> ToolResult: ...
 
     async def remove_quoted_sticker(
-        self, context: ToolContext, arguments: dict[str, Any]
-    ) -> ToolResult: ...
-
-
-class AgentCommandToolHost(Protocol):
-    async def send_music_command(
         self, context: ToolContext, arguments: dict[str, Any]
     ) -> ToolResult: ...
 
@@ -97,7 +90,6 @@ def build_registry(
     task: TaskToolHost | None = None,
     *,
     sticker: StickerToolHost | None = None,
-    agent_command: AgentCommandToolHost | None = None,
     trace: TraceCallback | None = None,
     registry: ToolRegistry | None = None,
 ) -> ToolRegistry:
@@ -341,7 +333,9 @@ def build_registry(
         "在验收条件已有可验证证据时完成或部分完成当前任务。artifact_ids 只引用当前任务"
         "工具返回的 Artifact ID；accepted_criteria 使用 task_corrections 中"
         " acceptance_criteria_refs 的 criterion_id，旧版验收条件原文仍兼容；"
-        "remaining 说明部分完成后仍未完成的事项。",
+        "completed 必须满足全部纠正条件；partially_completed 只列已满足的条件，"
+        "无已满足条件且无产物时可为空，summary 说明进度与失败原因，"
+        "remaining 必须列出仍未完成的事项。",
         {
             "type": "object",
             "required": [
@@ -531,34 +525,6 @@ def build_registry(
             },
         },
         chat.send_chat_reply,
-        read_only=False,
-        idempotency_required=True,
-        allowed_roles=frozenset({AgentRole.CHAT}),
-        required_capabilities=frozenset({TurnCapability.CHAT_REPLY}),
-    )
-    register(
-        "send_music_command",
-        "向当前会话代发 Music 清单明确开放的点歌命令。只传歌曲查询和稳定幂等键；"
-        "不能指定命令名、目标会话或消息段。成功只代表指令已发出，随后直接使用返回的"
-        "message_ids 结束聊天轮次，不追加确认。",
-        {
-            "type": "object",
-            "required": ["query", "idempotency_key"],
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": MUSIC_QUERY_MAX_CHARS,
-                },
-                "idempotency_key": {"type": "string"},
-            },
-        },
-        (
-            agent_command.send_music_command
-            if agent_command is not None
-            else _unsupported
-        ),
-        skill_name="music-command",
         read_only=False,
         idempotency_required=True,
         allowed_roles=frozenset({AgentRole.CHAT}),

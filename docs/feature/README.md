@@ -31,10 +31,12 @@
 | [Pumpkin 表情包收集与发送](20261027-pumpkin-sticker-library/design.md) | - | - | implemented |
 | [Pumpkin 任务通知与音频交付收敛](20261027-pumpkin-task-notification-convergence/design.md) | - | - | implemented |
 | [Pumpkin 公网抓取 wreq Transport](20261028-pumpkin-wreq-web-transport/design.md) | - | - | implemented |
-| [Pumpkin Browser Agent 与 Obscura MCP](20261028-pumpkin-obscura-browser/design.md) | - | - | implemented |
+| [Pumpkin Browser Agent 与 Obscura MCP](20261028-pumpkin-obscura-browser/design.md) | - | - | superseded |
 | [Pumpkin 对话与任务运行时边界](20261029-pumpkin-runtime-boundaries/design.md) | - | - | implemented |
 | [Pumpkin 话题边界与对话模式](20261106-pumpkin-conversation-modes/design.md) | - | - | implemented |
-| [Pumpkin 代发安全聊天指令](20261106-pumpkin-agent-command-delegation/design.md) | - | - | implemented |
 | [Pumpkin 现成图片发现与任务原意](20261106-pumpkin-image-discovery/design.md) | - | - | implemented |
 | [Pumpkin 对话和任务可靠性优化](20261106-pumpkin-runtime-simplification/design.md) | - | - | implemented |
 | [Pumpkin 纠正验收证据与行为回归](20261106-pumpkin-evidence-evaluation/design.md) | - | - | implemented |
+| [Pumpkin 浏览器连续执行与目标验收](20261106-pumpkin-browser-continuation/design.md) | - | - | superseded |
+| [Pumpkin Browser Controller](20261109-pumpkin-playwright-browser/design.md) | - | - | superseded |
+| [Pumpkin Browser Code Execution](20261109-pumpkin-browser-code-execution/design.md) | - | - | implemented |

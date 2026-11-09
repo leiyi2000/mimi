@@ -56,9 +56,15 @@ class ArtifactService:
         content: bytes,
         source_ref: Any | None = None,
         strategy_ref: Any | None = None,
+        delivery_status: ArtifactDeliveryStatus = ArtifactDeliveryStatus.CANDIDATE,
     ) -> ArtifactRef:
         if context.task_id is None or context.revision is None:
             raise ValueError("task context is missing")
+        if delivery_status not in {
+            ArtifactDeliveryStatus.CANDIDATE,
+            ArtifactDeliveryStatus.DIAGNOSTIC,
+        }:
+            raise ValueError("new artifacts must be candidates or diagnostics")
         if kind not in {"image", "file", "audio", "text"}:
             raise ValueError("unsupported artifact kind")
         safe_name = Path(filename).name
@@ -113,6 +119,7 @@ class ArtifactService:
             content_sha256=hashlib.sha256(content).hexdigest(),
             source_fingerprint=self.provenance_fingerprint(source_ref),
             strategy_fingerprint=self.provenance_fingerprint(strategy_ref),
+            delivery_status=delivery_status,
         )
         return artifact
 
@@ -126,6 +133,21 @@ class ArtifactService:
         require_delivery_ready: bool,
     ) -> ToolResult | None:
         try:
+            if artifact_ids:
+                assessments = await self.store.artifact_assessments(
+                    task_id=task_id,
+                    revision=revision,
+                    scope_id=scope_id,
+                    artifact_ids=artifact_ids,
+                )
+                if any(
+                    row.delivery_status == ArtifactDeliveryStatus.DIAGNOSTIC.value
+                    for row in assessments
+                ):
+                    return _error(
+                        "过程截图仅供诊断，不能作为任务结果交付。",
+                        "ARTIFACT_DIAGNOSTIC_ONLY",
+                    )
             violation = await self._correction_violation(
                 task_id=task_id,
                 revision=revision,

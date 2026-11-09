@@ -120,7 +120,7 @@ async def test_downloaded_images_are_decoded_and_visually_available(tmp_path, va
 
 
 @pytest.mark.asyncio
-async def test_failed_browser_run_does_not_persist_process_screenshot(tmp_path):
+async def test_failed_browser_run_preserves_process_screenshot_only_as_diagnostic(tmp_path):
     base = PumpkinConfig.from_env()
     config = replace(
         base,
@@ -133,6 +133,9 @@ async def test_failed_browser_run_does_not_persist_process_screenshot(tmp_path):
         task_handoff(),
         allowed_skills=("browser-delegation",),
     )
+    await runtime.store.create_task(runtime.task_runtime.runs["task-1"])
+    capture = BytesIO()
+    Image.new("RGB", (32, 24), "white").save(capture, format="PNG")
     runtime.browser_plugin.runner = SimpleNamespace(
         run=AsyncMock(
             return_value=BrowserRunResult(
@@ -141,7 +144,7 @@ async def test_failed_browser_run_does_not_persist_process_screenshot(tmp_path):
                 artifacts=(
                     BrowserArtifact(
                         BrowserArtifactMode.SCREENSHOT,
-                        b"\x89PNG\r\n\x1a\nprocess-state",
+                        capture.getvalue(),
                         "image/png",
                     ),
                 ),
@@ -155,19 +158,17 @@ async def test_failed_browser_run_does_not_persist_process_screenshot(tmp_path):
         "delegate_browser_task",
         tool_context(run_id="task-run", task_id="task-1", revision=1),
         {
-            "goal": "capture the completed result",
-            "start_url": "https://example.com/form",
-            "expected_output": "screenshot",
-            "interaction_mode": "public_interaction",
-            "artifact_mode": "screenshot",
-            "idempotency_key": "failed-browser-run",
+            "goal": (
+                "Capture the completed result at https://example.com/form."
+            ),
         },
     )
 
     assert result.is_error
     assert result.error_code == "BROWSER_PROCESS_FAILED"
     assert result.artifacts == ()
-    assert not (tmp_path / "artifacts").exists()
+    assert result.content["artifact_ids"] == []
+    assert len(result.content["diagnostic_artifact_ids"]) == 1
     await runtime.store.close()
 
 

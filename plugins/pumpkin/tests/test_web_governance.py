@@ -315,7 +315,10 @@ def test_agent_loop_can_batch_parallel_downloads():
             ),
         )
     )
-    loop = SimpleNamespace(tools=registry)
+    loop = SimpleNamespace(
+        tools=registry,
+        profile=SimpleNamespace(allow_parallel_tools=True),
+    )
     calls = (
         ToolCall(
             "first",

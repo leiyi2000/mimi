@@ -28,6 +28,7 @@ from core.domain import (
     AgentProfile,
     AgentRole,
     AgentStatus,
+    ArtifactDeliveryStatus,
     ArtifactRef,
     ParticipationIntent,
     TaskHandoff,
@@ -53,7 +54,6 @@ from providers.model import (
 from providers.stickers import ModelStickerClassifier, StickerClassifier
 from providers.text_image import TextImageRenderer
 from runtime.artifacts import ArtifactService
-from runtime.agent_commands import AgentCommandManifest, AgentCommandService
 from runtime.chat_tools import ChatToolService
 from runtime.delivery import DeliveryService
 from runtime.ingress import MessageIngress
@@ -332,6 +332,10 @@ class PumpkinRuntime:
             _task_context=self.capability_task,
             _idempotency_key=self.idempotency_key,
             _write_artifact=self.artifact_service.write,
+            _task_remaining=lambda context: self.task_runtime.remaining_seconds(
+                self.capability_task(context).task_id
+            ),
+            _browser_requests=self.browser_original_requests,
         )
         self.plugin_manager.mount_all(
             (
@@ -493,6 +497,12 @@ class PumpkinRuntime:
             ServiceKey.CONVERSATION_DRIVER
         )
         self.task_runtime = self.plugin_manager.service(ServiceKey.TASK_RUNTIME)
+        self.task_verification = TaskVerificationService(
+            store=self.store,
+            task_service=self.task_service,
+            provider=self.provider_task,
+            data_dir=config.data_dir,
+        )
         self.delivery_service = DeliveryService(
             store=self.store,
             task_service=self.task_service,
@@ -502,6 +512,7 @@ class PumpkinRuntime:
             requester_id=task_requester_id,
             source_message_id=task_source_message_id,
             reply_ledger=self.reply_ledger,
+            verification=self.task_verification,
         )
         self.chat_tools = ChatToolService(
             store=self.store,
@@ -512,20 +523,6 @@ class PumpkinRuntime:
             task_runtime=self.task_runtime,
             idempotency_key=self.idempotency_key,
             reply_ledger=self.reply_ledger,
-        )
-        self.agent_commands = AgentCommandService(
-            manifest=AgentCommandManifest(
-                Path(__file__).resolve().parents[2] / "music" / "commands.toml"
-            ),
-            outbox=self.outbox,
-            reply_ledger=self.reply_ledger,
-            idempotency_key=self.idempotency_key,
-        )
-        self.task_verification = TaskVerificationService(
-            store=self.store,
-            task_service=self.task_service,
-            provider=self.provider_task,
-            data_dir=config.data_dir,
         )
         self.task_commands = TaskCommandService(
             config,
@@ -546,7 +543,6 @@ class PumpkinRuntime:
             self.chat_tools,
             self.task_commands,
             sticker=self.stickers,
-            agent_command=self.agent_commands,
             trace=self.trace,
             registry=self.registry,
         )
@@ -644,6 +640,7 @@ class PumpkinRuntime:
 
     async def close(self) -> None:
         self._closing = True
+        await self.browser_plugin.close()
         await self.stickers.close()
         await self.outbox.close()
         agents = (
@@ -768,6 +765,29 @@ class PumpkinRuntime:
             raise TaskStateError("task scope or revision does not match")
         return handoff
 
+    async def browser_original_requests(self, context: ToolContext) -> tuple[str, ...]:
+        handoff = self.capability_task(context)
+        row = await self.store.get_task(handoff.task_id)
+        if row is None or row.revision != handoff.revision:
+            raise TaskStateError("browser task revision is no longer active")
+        requests: list[str] = []
+        for message_id in (row.source_message_ids or [])[:8]:
+            record = await self.store.get_archived_message(
+                handoff.scope_id, str(message_id),
+            )
+            if record is not None and record.message.raw_text:
+                requests.append(record.message.raw_text[:1000])
+        requests.extend(
+            record.message.raw_text[:1000] for record in handoff.source_messages[-4:]
+            if record.message.raw_text
+        )
+        corrections = await self.store.list_corrections(
+            handoff.task_id, through_revision=handoff.revision,
+        )
+        requests.extend(item.instruction[:1000] for item in corrections[-4:])
+        self.capability_task(context)
+        return tuple(dict.fromkeys(requests))
+
     def idempotency_key(
         self,
         context: ToolContext,
@@ -794,6 +814,7 @@ class PumpkinRuntime:
         content: bytes,
         source_ref: Any | None = None,
         strategy_ref: Any | None = None,
+        delivery_status: ArtifactDeliveryStatus = ArtifactDeliveryStatus.CANDIDATE,
     ) -> ArtifactRef:
         return await self.artifact_service.write(
             context,
@@ -802,6 +823,7 @@ class PumpkinRuntime:
             content=content,
             source_ref=source_ref,
             strategy_ref=strategy_ref,
+            delivery_status=delivery_status,
         )
 
 

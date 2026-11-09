@@ -348,8 +348,13 @@ class TaskService:
             raise TaskStateError(
                 "complete_task accepts completed or partially_completed"
             )
-        if not accepted_criteria:
+        if status is TaskStatus.COMPLETED and not accepted_criteria:
             raise TaskStateError("accepted criteria are required")
+        if status is TaskStatus.PARTIALLY_COMPLETED:
+            if not summary.strip() or not remaining or any(not item.strip() for item in remaining):
+                raise TaskStateError("partial completion requires progress and remaining work")
+            if artifact_ids and not accepted_criteria:
+                raise TaskStateError("artifact delivery requires accepted criteria")
         async with in_transaction() as connection:
             row = await self.store.get_task(task_id, using_db=connection)
             if row is None or row.scope_id != scope_id or row.revision != revision:

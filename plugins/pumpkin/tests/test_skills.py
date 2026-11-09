@@ -97,3 +97,14 @@ def test_unconfigured_media_skills_are_hidden_and_unloadable():
     }
     with pytest.raises(PermissionError):
         skills.load("audio-render", AgentRole.TASK)
+
+
+def test_music_skill_uses_core_chat_reply_without_owned_tools():
+    skills = SkillRegistry("skills", registry())
+    skills.discover()
+
+    instruction, tools = skills.load("music-command", AgentRole.CHAT)
+
+    assert tools == ()
+    assert "reply_and_complete" in instruction
+    assert "点歌 <歌曲名>[-歌手名]" in instruction

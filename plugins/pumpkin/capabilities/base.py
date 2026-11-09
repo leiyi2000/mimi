@@ -6,6 +6,7 @@ from typing import Any, Protocol
 
 from core.config import PumpkinConfig
 from core.domain import (
+    ArtifactDeliveryStatus,
     ArtifactRef,
     TaskHandoff,
     ToolContext,
@@ -20,6 +21,10 @@ class CapabilityHost(Protocol):
     store: CapabilityStore
 
     def capability_task(self, context: ToolContext) -> TaskHandoff: ...
+
+    def task_remaining_seconds(self, context: ToolContext) -> float | None: ...
+
+    async def browser_original_requests(self, context: ToolContext) -> tuple[str, ...]: ...
 
     def idempotency_key(
         self,
@@ -37,6 +42,7 @@ class CapabilityHost(Protocol):
         content: bytes,
         source_ref: Any | None = None,
         strategy_ref: Any | None = None,
+        delivery_status: ArtifactDeliveryStatus = ArtifactDeliveryStatus.CANDIDATE,
     ) -> ArtifactRef: ...
 
 
@@ -49,9 +55,17 @@ class CapabilityServices:
     _task_context: Callable[[ToolContext], TaskHandoff]
     _idempotency_key: Callable[[ToolContext, str, str], str]
     _write_artifact: Callable[..., Awaitable[ArtifactRef]]
+    _task_remaining: Callable[[ToolContext], float | None] | None = None
+    _browser_requests: Callable[[ToolContext], Awaitable[tuple[str, ...]]] | None = None
 
     def capability_task(self, context: ToolContext) -> TaskHandoff:
         return self._task_context(context)
+
+    def task_remaining_seconds(self, context: ToolContext) -> float | None:
+        return self._task_remaining(context) if self._task_remaining else None
+
+    async def browser_original_requests(self, context: ToolContext) -> tuple[str, ...]:
+        return await self._browser_requests(context) if self._browser_requests else ()
 
     def idempotency_key(
         self,
@@ -70,6 +84,7 @@ class CapabilityServices:
         content: bytes,
         source_ref: Any | None = None,
         strategy_ref: Any | None = None,
+        delivery_status: ArtifactDeliveryStatus = ArtifactDeliveryStatus.CANDIDATE,
     ) -> ArtifactRef:
         return await self._write_artifact(
             context,
@@ -78,6 +93,7 @@ class CapabilityServices:
             content=content,
             source_ref=source_ref,
             strategy_ref=strategy_ref,
+            delivery_status=delivery_status,
         )
 
 

@@ -31,6 +31,7 @@ from runtime.payloads import event_payload, snapshot_payload, task_started_text
 from runtime.task_runtime import TaskRuntime
 from runtime.task_events import ConversationInboxPublisher
 from runtime.task_verification import TaskVerificationService
+from runtime.browser_agent import BrowserInteractionMode, BrowserTaskStatus
 
 
 class TaskCommandService:
@@ -745,16 +746,30 @@ class TaskCommandService:
             accepted_criteria = tuple(
                 str(item) for item in arguments["accepted_criteria"]
             )
-            criteria_violation = await self.artifact_service.acceptance_criteria_gate(
-                task_id=context.task_id,
-                revision=context.revision,
-                accepted_criteria=accepted_criteria,
+            remaining = tuple(str(item) for item in arguments["remaining"])
+            if status is TaskStatus.PARTIALLY_COMPLETED:
+                if not remaining or any(not item.strip() for item in remaining):
+                    raise ValueError("partial completion requires explicit remaining work")
+                if not str(arguments["summary"]).strip():
+                    raise ValueError("partial completion requires a progress summary")
+            else:
+                browser_gap = await self._browser_completion_gate(context)
+                if browser_gap is not None:
+                    return browser_gap
+                criteria_violation = await self.artifact_service.acceptance_criteria_gate(
+                    task_id=context.task_id,
+                    revision=context.revision,
+                    accepted_criteria=accepted_criteria,
+                )
+                if criteria_violation is not None:
+                    return criteria_violation
+            verification_criteria = (
+                accepted_criteria if status is TaskStatus.PARTIALLY_COMPLETED else None
             )
-            if criteria_violation is not None:
-                return criteria_violation
             try:
                 candidate = await self.verification_service.prepare(
                     context, artifacts, str(arguments["summary"]),
+                    accepted_criteria=verification_criteria,
                 )
             except (ValueError, OSError):
                 return error(
@@ -772,8 +787,13 @@ class TaskCommandService:
                 "event_id": event_id,
             }
             async with self.task_runtime.task_lock(context.task_id):
+                if status is TaskStatus.COMPLETED:
+                    browser_gap = await self._browser_completion_gate(context)
+                    if browser_gap is not None:
+                        return browser_gap
                 stale = await self.verification_service.recheck(
                     context, artifacts, str(arguments["summary"]), candidate,
+                    accepted_criteria=verification_criteria,
                 )
                 if stale is not None:
                     return stale
@@ -783,7 +803,7 @@ class TaskCommandService:
                     scope_id=context.scope_id,
                     status=status,
                     summary=str(arguments["summary"]),
-                    remaining=tuple(str(item) for item in arguments["remaining"]),
+                    remaining=remaining,
                     accepted_criteria=accepted_criteria,
                     artifacts=artifacts,
                     artifact_ids=artifact_ids,
@@ -795,3 +815,23 @@ class TaskCommandService:
             return error(str(exc), "TASK_COMPLETION_REJECTED")
         await self.task_event_notifier.notify(event)
         return ok(result)
+
+    async def _browser_completion_gate(self, context: ToolContext) -> ToolResult | None:
+        previous = await self.store.idempotency_get(self.idempotency_key(
+            context, "browser-operation",
+            BrowserInteractionMode.PUBLIC_INTERACTION.operation_fingerprint,
+        ))
+        if previous is None:
+            return None
+        report = previous.get("execution_report", {})
+        if (
+            previous.get("status") == BrowserTaskStatus.COMPLETED.value
+            and report.get("goal_verified", True)
+        ):
+            return None
+        return error({
+            "message": "原浏览器交互尚未核验完成，请保留缺口并以部分完成收尾。",
+            "status": previous.get("status", "unknown"),
+            "execution_report": report,
+            "reason_code": previous.get("reason_code"),
+        }, "BROWSER_INTERACTION_UNVERIFIED")

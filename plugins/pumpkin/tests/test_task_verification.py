@@ -190,3 +190,101 @@ async def test_unreadable_image_never_reaches_verifier(tmp_path):
     assert result.error_code == "TASK_VERIFICATION_EVIDENCE_MISSING"
     assert provider.calls == 0
     await runtime.store.close()
+
+
+@pytest.mark.parametrize("accepted", [True, False])
+async def test_partial_completion_verifies_only_claimed_correction_criteria(tmp_path, accepted):
+    runtime, context, _, arguments = await corrected_candidate(tmp_path)
+    correction = (await runtime.store.list_corrections("task-1"))[0]
+    await runtime.store.create_correction(replace(
+        correction, correction_id="submission-correction",
+        acceptance_criteria=("提交成功", "提供结果页截图"),
+    ))
+    provider = VerificationProvider()
+    runtime.task_verification.provider = provider
+    original_prepare = runtime.task_verification.prepare
+    try:
+        result = await runtime.task_commands.complete_task(context, {
+            **arguments, "status": "partially_completed",
+            "summary": "正文已生成，尚未提交，没有结果页截图。",
+            "remaining": ["提交并取得结果页截图"],
+            "accepted_criteria": arguments["accepted_criteria"] if accepted else [],
+            "artifact_ids": arguments["artifact_ids"] if accepted else [],
+        })
+        assert not result.is_error
+        assert (await runtime.store.get_task("task-1")).status == (
+            TaskStatus.PARTIALLY_COMPLETED.value
+        )
+        candidate = await original_prepare(
+            context, (), "正文已生成，尚未提交。",
+            accepted_criteria=tuple(arguments["accepted_criteria"]) if accepted else (),
+        )
+        assert ([item["requirement"] for item in candidate.payload["criteria"]]
+                if candidate else []) == (["包含正文"] if accepted else [])
+        assert provider.calls == (1 if accepted else 0)
+        assert all(
+            item.violation_count == 0
+            for item in await runtime.store.list_corrections("task-1")
+        )
+    finally:
+        await runtime.store.close()
+
+
+async def test_partial_completion_does_not_bypass_claimed_content_verification(tmp_path):
+    runtime, context, _, arguments = await corrected_candidate(tmp_path)
+    runtime.task_verification.provider = VerificationProvider(verdict="failed")
+    try:
+        result = await runtime.task_commands.complete_task(context, {
+            **arguments, "status": "partially_completed", "remaining": ["提交"],
+        })
+        assert result.error_code == "TASK_VERIFICATION_REJECTED"
+        assert (await runtime.store.get_task("task-1")).status == "running"
+    finally:
+        await runtime.store.close()
+
+
+async def test_partial_completion_rejects_unknown_correction_claim(tmp_path):
+    runtime, context, _, arguments = await corrected_candidate(tmp_path)
+    provider = VerificationProvider()
+    runtime.task_verification.provider = provider
+    try:
+        result = await runtime.task_commands.complete_task(context, {
+            **arguments, "status": "partially_completed", "remaining": ["提交"],
+            "accepted_criteria": ["invented:criterion:1"],
+        })
+        assert result.error_code == "TASK_VERIFICATION_EVIDENCE_MISSING"
+        assert provider.calls == 0
+        assert (await runtime.store.get_task("task-1")).status == "running"
+    finally:
+        await runtime.store.close()
+
+
+async def test_partial_completion_still_rejects_disallowed_artifact(tmp_path):
+    runtime, context, artifact, arguments = await corrected_candidate(tmp_path)
+    correction = (await runtime.store.list_corrections("task-1"))[0]
+    await runtime.store.create_correction(replace(
+        correction, correction_id="rejected-artifact",
+        rejected_artifact_ids=(artifact.artifact_id,),
+    ))
+    try:
+        result = await runtime.task_commands.complete_task(context, {
+            **arguments, "status": "partially_completed", "remaining": ["提交"],
+        })
+        assert result.error_code == "CORRECTION_VIOLATION"
+        assert (await runtime.store.get_task("task-1")).status == "running"
+    finally:
+        await runtime.store.close()
+
+
+@pytest.mark.parametrize("remaining", [[], [""]])
+async def test_partial_completion_requires_explicit_remaining_work(tmp_path, remaining):
+    runtime, context, _, arguments = await corrected_candidate(tmp_path)
+    runtime.task_verification.provider = VerificationProvider()
+    try:
+        result = await runtime.task_commands.complete_task(context, {
+            **arguments, "status": "partially_completed", "remaining": remaining,
+        })
+        assert result.error_code == "TASK_COMPLETION_REJECTED"
+        assert (await runtime.store.get_task("task-1")).status == "running"
+    finally:
+        await runtime.store.close()

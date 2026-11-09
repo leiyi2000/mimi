@@ -221,7 +221,6 @@ class AnthropicCompatibleProvider:
         *,
         mode: str,
     ) -> AsyncIterator[ModelResponse]:
-        del mode
         system, converted_messages = self._messages(messages)
         try:
             payload: dict[str, Any] = {
@@ -241,6 +240,11 @@ class AnthropicCompatibleProvider:
                     }
                     for tool in tools
                 ]
+                if mode == "browser":
+                    payload["tool_choice"] = {
+                        "type": "auto",
+                        "disable_parallel_tool_use": True,
+                    }
             if self.reasoning_effort:
                 payload["output_config"] = {"effort": self.reasoning_effort}
             response = await self.client.messages.create(**payload)

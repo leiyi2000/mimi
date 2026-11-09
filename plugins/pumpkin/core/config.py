@@ -26,8 +26,9 @@ DEFAULT_TASK_WEB_FETCH_LIMIT = 16
 DEFAULT_TASK_WEB_DOWNLOAD_LIMIT = 8
 DEFAULT_TASK_BROWSER_DELEGATE_LIMIT = 4
 DEFAULT_BROWSER_TIMEOUT_SECONDS = 300
-DEFAULT_BROWSER_MAX_STEPS = 36
-DEFAULT_BROWSER_MAX_MCP_CALLS = 40
+DEFAULT_BROWSER_MAX_STEPS = 6
+DEFAULT_BROWSER_MAX_PROGRAMS = 3
+DEFAULT_BROWSER_PARENT_RESERVE_SECONDS = 60
 DEFAULT_CHAT_MAX_TOKENS = 4096
 DEFAULT_TASK_MAX_TOKENS = 8192
 DEFAULT_WEB_MAX_RESULTS = 12
@@ -232,13 +233,28 @@ class BrowserConfig:
     worker_token: str | None = None
     timeout_seconds: float = DEFAULT_BROWSER_TIMEOUT_SECONDS
     max_steps: int = DEFAULT_BROWSER_MAX_STEPS
-    max_mcp_calls: int = DEFAULT_BROWSER_MAX_MCP_CALLS
+    max_programs: int = DEFAULT_BROWSER_MAX_PROGRAMS
+    program_timeout_seconds: float = 30
+    program_max_chars: int = 32_768
+    parent_reserve_seconds: float = DEFAULT_BROWSER_PARENT_RESERVE_SECONDS
+    capacity_wait_seconds: float = 45
+    capacity_poll_seconds: float = 1
+    heartbeat_interval_seconds: float = 5
+    cleanup_timeout_seconds: float = 5
 
     def __post_init__(self) -> None:
-        if self.timeout_seconds <= 0:
+        if min(
+            self.timeout_seconds, self.capacity_wait_seconds,
+            self.capacity_poll_seconds, self.heartbeat_interval_seconds,
+            self.cleanup_timeout_seconds,
+        ) <= 0:
             raise ValueError("browser timeout_seconds must be positive")
-        if self.max_steps <= 0 or self.max_mcp_calls <= 0:
+        if self.max_steps <= 0 or not 1 <= self.max_programs <= 3:
             raise ValueError("browser limits must be positive")
+        if not 0 < self.program_timeout_seconds <= 30 or not 1 <= self.program_max_chars <= 32_768:
+            raise ValueError("browser program limits exceed worker bounds")
+        if self.parent_reserve_seconds <= 0:
+            raise ValueError("browser execution policy limits must be positive")
         if self.enabled and (not self.socket_path or not self.worker_token):
             raise ValueError(
                 "enabled browser requires socket_path and worker_token"
@@ -442,7 +458,7 @@ class PumpkinConfig:
                 ),
                 reasoning_effort=_reasoning_effort(
                     "PUMPKIN_CHAT_REASONING_EFFORT",
-                    ReasoningEffort.LOW,
+                    ReasoningEffort.HIGH,
                 ),
                 max_tokens=_positive_int(
                     "PUMPKIN_CHAT_MAX_TOKENS",
@@ -516,7 +532,7 @@ class PumpkinConfig:
                 ),
                 reasoning_effort=_reasoning_effort(
                     "PUMPKIN_BROWSER_REASONING_EFFORT",
-                    ReasoningEffort.LOW,
+                    ReasoningEffort.MAX,
                 ),
                 max_tokens=_positive_int(
                     "PUMPKIN_BROWSER_MAX_TOKENS",
@@ -582,6 +598,8 @@ class PumpkinConfig:
                     or "/run/pumpkin-browser/control.sock"
                 ),
                 worker_token=_env("PUMPKIN_BROWSER_WORKER_TOKEN"),
+                capacity_wait_seconds=float(_env("PUMPKIN_BROWSER_CAPACITY_WAIT_SECONDS", "45")),
+                heartbeat_interval_seconds=float(_env("PUMPKIN_BROWSER_HEARTBEAT_INTERVAL_SECONDS", "5")),
                 timeout_seconds=float(
                     os.getenv(
                         "PUMPKIN_BROWSER_TIMEOUT_SECONDS",
@@ -592,10 +610,13 @@ class PumpkinConfig:
                     "PUMPKIN_BROWSER_MAX_STEPS",
                     DEFAULT_BROWSER_MAX_STEPS,
                 ),
-                max_mcp_calls=_positive_int(
-                    "PUMPKIN_BROWSER_MAX_MCP_CALLS",
-                    DEFAULT_BROWSER_MAX_MCP_CALLS,
-                ),
+                max_programs=_positive_int("PUMPKIN_BROWSER_MAX_PROGRAMS", DEFAULT_BROWSER_MAX_PROGRAMS),
+                program_timeout_seconds=float(_env("PUMPKIN_BROWSER_PROGRAM_TIMEOUT_SECONDS", "30")),
+                program_max_chars=_positive_int("PUMPKIN_BROWSER_PROGRAM_MAX_CHARS", 32_768),
+                parent_reserve_seconds=float(_env(
+                    "PUMPKIN_BROWSER_PARENT_RESERVE_SECONDS",
+                    str(DEFAULT_BROWSER_PARENT_RESERVE_SECONDS),
+                )),
             ),
             web=WebConfig(
                 api_url=_env(

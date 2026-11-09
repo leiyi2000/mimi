@@ -226,6 +226,7 @@ class OutboxStatus(StrEnum):
 
 class ArtifactDeliveryStatus(StrEnum):
     CANDIDATE = "candidate"
+    DIAGNOSTIC = "diagnostic"
     DELIVERY_READY = "delivery_ready"
     REJECTED = "rejected"
 

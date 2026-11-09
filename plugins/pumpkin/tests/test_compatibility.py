@@ -53,6 +53,11 @@ def test_time_defaults_are_bounded_for_interactive_runtime(monkeypatch):
         "PUMPKIN_IMAGE_TIMEOUT_SECONDS",
         "PUMPKIN_AUDIO_TIMEOUT_SECONDS",
         "PUMPKIN_MEDIA_TIMEOUT_SECONDS",
+        "PUMPKIN_BROWSER_TIMEOUT_SECONDS",
+        "PUMPKIN_BROWSER_MAX_STEPS",
+        "PUMPKIN_BROWSER_MAX_PROGRAMS",
+        "PUMPKIN_BROWSER_PROGRAM_TIMEOUT_SECONDS",
+        "PUMPKIN_BROWSER_PROGRAM_MAX_CHARS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -64,8 +69,9 @@ def test_time_defaults_are_bounded_for_interactive_runtime(monkeypatch):
     assert config.activation.follow_up_turn_budget == 6
     assert config.model_chat.request_timeout_seconds == 60
     assert config.model_task.request_timeout_seconds == 90
-    assert config.model_chat.reasoning_effort is ReasoningEffort.LOW
+    assert config.model_chat.reasoning_effort is ReasoningEffort.HIGH
     assert config.model_task.reasoning_effort is ReasoningEffort.MAX
+    assert config.model_browser.reasoning_effort is ReasoningEffort.MAX
     assert config.model_chat.max_tokens == 4096
     assert config.model_task.max_tokens == 8192
     assert config.task.single_task_timeout_seconds == 900
@@ -77,12 +83,20 @@ def test_time_defaults_are_bounded_for_interactive_runtime(monkeypatch):
     assert config.web.max_model_content_chars == 8_000
     assert config.web.max_host_concurrency == 4
     assert config.browser.timeout_seconds == 300
-    assert config.browser.max_steps == 36
-    assert config.browser.max_mcp_calls == 40
+    assert config.browser.max_steps == 6
+    assert config.browser.max_programs == 3
     assert config.code.timeout_seconds == 20
     assert config.image.timeout_seconds == 90
     assert config.audio.timeout_seconds == 90
     assert config.media.timeout_seconds == 10
+
+
+def test_browser_program_budget_is_bounded(monkeypatch):
+    monkeypatch.setenv("PUMPKIN_BROWSER_MAX_PROGRAMS", "2")
+    assert PumpkinConfig.from_env().browser.max_programs == 2
+    monkeypatch.setenv("PUMPKIN_BROWSER_MAX_PROGRAMS", "4")
+    with pytest.raises(ValueError, match="browser limits"):
+        PumpkinConfig.from_env()
 
 
 def test_qwen_audio_configuration_does_not_require_api_key_or_model(monkeypatch):
@@ -172,8 +186,9 @@ def test_global_reasoning_effort_does_not_override_role_configuration(monkeypatc
 
     config = PumpkinConfig.from_env()
 
-    assert config.model_chat.reasoning_effort is ReasoningEffort.LOW
+    assert config.model_chat.reasoning_effort is ReasoningEffort.HIGH
     assert config.model_task.reasoning_effort is ReasoningEffort.MAX
+    assert config.model_browser.reasoning_effort is ReasoningEffort.MAX
 
 
 def test_legacy_niu_and_sandbox_variables_are_ignored(monkeypatch):
@@ -432,6 +447,58 @@ async def test_anthropic_sdk_provider_maps_text_and_tool_calls(monkeypatch):
     assert continued[0]["content"] == list(
         responses[0].message.provider_content
     )
+    await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_anthropic_browser_mode_disables_parallel_tool_use(monkeypatch):
+    captured = {}
+
+    class Messages:
+        async def create(self, **payload):
+            captured.update(payload)
+            return SimpleNamespace(
+                id="response-1",
+                content=[SimpleNamespace(type="text", text="done")],
+                stop_reason="end_turn",
+                usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+            )
+
+    class Client:
+        def __init__(self, **kwargs):
+            del kwargs
+            self.messages = Messages()
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", Client)
+    provider = AnthropicCompatibleProvider(
+        provider="minimax",
+        model="test-model",
+        base_url="https://example.test/anthropic",
+        api_key="test-key",
+    )
+
+    _ = [
+        response
+        async for response in provider.stream(
+            (ModelMessage(role="user", content="inspect"),),
+            (
+                SimpleNamespace(
+                    name="browser_playwright_inspect_batch",
+                    description="inspect",
+                    input_schema={"type": "object"},
+                ),
+            ),
+            mode="browser",
+        )
+    ]
+
+    assert captured["tool_choice"] == {
+        "type": "auto",
+        "disable_parallel_tool_use": True,
+    }
     await provider.close()
 
 

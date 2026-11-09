@@ -7,6 +7,10 @@ commits: []
 
 # Pumpkin Browser Agent 与 Obscura MCP
 
+本文保留浏览器能力首次设计。连续执行、预算、MCP 超时和目标验收的演进见
+[浏览器连续执行与目标验收](../20261106-pumpkin-browser-continuation/design.md)，
+当前运行行为以插件 README 和根 ARCHITECTURE 为准。
+
 ## 1. 背景
 
 Pumpkin 当前通过 `search_web` 搜索公开资料，通过

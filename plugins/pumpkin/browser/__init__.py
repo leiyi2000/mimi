@@ -1,1 +1,1 @@
-"""Isolated Obscura browser worker."""
+"""Isolated Playwright browser worker."""

@@ -63,6 +63,10 @@ def test_agent_loop_profile_applies_source_step_limit():
 
     assert profile.max_steps_for(AgentInboxSource.TASK_EVENT) == 6
     assert profile.max_steps_for(AgentInboxSource.USER_MESSAGE) == 36
+    assert profile.model_mode == AgentRole.CHAT.value
+    assert profile.min_tool_calls_per_step == 0
+    assert profile.max_tool_calls_per_step is None
+    assert profile.allow_parallel_tools is True
 
 
 async def test_sqlite_store_uses_delete_journal_and_full_sync(store):

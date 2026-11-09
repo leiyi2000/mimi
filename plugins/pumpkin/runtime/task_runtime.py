@@ -74,6 +74,7 @@ class TaskRuntime:
         self.agents: dict[str, Agent] = {}
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.runs: dict[str, TaskHandoff] = {}
+        self.deadlines: dict[str, float] = {}
         self.source_message_ids: dict[str, set[str]] = {}
         self.source_scopes: dict[str, str] = {}
         self.pending_updates: dict[str, list[MessageRecord]] = {}
@@ -138,6 +139,7 @@ class TaskRuntime:
         if self.tasks.get(task_id) is current:
             self.tasks.pop(task_id, None)
         self.runs.pop(task_id, None)
+        self.deadlines.pop(task_id, None)
 
     async def _reject_queued_task(self, handoff: TaskHandoff) -> None:
         try:
@@ -192,6 +194,10 @@ class TaskRuntime:
                 self._clear_task_run(handoff.task_id)
                 return
             self.runs[handoff.task_id] = handoff
+            self.deadlines[handoff.task_id] = (
+                asyncio.get_running_loop().time()
+                + self.config.task.single_task_timeout_seconds
+            )
             corrections = await self.store.list_corrections(
                 handoff.task_id,
                 through_revision=handoff.revision,
@@ -277,7 +283,10 @@ class TaskRuntime:
                 )
                 await asyncio.wait_for(
                     agent.when_idle(),
-                    timeout=self.config.task.single_task_timeout_seconds,
+                    timeout=max(
+                        0, self.deadlines[handoff.task_id]
+                        - asyncio.get_running_loop().time(),
+                    ),
                 )
                 events = await agent.session.events()
                 if events and events[-1].event_type is AgentEventType.TURN_FAILED:
@@ -454,6 +463,13 @@ class TaskRuntime:
     def is_active(self, task_id: str) -> bool:
         return task_id in self.runs
 
+    def remaining_seconds(self, task_id: str) -> float | None:
+        deadline = self.deadlines.get(task_id)
+        return (
+            max(0, deadline - asyncio.get_running_loop().time())
+            if deadline is not None else None
+        )
+
     def source_message_ids_for_task(self, task_id: str) -> set[str]:
         return set(self.source_message_ids.get(task_id, set()))
 
@@ -509,6 +525,7 @@ class TaskRuntime:
             execution.cancel()
             await asyncio.gather(execution, return_exceptions=True)
         self.runs.pop(task_id, None)
+        self.deadlines.pop(task_id, None)
         self.agents.pop(task_id, None)
         self.tasks.pop(task_id, None)
         self.pending_updates.pop(task_id, None)

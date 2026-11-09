@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from core.domain import (
@@ -20,6 +21,7 @@ from runtime.artifacts import ArtifactService
 from runtime.outbox import OutboxSender
 from runtime.reply_ledger import TurnReplyLedger
 from providers.text_image import LONG_REPLY_TEXT_LIMIT
+from runtime.task_verification import TaskVerificationService
 
 
 class DeliveryService:
@@ -36,6 +38,7 @@ class DeliveryService:
         requester_id: Callable[[Any], str | None],
         source_message_id: Callable[[Any], str | None],
         reply_ledger: TurnReplyLedger,
+        verification: TaskVerificationService,
     ) -> None:
         self.store = store
         self.task_service = task_service
@@ -45,6 +48,7 @@ class DeliveryService:
         self.requester_id = requester_id
         self.source_message_id = source_message_id
         self.reply_ledger = reply_ledger
+        self.verification = verification
 
     async def send_event(self, event: TaskEvent) -> ToolResult:
         context = ToolContext(
@@ -127,6 +131,24 @@ class DeliveryService:
         )
         if violation is not None:
             return violation
+        verification_context = replace(context, task_id=task_id, revision=revision)
+        try:
+            candidate = await self.verification.prepare(
+                verification_context, artifacts, text, browser_only=True,
+            )
+        except (ValueError, OSError):
+            return _error(
+                "浏览器截图无法读取或已发生变化，不能交付。",
+                "TASK_VERIFICATION_EVIDENCE_MISSING",
+            )
+        verification = await self.verification.verify(verification_context, candidate)
+        if verification is not None:
+            return verification
+        stale = await self.verification.recheck(
+            verification_context, artifacts, text, candidate, browser_only=True,
+        )
+        if stale is not None:
+            return stale
         segments = [
             {
                 "type": (

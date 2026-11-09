@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from providers.model import ModelProvider, ModelProviderError
@@ -22,6 +23,7 @@ from .domain import (
     AgentRole,
     ArtifactRef,
     ModelMessage,
+    ModelResponse,
     ToolCall,
     ToolExecutionStatus,
     ToolErrorScope,
@@ -48,6 +50,8 @@ _POLICY_ERROR_CODES = frozenset(
         "TOOL_BUDGET_EXHAUSTED",
     }
 )
+_LOGGER = logging.getLogger(__name__)
+_RunResult = TypeVar("_RunResult")
 
 
 def _error_fingerprint(call: ToolCall, result: ToolResult) -> str:
@@ -184,6 +188,7 @@ class AgentLoopProfile:
     profile: AgentProfile
     tool_role: AgentRole
     system_prompt: str
+    provider_mode: str | None = None
     persona: str | None = None
     authorized_skills: frozenset[str] | None = None
     completion_tools: frozenset[str] = frozenset()
@@ -198,6 +203,9 @@ class AgentLoopProfile:
     budget_notice_thresholds: tuple[float, ...] = (0.7, 0.85)
     tool_budget: ToolBudgetLimits | None = None
     turn_policy: TurnPolicy = field(default_factory=DefaultTurnPolicy)
+    min_tool_calls_per_step: int = 0
+    max_tool_calls_per_step: int | None = None
+    allow_parallel_tools: bool = True
 
     def __post_init__(self) -> None:
         if self.max_steps <= 0:
@@ -208,9 +216,183 @@ class AgentLoopProfile:
             )
         if any(limit <= 0 for _, limit in self.source_step_limits):
             raise ValueError("source step limits must be positive")
+        if self.min_tool_calls_per_step < 0:
+            raise ValueError("min_tool_calls_per_step must be non-negative")
+        if (
+            self.max_tool_calls_per_step is not None
+            and self.max_tool_calls_per_step < self.min_tool_calls_per_step
+        ):
+            raise ValueError(
+                "max_tool_calls_per_step must be at least min_tool_calls_per_step"
+            )
 
     def max_steps_for(self, source: AgentInboxSource) -> int:
         return dict(self.source_step_limits).get(source, self.max_steps)
+
+    @property
+    def model_mode(self) -> str:
+        return self.provider_mode or self.tool_role.value
+
+
+@dataclass(frozen=True, slots=True)
+class AgentLoopRequest:
+    messages: tuple[ModelMessage, ...]
+    tools: tuple[Tool, ...]
+    deadline: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentLoopStep:
+    index: int
+    response: ModelResponse
+    tool_call_error: str | None = None
+
+
+@dataclass(slots=True)
+class AgentLoopIteration:
+    index: int
+    _loop: AgentLoop
+    _run_id: str
+    _used: bool = False
+
+    async def respond(self, request: AgentLoopRequest) -> AgentLoopStep:
+        if self._used:
+            raise RuntimeError("agent loop iteration already has a response")
+        self._used = True
+        return await self._loop._step(
+            self.index,
+            request,
+            run_id=self._run_id,
+        )
+
+
+@dataclass(slots=True)
+class AgentLoop:
+    profile: AgentLoopProfile
+    provider: ModelProvider
+    trace: Callable[[str], None] | None = None
+
+    async def steps(
+        self,
+        *,
+        max_steps: int | None = None,
+        run_id: str = "",
+    ) -> AsyncIterator[AgentLoopIteration]:
+        limit = max_steps if max_steps is not None else self.profile.max_steps
+        if limit <= 0:
+            raise ValueError("max_steps must be positive")
+        for step_index in range(1, limit + 1):
+            iteration = AgentLoopIteration(
+                index=step_index,
+                _loop=self,
+                _run_id=run_id,
+            )
+            yield iteration
+            if not iteration._used:
+                raise RuntimeError("agent loop iteration completed without a response")
+
+    async def run(
+        self,
+        *,
+        request_for_step: Callable[[int], AgentLoopRequest],
+        handle_step: Callable[[AgentLoopStep], Awaitable[_RunResult | None]],
+        budget_fallback: Callable[[], _RunResult],
+        max_steps: int | None = None,
+        run_id: str = "",
+    ) -> _RunResult:
+        async for iteration in self.steps(max_steps=max_steps, run_id=run_id):
+            step = await iteration.respond(request_for_step(iteration.index))
+            result = await handle_step(step)
+            if result is not None:
+                return result
+        return budget_fallback()
+
+    async def _step(
+        self,
+        step_index: int,
+        request: AgentLoopRequest,
+        *,
+        run_id: str,
+    ) -> AgentLoopStep:
+        try:
+            async with asyncio.timeout_at(request.deadline):
+                response = await self._response(
+                    request.messages,
+                    request.tools,
+                    run_id=run_id,
+                    step_index=step_index,
+                )
+        except TimeoutError as exc:
+            raise ModelProviderError(
+                "model request reached its wall deadline", code="MODEL_TIMEOUT", retryable=True,
+            ) from exc
+        return AgentLoopStep(
+            index=step_index,
+            response=response,
+            tool_call_error=self._tool_call_error(response),
+        )
+
+    def _tool_call_error(self, response: ModelResponse) -> str | None:
+        count = len(response.message.tool_calls)
+        if count < self.profile.min_tool_calls_per_step:
+            return "TOOL_CALL_COUNT_INVALID"
+        maximum = self.profile.max_tool_calls_per_step
+        if maximum is not None and count > maximum:
+            return "TOOL_CALL_COUNT_INVALID"
+        return None
+
+    async def _response(
+        self,
+        messages: tuple[ModelMessage, ...],
+        tools: tuple[Tool, ...],
+        *,
+        run_id: str,
+        step_index: int,
+    ) -> ModelResponse:
+        response: ModelResponse | None = None
+        started = asyncio.get_running_loop().time()
+        try:
+            async for item in self.provider.stream(
+                messages,
+                tools,
+                mode=self.profile.model_mode,
+            ):
+                response = item
+        finally:
+            self._emit(
+                {
+                    "event": "model.finished",
+                    "profile": self.profile.profile.value,
+                    "run_id": run_id,
+                    "step": step_index,
+                    "duration_ms": round(
+                        (asyncio.get_running_loop().time() - started) * 1_000
+                    ),
+                    "tool_count": (
+                        len(response.message.tool_calls)
+                        if response is not None
+                        else 0
+                    ),
+                    "is_error": response is None,
+                }
+            )
+        if response is None:
+            raise ModelProviderError(
+                "empty provider stream",
+                retryable=True,
+                code="MODEL_EMPTY_RESPONSE",
+            )
+        return response
+
+    def _emit(self, payload: dict[str, Any]) -> None:
+        if self.trace is None:
+            return
+        try:
+            self.trace(
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            )
+        except Exception:
+            _LOGGER.debug("Agent loop trace callback failed", exc_info=True)
 
 
 def _budget_notice(
@@ -417,7 +599,16 @@ class SessionAgentLoop:
             if self.profile.tool_budget is not None
             else None
         )
-        for step_index in range(1, max_steps + 1):
+        loop = AgentLoop(
+            profile=self.profile,
+            provider=self.provider,
+            trace=self.trace,
+        )
+        async for iteration in loop.steps(
+            max_steps=max_steps,
+            run_id=turn_id,
+        ):
+            step_index = iteration.index
             step_id = uuid.uuid4().hex
             await agent.session.append(
                 AgentEventType.STEP_STARTED,
@@ -466,10 +657,15 @@ class SessionAgentLoop:
             )
             messages.extend(projection.messages)
             try:
-                response = await self._response(
-                    tuple(messages),
-                    tuple(self.tools.get(name) for name in sorted(visible)),
+                loop_step = await iteration.respond(
+                    AgentLoopRequest(
+                        messages=tuple(messages),
+                        tools=tuple(
+                            self.tools.get(name) for name in sorted(visible)
+                        ),
+                    )
                 )
+                response = loop_step.response
             except ModelProviderError as exc:
                 await agent.session.append(
                     AgentEventType.STEP_COMPLETED,
@@ -1011,7 +1207,7 @@ class SessionAgentLoop:
         )
 
     def _can_run_in_parallel(self, calls: tuple[ToolCall, ...]) -> bool:
-        if len(calls) < 2:
+        if not self.profile.allow_parallel_tools or len(calls) < 2:
             return False
         for call in calls:
             if call.name == "load_skill":
@@ -1023,26 +1219,6 @@ class SessionAgentLoop:
             if not tool.policy_for(call.arguments).parallel_safe:
                 return False
         return True
-
-    async def _response(
-        self,
-        messages: tuple[ModelMessage, ...],
-        tools: tuple[Any, ...],
-    ):
-        response = None
-        async for item in self.provider.stream(
-            messages,
-            tools,
-            mode=self.profile.tool_role.value,
-        ):
-            response = item
-        if response is None:
-            raise ModelProviderError(
-                "empty provider stream",
-                retryable=True,
-                code="MODEL_EMPTY_RESPONSE",
-            )
-        return response
 
     async def _load_skill(
         self,
