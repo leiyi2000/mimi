@@ -54,6 +54,8 @@ def test_time_defaults_are_bounded_for_interactive_runtime(monkeypatch):
         "PUMPKIN_AUDIO_TIMEOUT_SECONDS",
         "PUMPKIN_MEDIA_TIMEOUT_SECONDS",
         "PUMPKIN_BROWSER_TIMEOUT_SECONDS",
+        "PUMPKIN_BROWSER_MODEL_TIMEOUT_SECONDS",
+        "PUMPKIN_BROWSER_MAX_TOKENS",
         "PUMPKIN_BROWSER_MAX_STEPS",
         "PUMPKIN_BROWSER_MAX_PROGRAMS",
         "PUMPKIN_BROWSER_PROGRAM_TIMEOUT_SECONDS",
@@ -72,6 +74,8 @@ def test_time_defaults_are_bounded_for_interactive_runtime(monkeypatch):
     assert config.model_chat.reasoning_effort is ReasoningEffort.HIGH
     assert config.model_task.reasoning_effort is ReasoningEffort.MAX
     assert config.model_browser.reasoning_effort is ReasoningEffort.MAX
+    assert config.model_browser.request_timeout_seconds == 180
+    assert config.model_browser.max_tokens == 16384
     assert config.model_chat.max_tokens == 4096
     assert config.model_task.max_tokens == 8192
     assert config.task.single_task_timeout_seconds == 900
@@ -82,9 +86,9 @@ def test_time_defaults_are_bounded_for_interactive_runtime(monkeypatch):
     assert config.web.max_fetch_chars == 60_000
     assert config.web.max_model_content_chars == 8_000
     assert config.web.max_host_concurrency == 4
-    assert config.browser.timeout_seconds == 300
-    assert config.browser.max_steps == 6
-    assert config.browser.max_programs == 3
+    assert config.browser.timeout_seconds == 720
+    assert config.browser.max_steps == 12
+    assert config.browser.max_programs == 8
     assert config.code.timeout_seconds == 20
     assert config.image.timeout_seconds == 90
     assert config.audio.timeout_seconds == 90
@@ -94,7 +98,9 @@ def test_time_defaults_are_bounded_for_interactive_runtime(monkeypatch):
 def test_browser_program_budget_is_bounded(monkeypatch):
     monkeypatch.setenv("PUMPKIN_BROWSER_MAX_PROGRAMS", "2")
     assert PumpkinConfig.from_env().browser.max_programs == 2
-    monkeypatch.setenv("PUMPKIN_BROWSER_MAX_PROGRAMS", "4")
+    monkeypatch.setenv("PUMPKIN_BROWSER_MAX_PROGRAMS", "8")
+    assert PumpkinConfig.from_env().browser.max_programs == 8
+    monkeypatch.setenv("PUMPKIN_BROWSER_MAX_PROGRAMS", "9")
     with pytest.raises(ValueError, match="browser limits"):
         PumpkinConfig.from_env()
 

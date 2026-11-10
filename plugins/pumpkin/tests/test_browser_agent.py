@@ -9,8 +9,8 @@ import pytest
 from core.agent_loop import AgentLoop
 from core.config import BrowserConfig
 from core.domain import ModelMessage, ModelResponse, ToolCall
+from browser.tools import PLAN_TOOL
 from providers.browser_worker import BrowserWorkerError, BrowserWorkerRun
-from providers.public_url import PublicUrlGuard
 from runtime.browser_agent import BrowserAgentRunner, BrowserTaskStatus
 
 
@@ -94,7 +94,7 @@ class FakeWorker:
             **value,
         }
 
-    async def capture(self, run, *, mode, full_page=False):
+    async def capture(self, run, *, mode, full_page=False, submission_evidence=()):
         self.snapshot.update(visible_text=self.final_text, observation_id="final")
         content = b"\x89PNG\r\n\x1a\nfixture" if mode == "screenshot" else b"%PDF-fixture"
         return {
@@ -105,6 +105,7 @@ class FakeWorker:
             "content": base64.b64encode(content).decode(),
             "digest": hashlib.sha256(content).hexdigest(),
             "media_type": "image/png" if mode == "screenshot" else "application/pdf",
+            "submission_verified": bool(submission_evidence),
             **self.capture_overrides,
         }
 
@@ -116,7 +117,7 @@ class FakeWorker:
 
 
 async def execute(provider, worker, **kwargs):
-    runner = BrowserAgentRunner(provider=provider, worker=worker, url_guard=PublicUrlGuard(public_resolver))
+    runner = BrowserAgentRunner(provider=provider, worker=worker)
     assert isinstance(runner.agent_loop, AgentLoop)
     return await runner.run(goal="Read https://example.com/form", **kwargs)
 
@@ -160,6 +161,46 @@ async def test_contract_without_optional_text_evidence_can_start():
     result = await execute(provider, worker)
     assert result.status is BrowserTaskStatus.COMPLETED
     assert worker.create_calls == 1
+
+
+async def test_generated_contract_cannot_require_a_guessed_success_message():
+    worker = FakeWorker()
+    worker.final_text = "Your response has been received. Thank you!"
+    provider = FakeProvider([
+        plan(
+            interaction_mode="public_submission", expected_output="screenshot",
+            artifact_mode="screenshot",
+            required_evidence=[{"channel": "browser_snapshot", "text": "Submission successful"}],
+        ),
+        finish(evidence=[worker.final_text]),
+    ])
+    result = await execute(provider, worker)
+    assert result.status is BrowserTaskStatus.COMPLETED
+    assert result.artifacts and result.execution_report["goal_verified"]
+    assert "required_evidence" not in PLAN_TOOL.input_schema["properties"]
+    assert not result.execution_report["task_contract"]["required_evidence"]
+
+
+async def test_default_budget_keeps_execution_available_for_a_fourth_program():
+    worker = FakeWorker()
+    worker.final_text = "Your response has been received."
+    worker.program_results = [{}, {}, {}, {
+        "action_ledger": [{
+            "action_sequence": 5, "method": "click", "status": "succeeded",
+        }],
+    }]
+    provider = FakeProvider([
+        plan(
+            interaction_mode="public_submission", expected_output="screenshot",
+            artifact_mode="screenshot",
+        ),
+        *[response("browser_execute", {"program": f"return {index}"}) for index in range(4)],
+        finish(evidence=[worker.final_text]),
+    ])
+    result = await execute(provider, worker)
+    assert result.status is BrowserTaskStatus.COMPLETED
+    assert result.artifacts and len(worker.calls) == 4
+    assert "browser_execute" in provider.tools[4]
 
 
 @pytest.mark.parametrize("overrides,expected", [
@@ -244,7 +285,7 @@ async def test_source_rejection_returns_exact_field_and_keeps_program_budget():
     result = await execute(provider, worker)
     context = json.loads(provider.messages[2][-1].content)
     assert context["last_program"]["error"]["field"] == "program.line[2]"
-    assert context["remaining_programs"] == 3
+    assert context["remaining_programs"] == 8
     assert worker.calls == ["return 1"]
     assert result.status is BrowserTaskStatus.COMPLETED
 
@@ -291,13 +332,12 @@ async def test_last_decision_reserves_finish_and_exposes_time_budget():
     provider = FakeProvider([plan(), finish(evidence=["opened"])])
     runner = BrowserAgentRunner(
         provider=provider, worker=worker, max_steps=2,
-        url_guard=PublicUrlGuard(public_resolver),
     )
     result = await runner.run(goal="Read https://example.com/form")
     context = json.loads(provider.messages[-1][-1].content)
     assert provider.tools[-1] == {"finish_browser_task"}
     assert context["remaining_decisions"] == 1
-    assert 0 < context["remaining_seconds"] <= 300
+    assert 0 < context["remaining_seconds"] <= 720
     assert context["remaining_execution_seconds"] < context["remaining_seconds"]
     assert result.status is BrowserTaskStatus.COMPLETED
 
@@ -350,11 +390,68 @@ async def test_model_wall_timeout_releases_worker_with_finalization_time():
     worker = FakeWorker()
     runner = BrowserAgentRunner(
         provider=SlowProvider([]), worker=worker, model_timeout_seconds=.02,
-        url_guard=PublicUrlGuard(public_resolver),
     )
     result = await runner.run(goal="Read https://example.com/form")
     assert result.error_code == "MODEL_TIMEOUT"
     assert worker.cancelled
+
+
+async def test_submission_contract_needs_no_original_authorization():
+    worker = FakeWorker()
+    result = await execute(FakeProvider([plan(interaction_mode="public_submission")]), worker)
+    assert worker.create_calls == 1
+    assert result.error_code != "BROWSER_INTERACTION_NOT_ALLOWED"
+
+
+async def test_persistent_model_timeout_preserves_observation_without_claiming_goal_success():
+    class SlowFinishProvider(FakeProvider):
+        async def stream(self, messages, tools, *, mode):
+            if len(self.messages) == 2:
+                await asyncio.Event().wait()
+            async for value in super().stream(messages, tools, mode=mode):
+                yield value
+
+    worker = FakeWorker()
+    worker.final_text = "Accepted"
+    worker.program_results = [{
+        "visible_text": "Accepted",
+        "action_ledger": [{
+            "method": "submit", "action_sequence": 2, "status": "succeeded",
+            "confirmed_state": {"success_text": "Accepted", "response_status": 200},
+        }],
+    }]
+    runner = BrowserAgentRunner(
+        provider=SlowFinishProvider([
+            plan(interaction_mode="public_submission", expected_output="screenshot", artifact_mode="screenshot"),
+            response("browser_execute", {"program": "return browser.snapshot().title"}),
+        ]),
+        worker=worker, model_timeout_seconds=.02,
+    )
+    result = await runner.run(
+        goal="Submit https://example.com/form and screenshot",
+        original_requests=("Submit https://example.com/form and screenshot",),
+    )
+    assert result.status is BrowserTaskStatus.PARTIALLY_COMPLETED
+    assert not result.artifacts and not result.execution_report["goal_verified"]
+    assert result.error_code == "MODEL_TIMEOUT"
+    assert result.execution_report["last_observation"]["text"] == "Accepted"
+    assert len(worker.calls) == 1 and worker.cancelled
+
+
+async def test_submission_gate_uses_final_page_evidence_without_special_receipt():
+    worker = FakeWorker()
+    worker.final_text = "Accepted"
+    result = await execute(
+        FakeProvider([plan(interaction_mode="public_submission"), finish(evidence=["Accepted"])]),
+        worker, original_requests=("Submit https://example.com/form",),
+    )
+    assert result.status is BrowserTaskStatus.COMPLETED
+    worker.final_text = "opened"
+    result = await execute(
+        FakeProvider([plan(interaction_mode="public_submission"), finish(evidence=["Accepted"])]),
+        worker,
+    )
+    assert result.error_code == "BROWSER_COMPLETION_UNVERIFIED"
 
 
 async def test_finish_correction_keeps_state_checks_strict():
@@ -392,12 +489,12 @@ async def test_program_budget_keeps_finalization_available():
     worker = FakeWorker()
     worker.final_text = "filled"
     provider = FakeProvider([
-        plan(), *[response("browser_execute", {"program": "return {}"}) for _ in range(3)],
+        plan(), *[response("browser_execute", {"program": "return {}"}) for _ in range(8)],
         finish(evidence=["filled"]),
     ])
     result = await execute(provider, worker)
     assert result.status is BrowserTaskStatus.COMPLETED
-    assert result.command_count == 3
+    assert result.command_count == 8
     assert provider.tools[-1] == {"finish_browser_task"}
 
 async def test_unknown_outcome_hides_program_execution():
@@ -412,19 +509,19 @@ async def test_unknown_outcome_hides_program_execution():
     assert provider.tools[-1] == {"finish_browser_task"}
 
 
-async def test_compiler_cannot_invent_url_or_interaction_authorization():
+async def test_compiler_may_choose_url_and_actions_from_goal_context():
     for task_plan in [plan(start_url="https://other.example"), plan(interaction_mode="public_interaction")]:
         worker = FakeWorker()
         result = await execute(FakeProvider([task_plan]), worker)
-        assert result.status is BrowserTaskStatus.FAILED
-        assert worker.create_calls == 0
+        assert worker.create_calls == 1
+        assert result.error_code != "BROWSER_INTERACTION_NOT_ALLOWED"
 
 
 async def test_capacity_wait_is_bounded():
     worker = FakeWorker()
     worker.capacity_failures = 100
     runner = BrowserAgentRunner(
-        provider=FakeProvider([plan()]), worker=worker, url_guard=PublicUrlGuard(public_resolver),
+        provider=FakeProvider([plan()]), worker=worker,
         policy=BrowserConfig(capacity_wait_seconds=.02, capacity_poll_seconds=.001),
     )
     result = await runner.run(goal="Read https://example.com/form")
@@ -448,7 +545,7 @@ async def test_cancellation_waits_for_worker_cleanup():
             await super().cancel_run(run)
 
     worker = SlowWorker()
-    runner = BrowserAgentRunner(provider=WaitingProvider([]), worker=worker, url_guard=PublicUrlGuard(public_resolver))
+    runner = BrowserAgentRunner(provider=WaitingProvider([]), worker=worker)
     from runtime.browser_agent import BrowserArtifactMode, BrowserExpectedOutput, BrowserInteractionMode
     task = asyncio.create_task(runner.run_contract(
         goal="Read https://example.com/form", start_url="https://example.com/form",

@@ -8,7 +8,7 @@ from .protocol import WorkerErrorCode, WorkerFault
 SDK_VERSION = 1
 SDK_MAX_FRAME_BYTES = 2 * 1024 * 1024
 MAX_SDK_CALLS = 200
-MAX_PROGRAMS = 3
+MAX_PROGRAMS = 8
 MAX_PROGRAM_BYTES = 32 * 1024
 PROGRAM_TIMEOUT_SECONDS = 30
 MAX_OUTPUT_BYTES = 20 * 1024
@@ -16,6 +16,7 @@ MAX_OUTPUT_BYTES = 20 * 1024
 
 class SdkMethod(StrEnum):
     SNAPSHOT = "snapshot"
+    WAIT_FOR = "wait_for"
     FIND = "find"
     GET = "get"
     READ_TEXT = "read_text"
@@ -23,6 +24,7 @@ class SdkMethod(StrEnum):
     TITLE = "title"
     NAVIGATE = "navigate"
     CLICK = "click"
+    SUBMIT = "submit"
     FILL = "fill"
     TYPE = "type"
     CHECK = "check"
@@ -32,20 +34,7 @@ class SdkMethod(StrEnum):
     SCROLL = "scroll"
     FILL_MANY = "fill_many"
     ASSERT = "assert"
-
-
-class SafeKey(StrEnum):
-    ARROW_DOWN = "ArrowDown"
-    ARROW_LEFT = "ArrowLeft"
-    ARROW_RIGHT = "ArrowRight"
-    ARROW_UP = "ArrowUp"
-    BACKSPACE = "Backspace"
-    END = "End"
-    ESCAPE = "Escape"
-    HOME = "Home"
-    PAGE_DOWN = "PageDown"
-    PAGE_UP = "PageUp"
-    TAB = "Tab"
+    HANDLE_DIALOG = "handle_dialog"
 
 
 class ProgramStatus(StrEnum):
@@ -63,7 +52,6 @@ class MethodSpec:
     required: frozenset[str] = frozenset()
     optional: frozenset[str] = frozenset()
     mutation: bool = False
-    interaction: bool = False
 
     def validate(self, arguments: Any) -> None:
         if not isinstance(arguments, dict):
@@ -81,6 +69,7 @@ class MethodSpec:
 
 METHODS = {
     SdkMethod.SNAPSHOT: MethodSpec(),
+    SdkMethod.WAIT_FOR: MethodSpec(optional=frozenset({"text", "url", "ref", "timeout_ms"})),
     SdkMethod.FIND: MethodSpec(optional=frozenset({
         "role", "name", "text", "exact", "visible", "within", "tag", "local_text",
         "form_name", "interactive",
@@ -90,21 +79,28 @@ METHODS = {
     SdkMethod.URL: MethodSpec(),
     SdkMethod.TITLE: MethodSpec(),
     SdkMethod.NAVIGATE: MethodSpec(frozenset({"url"}), mutation=True),
-    SdkMethod.CLICK: MethodSpec(frozenset({"ref"}), mutation=True, interaction=True),
-    SdkMethod.FILL: MethodSpec(frozenset({"ref", "value"}), mutation=True, interaction=True),
-    SdkMethod.TYPE: MethodSpec(frozenset({"ref", "value"}), mutation=True, interaction=True),
-    SdkMethod.CHECK: MethodSpec(frozenset({"ref"}), mutation=True, interaction=True),
-    SdkMethod.UNCHECK: MethodSpec(frozenset({"ref"}), mutation=True, interaction=True),
-    SdkMethod.SELECT: MethodSpec(frozenset({"ref", "values"}), mutation=True, interaction=True),
-    SdkMethod.PRESS: MethodSpec(frozenset({"ref", "key"}), mutation=True, interaction=True),
+    SdkMethod.CLICK: MethodSpec(frozenset({"ref"}), mutation=True),
+    SdkMethod.SUBMIT: MethodSpec(
+        frozenset({"ref"}), frozenset({"state_checks", "within", "success_text"}),
+        mutation=True,
+    ),
+    SdkMethod.FILL: MethodSpec(frozenset({"ref", "value"}), mutation=True),
+    SdkMethod.TYPE: MethodSpec(frozenset({"ref", "value"}), mutation=True),
+    SdkMethod.CHECK: MethodSpec(frozenset({"ref"}), mutation=True),
+    SdkMethod.UNCHECK: MethodSpec(frozenset({"ref"}), mutation=True),
+    SdkMethod.SELECT: MethodSpec(frozenset({"ref", "values"}), mutation=True),
+    SdkMethod.PRESS: MethodSpec(frozenset({"ref", "key"}), mutation=True),
     SdkMethod.SCROLL: MethodSpec(
         frozenset({"direction"}), frozenset({"amount"}), mutation=True,
     ),
     SdkMethod.FILL_MANY: MethodSpec(
-        frozenset({"items"}), mutation=True, interaction=True,
+        frozenset({"items"}), mutation=True,
     ),
     SdkMethod.ASSERT: MethodSpec(
         frozenset({"kind"}), frozenset({"ref", "expected"}),
+    ),
+    SdkMethod.HANDLE_DIALOG: MethodSpec(
+        frozenset({"dialog_id", "accept"}), frozenset({"prompt_text"}), mutation=True,
     ),
 }
 
@@ -172,6 +168,7 @@ class PageSnapshot:
     blocked_requests: int = 0
     unsupported_frames: tuple[str, ...] = ()
     truncated: bool = False
+    dialog: dict[str, Any] | None = None
 
     def payload(self) -> dict[str, Any]:
         return asdict(self)

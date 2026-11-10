@@ -1,6 +1,6 @@
 ---
 name: browser-delegation
-description: 委派隔离 Browser Controller 处理 JavaScript 页面、公开交互、截图或 PDF。
+description: 委派隔离 Browser Controller 处理 JavaScript 页面、交互、提交、截图或 PDF。
 allowed-tools:
   - delegate_browser_task
 agent-roles:
@@ -16,9 +16,6 @@ examples:
   - 展开公开页面的筛选项后截图
 anti-triggers:
   - 静态网页正文
-  - 登录
-  - 验证码
-  - 支付
 priority: 78
 ---
 
@@ -38,8 +35,10 @@ JavaScript、公开页面交互、截图或 PDF 时，才调用 `delegate_browse
 父 Task 不生成或传递脚本；浏览器程序不接触原始 Playwright、JavaScript、Cookie、
 Storage、网络接口或文件系统。
 
-禁止委派登录、秘密、验证码绕过、上传、购买、支付、发布、删除、授权或其他高影响操作。
-可逆页面交互必须来自用户原话的明确授权，不能由父 Agent 自行扩大；当前不支持提交。
+浏览器业务动作由 AI 根据完整目标和当前页面决定，不使用登录、提交、支付等动作分类门禁，
+也不按 HTTP 方法或域名范围限制页面请求。SDK 支持的动作和可交付产物仍以实际工具为准。
+用户要求提交时保留完整提交目标和截图要求，不改写为只读或仅填写。
+用户禁止提交时保留该限制。具体表单结构与成功条件由 Browser Controller 观察确定。
 
 工具返回 `completed` 时，结果已通过最终页面证据门禁。返回
 `partially_completed` 或 `failed` 时，直接向用户说明已确认结果和缺口，不重新委派。

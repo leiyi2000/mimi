@@ -16,19 +16,36 @@ PAGE = """<!doctype html><title>SDK integration</title><body>
 const age=document.querySelector('#age');
 if(age && !age.dataset.replaced) age.outerHTML='<input id=age data-replaced=1>'">
 <label for=age>Age</label><input id=age><output>Ready</output></body>"""
+SUBMISSION_PAGE = """<!doctype html><title>Public form</title>
+<form action="https://example.com/accept" method=post>
+<label>Name<input name=person required></label><label>Optional<input name=note></label>
+<button type=submit>Send</button></form>"""
+DIALOG_PAGE = """<!doctype html><title>Dialog fixture</title>
+<button onclick="let value=prompt('Draft title?', 'Default');
+if(value!==null && confirm('Store draft?')) document.querySelector('output').textContent=value;
+">Edit</button><output>Waiting</output>"""
 
 
 async def main() -> None:
     original_start = PlaywrightRun.start
+    fixture_page = PAGE
 
     async def fixture_start(engine):
         await original_start(engine)
 
         async def route_fixture(route, request):
             if request.method == "GET" and request.url == "https://example.com/fixture":
-                await route.fulfill(status=200, content_type="text/html", body=PAGE)
+                await route.fulfill(
+                    status=200, content_type="text/html",
+                    body=fixture_page,
+                )
+            elif request.url == "https://example.com/accept":
+                await route.fulfill(
+                    status=200, content_type="text/html",
+                    body="<title>Receipt</title><h1>Saved successfully</h1>",
+                )
             else:
-                await engine._route_request(route, request)
+                await route.abort()
 
         await engine.context.route("**/*", route_fixture)
 
@@ -88,10 +105,102 @@ return {"age": browser.get(age.ref).value}""",
         })
         assert output["status"] == "succeeded" and output["output_truncated"], output
         assert len(output["stdout"]) <= 10240
+        continuation = await worker.execute_program(run, {
+            "execution_id": f"{run.run_id}-4", "timeout_seconds": 10,
+            "program": """age = browser.find(role="textbox", name="Age", exact=True).one()
+browser.assert_value(age.ref, "30")
+return {"age": browser.get(age.ref).value}""",
+        })
+        assert continuation["status"] == "succeeded", continuation
+        assert continuation["return_value"] == {"age": "30"}
+        edited = await worker.execute_program(run, {
+            "execution_id": f"{run.run_id}-5", "timeout_seconds": 10,
+            "program": """field = browser.find(role="textbox", name="Age", exact=True).one()
+browser.press(field.ref, "ControlOrMeta+A")
+receipt = browser.type(field.ref, "42")
+browser.assert_value(field.ref, "42")
+return receipt""",
+        })
+        assert edited["status"] == "succeeded", edited
+        assert edited["return_value"]["confirmed_state"] == {"value": "42"}
     finally:
         await worker._cleanup(run)
     assert worker._run is None and not run.sdk_socket.exists()
     assert all(item.revoked for item in run.programs.values())
+    fixture_page = SUBMISSION_PAGE
+    created = await worker.create_run(
+        runtime_instance="fixture-instance", task_owner="fixture-submit",
+        contract={"start_url": "https://example.com/fixture", "interaction_mode": "read_only"},
+    )
+    run = worker._run
+    assert run
+    try:
+        submitted = await worker.execute_program(run, {
+            "execution_id": f"{run.run_id}-submit", "timeout_seconds": 10,
+            "program": """field = browser.find(role="textbox", name="Name", exact=True).one()
+browser.fill(field.ref, "Test")
+button = browser.find(role="button", name="Send", exact=True).one()
+browser.click(button.ref)
+browser.wait_for(text="Saved successfully")
+return {"evidence":browser.snapshot().visible_text}""",
+        })
+        assert submitted["status"] == "succeeded", submitted
+        assert submitted["return_value"]["evidence"] == "Saved successfully"
+        assert submitted["action_ledger"][-1]["method"] == "click"
+        capture = await run.engine.capture("screenshot")
+        assert "Saved successfully" in capture["final_observation"]["visible_text"] and capture["content"]
+        ledger_size = len(run.engine.ledger)
+        refused = await worker.execute_program(run, {
+            "execution_id": f"{run.run_id}-repeat", "timeout_seconds": 10,
+            "program": 'browser.submit("old-ref", [])',
+        })
+        assert refused["program_error"]["code"] == "BROWSER_REF_NOT_FOUND", refused
+        assert not refused["action_ledger"]
+        assert len(run.engine.ledger) == ledger_size
+    finally:
+        await worker._cleanup(run)
+    fixture_page = DIALOG_PAGE
+    await worker.create_run(
+        runtime_instance="fixture-instance", task_owner="fixture-dialog",
+        contract={"start_url": "https://example.com/fixture", "interaction_mode": "read_only"},
+    )
+    run = worker._run
+    assert run
+    try:
+        opened = await worker.execute_program(run, {
+            "execution_id": f"{run.run_id}-dialog", "timeout_seconds": 10,
+            "program": """button = browser.find(role="button").one()
+receipt = browser.click(button.ref)
+return {"receipt": receipt, "dialog": browser.snapshot().dialog}""",
+        })
+        assert opened["status"] == "succeeded", opened
+        assert opened["return_value"]["receipt"]["status"] == "pending"
+        assert opened["final_observation"]["dialog"]["type"] == "prompt"
+        prompted = await worker.execute_program(run, {
+            "execution_id": f"{run.run_id}-prompt", "timeout_seconds": 10,
+            "program": """dialog = browser.snapshot().dialog
+receipt = browser.handle_dialog(dialog["dialog_id"], True, "Fixture draft")
+return {"receipt": receipt, "dialog": browser.snapshot().dialog}""",
+        })
+        assert prompted["status"] == "succeeded", prompted
+        assert prompted["return_value"]["dialog"]["type"] == "confirm"
+        assert prompted["action_ledger"][0]["status"] == "pending", prompted
+        resolved = await worker.execute_program(run, {
+            "execution_id": f"{run.run_id}-confirm", "timeout_seconds": 10,
+            "program": """dialog = browser.snapshot().dialog
+browser.handle_dialog(dialog["dialog_id"], True)
+return {"text": browser.snapshot().visible_text}""",
+        })
+        assert resolved["status"] == "succeeded", resolved
+        assert resolved["action_ledger"][0]["status"] == "succeeded", resolved
+        assert resolved["return_value"]["text"] == "EditFixture draft", resolved
+        assert not resolved["final_observation"]["dialog"]
+        assert len(run.engine.ledger) == 2
+        capture = await run.engine.capture("screenshot")
+        assert capture["observed_after_action_seq"] >= resolved["action_ledger"][0]["action_sequence"]
+        assert capture["content"]
+    finally:
+        await worker._cleanup(run)
     created = await worker.create_run(
         runtime_instance="fixture-instance", task_owner="fixture-timeout",
         contract={"start_url": "https://example.com/fixture", "interaction_mode": "read_only"},
@@ -133,6 +242,10 @@ return {"age": browser.get(age.ref).value}""",
             "execution_idempotency", "execution_conflict", "final_capture_coverage",
             "bounded_output", "program_timeout_reaped", "capability_revocation",
             "cancel_waits_for_process_cleanup",
+            "native_click_submission", "submission_capture_evidence", "stale_submission_ref_rejected",
+            "interaction_mode_not_permission", "sdk_goal_state_wait",
+            "native_selection_editing", "dialog_prompt_input", "dialog_confirmation",
+            "dialog_action_ledger_update", "dialog_final_capture",
         ],
     }))
 

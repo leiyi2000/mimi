@@ -2,18 +2,19 @@ import asyncio
 import base64
 import hashlib
 import json
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from .egress import PublicEgressProxy
+from .navigation import BrowserUrl, BrowserUrlError
 from .protocol import WorkerErrorCode, WorkerFault
 from .references import BrowserReferences
+from .dialogs import BrowserDialogs
+from .state_checks import BrowserStateChecks
 from .sdk_protocol import (
-    METHODS, ActionReceipt, PageSnapshot, SafeKey, SdkError, SdkMethod,
+    METHODS, ActionReceipt, PageSnapshot, SdkError, SdkMethod,
 )
 
 try:
@@ -32,15 +33,13 @@ class PlaywrightRun:
     temp_dir: Path
     navigation_timeout_ms: int = 20_000
     action_timeout_ms: int = 8_000
-    allowed_origins: frozenset[str] = frozenset()
-    interaction_allowed: bool = False
-    proxy: PublicEgressProxy = field(default_factory=PublicEgressProxy)
     playwright: Any = None
     browser: Any = None
     context: Any = None
     page: Any = None
     refs: BrowserReferences = field(default_factory=BrowserReferences)
     command_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    page_changed: asyncio.Event = field(default_factory=asyncio.Event)
     document_epoch: int = 0
     resource_version: int = 0
     observation_id: str | None = None
@@ -52,59 +51,47 @@ class PlaywrightRun:
     blocked_requests: int = 0
     outcome_unknown: bool = False
     closed: bool = False
-
-    SUBMIT_GUARD = """() => {
-        const block = event => { event.preventDefault(); event.stopImmediatePropagation(); };
-        document.addEventListener('submit', block, true);
-        document.addEventListener('keydown', event => {
-            if (event.key === 'Enter' && event.target.closest?.('form')) block(event);
-        }, true);
-        document.addEventListener('click', event => {
-            const control = event.target.closest?.('button,input');
-            if (control && ['submit','image','reset'].includes(control.type)) block(event);
-        }, true);
-        for (const method of ['submit','requestSubmit']) {
-            Object.defineProperty(HTMLFormElement.prototype, method, {
-                value() { throw new Error('Form submission is unavailable'); },
-                writable: false, configurable: false,
-            });
-        }
-    }"""
+    dialogs: BrowserDialogs = field(default_factory=BrowserDialogs)
+    pending_action: asyncio.Task | None = None
 
     async def start(self) -> None:
         if async_playwright is None:
             raise BrowserEngineError(WorkerErrorCode.ENGINE_FAILED, "Playwright is not installed")
-        await self.proxy.start()
         try:
             self.playwright = await async_playwright().start()
             self.browser = await self.playwright.chromium.launch(
-                headless=True, proxy={"server": self.proxy.url, "bypass": ""},
+                headless=True,
                 args=["--disable-quic", "--disable-background-networking", "--disable-sync",
-                      "--no-first-run", "--proxy-bypass-list=<-loopback>"],
+                      "--no-first-run"],
             )
             self.context = await self.browser.new_context(
-                accept_downloads=False, service_workers="block",
+                accept_downloads=True,
                 viewport={"width": 1440, "height": 1000},
             )
-            await self.context.add_init_script(f"({self.SUBMIT_GUARD})()")
-            await self.context.route("**/*", self._route_request)
-            await self.context.route_web_socket("**/*", lambda route: route.close())
             self.page = await self.context.new_page()
             self.context.on("page", self._new_page)
             self.page.set_default_timeout(self.action_timeout_ms)
             self.page.set_default_navigation_timeout(self.navigation_timeout_ms)
-            self.page.on("dialog", lambda dialog: asyncio.create_task(dialog.dismiss()))
-            self.page.on("download", lambda download: asyncio.create_task(download.cancel()))
+            self.page.on("dialog", lambda dialog: self.dialogs.open(dialog))
         except Exception:
             await self.close()
             raise
 
     def _new_page(self, page: Any) -> None:
+        page.on("dialog", lambda dialog: self.dialogs.open(dialog))
         if page is not self.page:
-            asyncio.create_task(page.close())
+            self.page = page
+            self.page_changed.set()
+            page.set_default_timeout(self.action_timeout_ms)
+            page.set_default_navigation_timeout(self.navigation_timeout_ms)
 
     async def close(self) -> None:
         self.closed = True
+        if self.pending_action is not None:
+            self.pending_action.cancel()
+            await asyncio.gather(self.pending_action, return_exceptions=True)
+            self.pending_action = None
+        await self.dialogs.close()
         await self.refs.close()
         for value in (self.page, self.context, self.browser):
             if value is not None:
@@ -114,7 +101,6 @@ class PlaywrightRun:
                     continue
         if self.playwright is not None:
             await self.playwright.stop()
-        await self.proxy.close()
         self.page = self.context = self.browser = self.playwright = None
 
     @staticmethod
@@ -123,51 +109,29 @@ class PlaywrightRun:
         return f"{parsed.scheme}://{parsed.hostname}:{parsed.port or (443 if parsed.scheme == 'https' else 80)}"
 
     async def validate_url(self, url: str) -> None:
-        if not isinstance(url, str):
-            raise SdkError(WorkerErrorCode.URL_REJECTED, "navigation URL must be a string", field="url")
-        parsed = urlsplit(url)
-        if (
-            parsed.scheme not in {"http", "https"} or not parsed.hostname
-            or parsed.username is not None or parsed.password is not None
-            or any(char in url for char in "\r\n\x00")
-            or self.origin(url) not in self.allowed_origins
-        ):
-            raise SdkError(WorkerErrorCode.URL_REJECTED, "navigation is outside allowed public origins", field="url")
         try:
-            await PublicEgressProxy.resolve_host(
-                parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80),
-            )
-        except (OSError, ValueError, RuntimeError) as exc:
-            raise SdkError(WorkerErrorCode.URL_REJECTED, "navigation URL is not public", field="url") from exc
-
-    async def _route_request(self, route: Any, request: Any) -> None:
-        parsed = urlsplit(request.url)
-        allowed = parsed.scheme in {"http", "https"} and parsed.username is None and parsed.password is None
-        if request.method not in {"GET", "HEAD", "OPTIONS"}:
-            self.blocked_requests += 1
-            allowed = False
-        if request.is_navigation_request():
-            allowed &= self.origin(request.url) in self.allowed_origins
-        if allowed:
-            await route.continue_()
-        else:
-            await route.abort("blockedbyclient")
+            BrowserUrl.validate(url)
+        except BrowserUrlError as exc:
+            raise SdkError(WorkerErrorCode.URL_REJECTED, str(exc), field="url") from exc
 
     async def snapshot(self) -> PageSnapshot:
         async with self.command_lock:
             return await self._snapshot()
 
     async def _snapshot(self) -> PageSnapshot:
+        if self.dialogs.items:
+            snapshot = self.last_snapshot or PageSnapshot(
+                self._page().url, "", "", (), self.document_epoch, self.resource_version,
+                uuid4().hex, self.last_confirmed_action_seq,
+            )
+            return replace(
+                snapshot, observation_id=uuid4().hex, dialog=self.dialogs.payload(),
+                observed_after_action_seq=self.last_confirmed_action_seq,
+            )
         page = self._page()
         elements = []
         unsupported = []
         for frame in page.frames:
-            if frame is not page.main_frame and (
-                frame.url not in {"about:blank", "about:srcdoc"}
-                and self.origin(frame.url) not in self.allowed_origins
-            ):
-                unsupported.append(frame.url[:500])
-                continue
             elements.extend(await self.refs.collect(frame))
         main = await self.refs.frame_state(page.main_frame)
         self.document_epoch = main.epoch
@@ -203,10 +167,12 @@ class PlaywrightRun:
             spec = METHODS[method]
             if spec.mutation and self.outcome_unknown:
                 raise SdkError(WorkerErrorCode.OUTCOME_UNKNOWN, "mutations are frozen")
-            if spec.interaction and not self.interaction_allowed:
-                raise SdkError(WorkerErrorCode.TOOL_REJECTED, "contract allows reading only")
+            if method is SdkMethod.HANDLE_DIALOG:
+                return await self._handle_dialog(arguments)
             if method is SdkMethod.SNAPSHOT:
                 return (await self._snapshot()).payload()
+            if self.dialogs.items:
+                raise SdkError(WorkerErrorCode.ARGUMENT_INVALID, "resolve the current dialog before DOM operations")
             if method is SdkMethod.FIND:
                 return await self._find(arguments)
             if method is SdkMethod.GET:
@@ -225,8 +191,12 @@ class PlaywrightRun:
                 return await self._page().title()
             if method is SdkMethod.ASSERT:
                 return await self._assert(arguments)
+            if method is SdkMethod.WAIT_FOR:
+                return await self._wait_for(arguments)
             if method is SdkMethod.FILL_MANY:
                 return await self._fill_many(arguments["items"], sdk_sequence)
+            if method is SdkMethod.SUBMIT:
+                return await self._submit(arguments, sdk_sequence)
             return await self._action(method, arguments, sdk_sequence)
 
     async def _find(self, query: dict[str, Any]) -> list[dict[str, Any]]:
@@ -275,15 +245,16 @@ class PlaywrightRun:
         if not isinstance(ref, str):
             raise SdkError(WorkerErrorCode.ARGUMENT_INVALID, "ref must be a string", field="ref")
         projection = await self.refs.project(ref)
-        if projection["secret"] or projection["type"] in {"submit", "reset", "image"}:
-            raise SdkError(WorkerErrorCode.TOOL_REJECTED, "secret, upload or submit control is forbidden", field="ref")
         if projection["disabled"]:
             raise SdkError(WorkerErrorCode.ARGUMENT_INVALID, "element is disabled", field="ref")
         if method in {SdkMethod.FILL, SdkMethod.TYPE}:
             value = arguments["value"]
             if not isinstance(value, str) or len(value) > 2_000:
                 raise SdkError(WorkerErrorCode.ARGUMENT_INVALID, "value must be a bounded string", field="value")
-            if projection["role"] not in {"textbox", "spinbutton"} or projection["readonly"]:
+            if (
+                projection["role"] not in {"textbox", "spinbutton", "password"}
+                or projection["readonly"]
+            ):
                 raise SdkError(WorkerErrorCode.ARGUMENT_INVALID, "element is not editable", field="ref")
         if method in {SdkMethod.CHECK, SdkMethod.UNCHECK} and projection["role"] not in {"checkbox", "radio"}:
             raise SdkError(WorkerErrorCode.CAPABILITY_UNSUPPORTED, "element is not checkable", field="ref")
@@ -300,8 +271,10 @@ class PlaywrightRun:
                 for value in values
             ):
                 raise SdkError(WorkerErrorCode.ARGUMENT_INVALID, "option is unavailable", field="values")
-        if method is SdkMethod.PRESS and arguments["key"] not in {item.value for item in SafeKey}:
-            raise SdkError(WorkerErrorCode.TOOL_REJECTED, "key can submit or is unsupported", field="key")
+        if method is SdkMethod.PRESS and (
+            not isinstance(arguments["key"], str) or not 1 <= len(arguments["key"]) <= 100
+        ):
+            raise SdkError(WorkerErrorCode.ARGUMENT_INVALID, "key must be a bounded string", field="key")
         handle = self.refs.refs[ref].handle
         if not projection["visible"]:
             if method not in {SdkMethod.CHECK, SdkMethod.UNCHECK}:
@@ -325,23 +298,72 @@ class PlaywrightRun:
                     await label.dispose()
             finally:
                 await labels.dispose()
-        if method is SdkMethod.CLICK and projection["href"]:
-            href = projection["href"]
-            if not re.fullmatch(r"javascript:\s*(?:;|void\s*\(\s*0\s*\)\s*;?)?\s*", href, re.IGNORECASE):
-                await self.validate_url(href)
-        if method is SdkMethod.CLICK and projection["role"] == "label":
-            control_ref = self.refs.element(ref, projection).control_ref
-            if control_ref:
-                control = await self.refs.project(control_ref)
-                if control["secret"] or control["type"] in {"submit", "reset", "image"}:
-                    raise SdkError(WorkerErrorCode.TOOL_REJECTED, "label targets a forbidden control", field="ref")
         return handle, projection
+
+    async def _submit(self, arguments: dict[str, Any], sdk_sequence: int) -> dict[str, Any]:
+        checks = arguments.get("state_checks")
+        success_text = arguments.get("success_text")
+        if success_text is not None and (
+            not isinstance(success_text, str) or not 1 <= len(success_text.strip()) <= 500
+        ):
+            raise SdkError(WorkerErrorCode.ARGUMENT_INVALID, "success_text must be bounded exact page text")
+        if "within" in arguments:
+            await self.refs.project(arguments["within"])
+        if checks is not None and checks != []:
+            error = BrowserStateChecks.error((await self._snapshot()).payload(), checks)
+            if error:
+                raise SdkError(WorkerErrorCode.ASSERTION_FAILED, error, field="state_checks")
+        elif "state_checks" in arguments and checks is None:
+            raise SdkError(WorkerErrorCode.ARGUMENT_INVALID, "state_checks must be a list", field="state_checks")
+        receipt = await self._action(SdkMethod.SUBMIT, arguments, sdk_sequence)
+        if success_text and receipt["status"] != "pending":
+            await self._wait_for({"text": success_text})
+            self.ledger[-1].confirmed_state["success_text"] = success_text
+            receipt = self.ledger[-1].payload()
+        return receipt
 
     async def _action(
         self, method: SdkMethod, arguments: dict[str, Any], sdk_sequence: int,
     ) -> dict[str, Any]:
+        task = asyncio.create_task(self._perform_action(method, arguments, sdk_sequence))
+        self.pending_action = task
+        try:
+            if await self.dialogs.wait(task):
+                return await task
+            receipt = self.ledger[-1]
+            receipt.effect, receipt.status = "pending", "pending"
+            return receipt.payload()
+        except asyncio.CancelledError:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+        finally:
+            if task.done():
+                self.pending_action = None
+
+    async def _handle_dialog(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        try:
+            await self.dialogs.resolve(**arguments)
+            task = self.pending_action
+            if task is None:
+                return {"status": "succeeded", "dialog": self.dialogs.payload()}
+            if not await self.dialogs.wait(task):
+                return self.ledger[-1].payload()
+            return await task
+        except (PlaywrightError, asyncio.CancelledError) as exc:
+            self.outcome_unknown = True
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            raise SdkError(WorkerErrorCode.OUTCOME_UNKNOWN, "dialog outcome could not be confirmed") from exc
+        finally:
+            if self.pending_action is not None and self.pending_action.done():
+                self.pending_action = None
+
+    async def _perform_action(
+        self, method: SdkMethod, arguments: dict[str, Any], sdk_sequence: int,
+    ) -> dict[str, Any]:
         handle, before = await self._preflight(method, arguments)
-        if method in {SdkMethod.CLICK, SdkMethod.PRESS, SdkMethod.NAVIGATE}:
+        if method in {SdkMethod.CLICK, SdkMethod.SUBMIT, SdkMethod.PRESS, SdkMethod.NAVIGATE}:
             await self._snapshot()
         prior_digest = self.projection_digest
         self.action_sequence += 1
@@ -375,19 +397,21 @@ class PlaywrightRun:
                 await handle.select_option(value=arguments["values"])
             elif method is SdkMethod.PRESS:
                 await handle.press(arguments["key"])
-            elif method is SdkMethod.CLICK:
+            elif method in {SdkMethod.CLICK, SdkMethod.SUBMIT}:
                 await handle.click()
             await self._settle_page()
             expected_state = {}
-            if method in {SdkMethod.FILL, SdkMethod.TYPE}:
-                expected_state = {"value": arguments["value"] if method is SdkMethod.FILL else
-                                  str(before["value"] or "") + arguments["value"]}
+            if method is SdkMethod.FILL:
+                expected_state = {"value": arguments["value"]}
             elif method in {SdkMethod.CHECK, SdkMethod.UNCHECK}:
                 expected_state = {"checked": method is SdkMethod.CHECK}
             elif method is SdkMethod.SELECT:
                 expected_state = {"selected": arguments["values"] if isinstance(arguments["values"], list)
                                   else [arguments["values"]]}
             after = await self._confirm(ref, expected_state) if expected_state else {}
+            if method is SdkMethod.TYPE:
+                after = await self.refs.project(ref)
+                expected_state = {"value": after["value"]}
             if not expected_state:
                 await self._snapshot()
             receipt.execution, receipt.effect, receipt.status = "completed", "confirmed", "succeeded"
@@ -412,16 +436,74 @@ class PlaywrightRun:
                 await handle.dispose()
 
     async def _settle_page(self) -> None:
-        await self._page().wait_for_load_state("domcontentloaded")
-        await self._page().evaluate(
-            "() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
-        )
+        while True:
+            page = self._page()
+            await page.wait_for_load_state("domcontentloaded")
+            await page.evaluate(
+                "() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
+            )
+            if page is self.page:
+                return
+
+    async def _wait_for(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        conditions = {"text", "url", "ref"} & arguments.keys()
+        timeout_ms = arguments.get("timeout_ms", self.action_timeout_ms)
+        if len(conditions) != 1 or type(timeout_ms) is not int or not 1 <= timeout_ms <= 20_000:
+            raise SdkError(WorkerErrorCode.ARGUMENT_INVALID, "wait_for needs one condition and 1-20000 ms")
+        kind = next(iter(conditions))
+        value = arguments[kind]
+        if not isinstance(value, str) or not 1 <= len(value) <= 2_000:
+            raise SdkError(WorkerErrorCode.ARGUMENT_INVALID, "wait condition must be a bounded string", field=kind)
+        async def wait_on(page: Any, remaining_ms: int) -> None:
+            if kind == "text":
+                await page.wait_for_function(
+                    "text => document.body?.innerText.includes(text)", arg=value, timeout=remaining_ms,
+                )
+            elif kind == "url":
+                await page.wait_for_url(lambda url: url == value, timeout=remaining_ms, wait_until="domcontentloaded")
+            else:
+                await self.refs.project(value)
+                await self.refs.refs[value].handle.wait_for_element_state("visible", timeout=remaining_ms)
+
+        deadline = asyncio.get_running_loop().time() + timeout_ms / 1000
+        try:
+            while True:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    raise TimeoutError
+                self.page_changed.clear()
+                page = self._page()
+                waiting = asyncio.create_task(wait_on(page, max(1, int(remaining * 1000))))
+                changed = asyncio.create_task(self.page_changed.wait())
+                try:
+                    done, _ = await asyncio.wait(
+                        (waiting, changed), timeout=remaining, return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if waiting in done:
+                        await waiting
+                        if page is self.page:
+                            break
+                    elif not done:
+                        raise TimeoutError
+                finally:
+                    for task in (waiting, changed):
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(waiting, changed, return_exceptions=True)
+        except (PlaywrightError, TimeoutError) as exc:
+            raise SdkError(WorkerErrorCode.ASSERTION_FAILED, "page wait condition was not observed", field=kind) from exc
+        return (await self._snapshot()).payload()
 
     async def _confirm(self, ref: str, expected: dict[str, Any]) -> dict[str, Any]:
         deadline = asyncio.get_running_loop().time() + self.action_timeout_ms / 1000
         while True:
             actual = await self.refs.project(ref)
-            if all(actual[key] == value for key, value in expected.items()):
+            matches = all(actual[key] == value for key, value in expected.items())
+            if actual["secret"] and set(expected) == {"value"}:
+                matches = await self.refs.refs[ref].handle.evaluate(
+                    "(node, expected) => node.value === expected", expected["value"],
+                )
+            if matches:
                 return actual
             if asyncio.get_running_loop().time() >= deadline:
                 raise SdkError(WorkerErrorCode.ASSERTION_FAILED, "control state differs from expected", field="ref")
@@ -461,12 +543,14 @@ class PlaywrightRun:
         for index, item in enumerate(items):
             try:
                 receipts.append(await self._action(SdkMethod.FILL, item, sdk_sequence))
+                if receipts[-1]["status"] == "pending":
+                    break
             except SdkError as exc:
                 raise SdkError(
                     exc.fault.code, f"fill_many stopped after {len(receipts)} confirmed items: {exc}",
                     field=f"items[{index}].{exc.fault.field or 'ref'}",
                 ) from exc
-        return {"completed": len(receipts), "receipts": receipts}
+        return {"completed": sum(item["status"] == "succeeded" for item in receipts), "receipts": receipts}
 
     async def _scroll(self, arguments: dict[str, Any]) -> None:
         direction = arguments["direction"]
@@ -482,10 +566,18 @@ class PlaywrightRun:
                 amount if direction == "down" else -amount if direction == "up" else 0,
             )
 
-    async def capture(self, mode: str, full_page: bool = False) -> dict[str, Any]:
+    async def capture(
+        self, mode: str, full_page: bool = False, submission_evidence: Any = (),
+    ) -> dict[str, Any]:
         if type(full_page) is not bool:
             raise SdkError(WorkerErrorCode.ARGUMENT_INVALID, "full_page must be boolean")
+        if not isinstance(submission_evidence, (list, tuple)) or len(submission_evidence) > 10 or any(
+            not isinstance(text, str) or not 1 <= len(text) <= 500 for text in submission_evidence
+        ):
+            raise SdkError(WorkerErrorCode.ARGUMENT_INVALID, "submission_evidence must contain exact page quotations")
         async with self.command_lock:
+            if self.dialogs.items or self.pending_action is not None:
+                raise SdkError(WorkerErrorCode.ARGUMENT_INVALID, "a pending dialog action cannot be finalized")
             await self._settle_page()
             before = await self._snapshot()
             digest = self.projection_digest

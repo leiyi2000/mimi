@@ -32,6 +32,7 @@ from runtime.task_runtime import TaskRuntime
 from runtime.task_events import ConversationInboxPublisher
 from runtime.task_verification import TaskVerificationService
 from runtime.browser_agent import BrowserInteractionMode, BrowserTaskStatus
+from browser.models import BROWSER_OPERATION_FINGERPRINT
 
 
 class TaskCommandService:
@@ -817,21 +818,28 @@ class TaskCommandService:
         return ok(result)
 
     async def _browser_completion_gate(self, context: ToolContext) -> ToolResult | None:
-        previous = await self.store.idempotency_get(self.idempotency_key(
-            context, "browser-operation",
-            BrowserInteractionMode.PUBLIC_INTERACTION.operation_fingerprint,
-        ))
-        if previous is None:
-            return None
-        report = previous.get("execution_report", {})
-        if (
-            previous.get("status") == BrowserTaskStatus.COMPLETED.value
-            and report.get("goal_verified", True)
-        ):
-            return None
-        return error({
-            "message": "原浏览器交互尚未核验完成，请保留缺口并以部分完成收尾。",
-            "status": previous.get("status", "unknown"),
-            "execution_report": report,
-            "reason_code": previous.get("reason_code"),
-        }, "BROWSER_INTERACTION_UNVERIFIED")
+        fingerprints = (
+            BROWSER_OPERATION_FINGERPRINT,
+            *(mode.operation_fingerprint for mode in BrowserInteractionMode),
+        )
+        for fingerprint in fingerprints:
+            previous = await self.store.idempotency_get(self.idempotency_key(
+                context, "browser-operation", fingerprint,
+            ))
+            if previous is None:
+                continue
+            report = previous.get("execution_report") or {}
+            if (
+                previous.get("_status") != "in_progress"
+                and previous.get("status") == BrowserTaskStatus.COMPLETED.value
+                and report.get("goal_verified") is True
+                and not report.get("outcome_unknown")
+            ):
+                continue
+            return error({
+                "message": "浏览器目标尚未核验完成，请保留缺口并以部分完成收尾。",
+                "status": previous.get("status", "unknown"),
+                "execution_report": report,
+                "reason_code": previous.get("reason_code"),
+            }, "BROWSER_INTERACTION_UNVERIFIED")
+        return None

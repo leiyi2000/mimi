@@ -90,7 +90,8 @@ Pumpkin 是 Mimi 的 QQ 群聊和私聊 AI 插件。每条消息先写入
 | `PUMPKIN_FETCH_MAX_BYTES`、`PUMPKIN_FETCH_MAX_CHARS`、`PUMPKIN_IMAGE_FETCH_MAX_BYTES` | 网页正文下载、提取文本和网页图片上限，默认 2 MiB、60000 字符和 20 MiB |
 | `PUMPKIN_WEB_MODEL_CONTENT_MAX_CHARS`、`PUMPKIN_WEB_HOST_CONCURRENCY` | 模型可见单次 Web 结果上限和同 host HTTP 并发，默认 8000 字符、4 并发 |
 | `PUMPKIN_BROWSER_ENABLED`、`PUMPKIN_BROWSER_WORKER_SOCKET`、`PUMPKIN_BROWSER_WORKER_TOKEN` | 可选隔离 Browser Controller 开关、UDS 路径和 Worker 认证 Token |
-| `PUMPKIN_BROWSER_REASONING_EFFORT`、`PUMPKIN_BROWSER_TIMEOUT_SECONDS`、`PUMPKIN_BROWSER_MAX_STEPS`、`PUMPKIN_BROWSER_MAX_PROGRAMS` | Browser Profile 的推理深度、总时限、共享 AgentLoop 步骤数和程序预算；默认 `max`、300 秒、6、3 |
+| `PUMPKIN_BROWSER_REASONING_EFFORT`、`PUMPKIN_BROWSER_TIMEOUT_SECONDS`、`PUMPKIN_BROWSER_MAX_STEPS`、`PUMPKIN_BROWSER_MAX_PROGRAMS` | Browser Profile 的推理深度、总时限、共享 AgentLoop 步骤数和程序预算；默认 `max`、720 秒、12、8 |
+| `PUMPKIN_BROWSER_MODEL_TIMEOUT_SECONDS`、`PUMPKIN_BROWSER_MAX_TOKENS` | 浏览器单次模型请求时限与输出额度；默认 180 秒、16384，显式配置的更低限制仍生效 |
 | `PUMPKIN_BROWSER_PROGRAM_TIMEOUT_SECONDS`、`PUMPKIN_BROWSER_PROGRAM_MAX_CHARS` | 单段程序时限与源码字节上限；默认 30 秒、32768，不可超过 Worker 硬上限 |
 | `BROWSER_CODE_RUNNER_TOKEN`、`BROWSER_CODE_RUNNER_MAX_OUTPUT_CHARS` | Worker/Runner 独立认证与程序输出上限，输出默认 20480 字节；Token 不注入程序子进程 |
 | `PUMPKIN_BROWSER_PARENT_RESERVE_SECONDS`、`PUMPKIN_BROWSER_CAPACITY_WAIT_SECONDS`、`PUMPKIN_BROWSER_HEARTBEAT_INTERVAL_SECONDS` | 父任务交付余量、容量等待和 Worker 心跳间隔，默认 60、45、5 秒 |
@@ -155,7 +156,8 @@ Profile 的 `wreq` Transport 读取任意公网来源，并通过 `output=text|a
 动态网页、公开页面交互、截图和 PDF 可按需加载 `browser-delegation` Skill。Task Agent
 只调用高层 `delegate_browser_task` 并传入一个完整 `goal`，不提供 URL、步骤、模式、
 能力、证据条件或幂等键。Browser Profile 在共享 AgentLoop 的首个步骤根据目标和归档
-用户原话生成受限契约，不启动独立 Compiler 循环；
+用户原话生成受限契约，不启动独立 Compiler 循环；契约不预设成功提示的精确文字，
+执行 Agent 根据真实页面核对用户目标，并在完成时引用实际证据；
 短生命周期 Browser Controller 与 Conversation/Task 共用 AgentLoop 的模型步骤调度、
 Provider 调用和工具调用数量校验；Browser Profile 每步只允许一个工具调用并禁止并行，
 页面状态、动作后断言和完成证据仍由 Controller 独立维护。
@@ -183,7 +185,7 @@ iframe 导航只改变对应 frame 的文档代次。每次观察产生新 ID，
 内容投影变化才递增页面版本。正文超过 48K 字符或引用超过 5,000 时明确标记截断，
 当前观察不作为完整完成证据。
 每次实际执行仍使用全新页面状态，父 Task 不能通过重新委派续填。
-Controller 每轮只允许一个程序或完成工具；默认 6 次决策、3 段程序，
+Controller 每轮只允许一个程序或完成工具；默认 12 次决策、8 段程序，
 每段程序最多 30 秒，单次 run 最多 200 次 SDK 调用。填值、勾选和选择后自动核验直接状态，
 批量填写先预检全部项，执行失败保留已经确认的动作。程序变量不跨程序保留，
 页面现场保留到委派结束。程序成功和 return_value 不等于目标完成。
@@ -195,22 +197,34 @@ Controller 保留最多 24 KiB 的程序与小型返回值记录，省略时明�
 执行另预留一段程序时限供最终捕获和收尾，不靠 HTTP 分阶段超时兜底。
 动作结果不确定时立即冻结全部后续修改。
 填写、选择或点击后的最终状态必须由 Agent 基于最新页面证据重新确认。
-表单交互程序需返回结构化 `state_checks`（value/checked/selected）；finish 也可通过
-`value_checks`、`checked_checks`、`selected_checks` 提供确定类型的期望值，最终捕获重新比对全部
-字段和勾选组，拒绝只凭标题、遗漏字段或事后重置的完成声明。非标准题目约束仍需
-Agent 按原请求和局部文字核验，通用门禁不推断站点题型。
+可用结构化 `state_checks`（value/checked/selected）或 finish 的
+`value_checks`、`checked_checks`、`selected_checks` 检查目标相关字段，最终捕获重新比对
+指定期望值。可选字段可为空，不要求覆盖页面全部表单。业务完成条件由 Agent 根据
+原请求和实际页面核验，Runtime 验证最终证据与产物身份。
 目标明确指定的交互方式或截图范围由内部契约校验 Worker 实际工具与受限协议；
-支持 Safe SDK 可逆动作、视口截图和有像素上限的整页截图。
-提交按钮、Enter 提交、上传与敏感字段在 Worker 拒绝，HTTPS 写请求也在 Playwright
-请求路由中拦截，累计拦截计数只作为诊断信息。后台请求被阻断不会直接使导航或填写失败，
-完成仍要求最新页面状态与契约证据一致，不能声称服务器接受了被阻断的写入或提交。
+支持 Safe SDK 页面动作、视口截图和有像素上限的整页截图。
+浏览器不设业务动作权限：`interaction_mode` 仅描述目标，不限制点击、填写、Enter、
+登录或提交；URL 只校验 HTTP(S) 格式，不设公网、同源或原话授权范围。
+Chromium 执行页面原生 JavaScript、全部 HTTP 方法、后台请求、WebSocket、Service Worker
+及重定向，不注入 `SUBMIT_GUARD`，不设置独立提交窗口或单次提交上限。
+`click` 和 `press(..., "Enter")` 可直接提交；`submit` 保留为带可选断言的点击别名。
+AI 根据目标选择操作和判断业务结果；用户的“不提交”等要求作为目标保留给 AI。
+`wait_for` 按 AI 指定的文字、精确 URL 或可见 ref 有界等待，不要求全局 `networkidle`。
+等待失败不意味着此前动作失败，不会自动重放；AI 可读取当前页面决定下一步。
+HTTP 响应成功只表示传输完成，最终精确证据和截图仍需来自实际结果页面。
+已知确认文字由用户或页面提供时可作为可选提交断言；超时或输出耗尽后，Controller 在
+总时限内预留的收尾窗口捕获最终页，使用剩余决策预算进行一次只开放完成工具的模型核验。
+原话、目标和动作记录一并参与核验，不按模式、动作方法或预猜文案判断成功，也不重放操作。
+核验不可用或决策耗尽时保留真实观察和部分完成状态。
+原生确认框、提示框和输入框由 AI 显式接受、取消或填写；触发动作保持 pending，
+直到对话框处理后才确认结果。`type` 保留光标和选区语义，目标值可显式断言。
 终态及缓存中的 `execution_report` 保留运行 ID、最后观察、最近动作和结果未知状态，
-不会用新运行的页面状态推断旧运行是否成功。只读结果附带 `prior_interaction`，
-原交互未核验时父任务不能以 completed 结项，仍可如实报告部分完成。
-父任务原话和纠正一并传入，浏览器时限受父任务剩余时间约束。
+不会用新运行的页面状态推断旧运行是否成功。所有模式统一读取当前操作结果，
+兼容旧模式缓存；未显式核验或仍在执行时父任务不能以 completed 结项。
+父任务原话和纠正独立于整理后的 goal 传入每轮模型，浏览器时限受父任务剩余时间约束。
 每个任务版本最多启动一个完整浏览器目标，同次委派可以导航多个页面；
 部分完成或结果不确定后不能改写目标重新执行。新的浏览器目标需要新任务版本；
-内部编译失败或没有程序执行的失败会释放执行预留。
+尚未取得页面且没有程序执行的失败会释放执行预留。
 浏览器单行日志记录模型/工具耗时、步骤和调用次数，不记录 URL、填写内容、页面正文或
 工具参数。
 程序校验或 SDK 参数失败会返回具体字段与调用序号，供模型基于最终观察纠正；

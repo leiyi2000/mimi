@@ -85,7 +85,7 @@ plugins/
   music/                  # 网易云搜索、登录与音乐卡片
   yasuo/                  # 群消息归档、撤回海报与查询 API
   pumpkin/                # Harness Agent、TaskRuntime、Artifact 与能力插件
-    browser/              # 隔离 Playwright Worker、UDS 协议与公网出口代理
+    browser/              # 隔离 Playwright Worker、UDS 协议与页面执行
 qimei/
   src/main/java/qimei/    # QIMEI HTTP、APK 校验、Unidbg 调用
 ```
@@ -215,16 +215,16 @@ Trace。Browser Profile 固定每步一个工具调用、禁止并行，模型�
 Skill 渐进加载、通用工具批次或 Conversation/Task 完成工具；单动作、页面版本、动作后
 断言、副作用冻结和最终证据门禁仍由 Controller 独立拥有。
 公开工具只接收一个完整 `goal`；Browser Profile 在共享 `AgentLoop` 的首个步骤根据目标和
-归档用户原话生成起始 URL、交互授权、输出类型、能力与证据约束，不启动独立 Compiler
+归档用户原话生成起始 URL、目标类型、输出类型、能力与证据约束，不启动独立 Compiler
 循环。工具预算只计委派次数，不按 URL 缓存浏览器结果；
 浏览器 capability 按 scope/task/revision 绑定唯一完整目标。Controller 通过协议 v3 的
 `execute_program` 与共享 Unix Domain Socket 调用 `browser-worker`。Worker
 每次委派启动全新的 Playwright、Chromium、BrowserContext 和 Page，拥有唯一 lease、
 临时 profile、DOM、Cookie 和 Storage；终态、取消或超时后强制回收。
 Worker 不挂载插件数据或 Mimi secrets，只加入独立公网出站网络；Mimi 不加入该网络。
-Chromium 的 HTTP、HTTPS 和 WebSocket 连接统一经过 run 专属本地代理，代理逐连接解析
-域名、拒绝非公网地址并直连已验证 IP，重定向和子资源不会绕过检查。公网 URL 仍在 Mimi
-与 Worker 两侧校验。Browser Agent 生成受限 Python 程序，通过 `browser_execute` 调用
+Chromium 使用容器网络执行网页原生请求、后台查询、WebSocket、Service Worker 和跳转；
+无公网地址、同源或 HTTP 方法权限规则，起始 URL 只校验 HTTP(S) 格式。
+Browser Agent 生成受限 Python 程序，通过 `browser_execute` 调用
 注入的 Safe Browser SDK；不接触原始 Playwright、locator、JavaScript 或网络接口。
 `browser-code-runner` 独立容器使用非 root、只读文件系统、无网络与资源上限，
 每段程序启动独立子进程并安装 Linux seccomp；子进程仅持有预连接 pipe，
@@ -236,14 +236,15 @@ Worker 只解析通用 HTML/ARIA、label、fieldset 和 open shadow DOM，不推
 不随纯观察程序清空。另保留最多 24 KiB 的程序源码与小型返回值历史，
 不复制旧观察或动作台账，省略时显式标记。进度记录仅在本次委派内用于恢复执行，
 不能替代实时页面证据，也不进入持久化日志。SDK 返回完整属性对象。
-Cookie、Header、Storage、CDP 和高影响操作
+Cookie、Header、Storage 和 CDP
 不进入工具契约。截图和 PDF 返回
 Mimi 后写入当前 Task revision 的 Artifact。成功结果只包含最终页面状态的产物；
 部分完成的过程截图标为 `diagnostic`，不能晋升为交付产物。浏览器截图逐张核验文字
 可读性及原任务要求，发送前通过同一内容核验服务重检，拦截历史乱码与中间态截图。
 核验证据绑定文件摘要和具体图片，无法用另一张正常图片替旧图通过验收。
-Browser Profile 契约阶段产出的受限契约通过公网 URL 与模式校验后，Controller 每轮只
-允许一个程序或完成工具。默认最多 6 次决策、3 段程序，每段最多 30 秒、32 KiB 源码；
+Browser Profile 契约阶段产出的目标通过 URL 格式与产物模式校验后，Controller 每轮只
+允许一个程序或完成工具。契约不预设成功提示的精确文字，执行 Agent 根据实际页面核对
+用户目标并引用最终证据。默认最多 12 次决策、8 段程序，每段最多 30 秒、32 KiB 源码；
 Worker 对一次 run 限制 200 次 SDK 调用。填值、勾选和选择后自动核验直接状态，
 `fill_many` 先预检全部项，再逐条执行，失败保留已完成动作记录。
 普通局部变量（包括 `_`）可用；双下划线运行时名称、私有属性和危险 Python 操作仍禁用。
@@ -254,16 +255,29 @@ Worker 对一次 run 限制 200 次 SDK 调用。填值、勾选和选择后自�
 修改结果不确定时冻结后续修改，不重放副作用。
 完成前 Worker 刷新观察并捕获最终产物；动作序号独立于页面版本，
 `observed_after_action_seq` 必须覆盖最后动作。证据文本和 facts 必须来自最终页面，
-后台写请求仍阻断并计入诊断，不代替动作效果与目标验收；
 完成参数类型或精确引文错误允许一次只开放完成工具的纠正，重新捕获页面并执行原门禁；
 页面状态不符、观察不完整、结果未知或产物身份错误不进入此纠正路径。
-未确认动作或产物身份不一致时，只能部分完成。Controller 不维护 checkpoint、
-executing/finalizing/verifying 阶段，也不调用第二个浏览器验收模型。
-公开表单交互还需 value/checked/selected 的结构化断言，最终观察覆盖全部字段和同名
-勾选组，拒绝空字段、漏组、原生无效状态与填写后重置。非标准数量和自然语言目标
-仍由 Agent 按原请求确定，不能把通用表单覆盖视为任意业务目标的证明。
-仅允许页面内空语句或 void(0) 链接入口；其他 JavaScript URL 不开放。
-原生提交方法、提交事件、提交按钮与 Enter 在 Worker 初始化脚本中阻断。
+未确认动作或产物身份不一致时，只能部分完成。Controller 不维护持久化 checkpoint
+或第二套浏览器验收逻辑。
+value/checked/selected 是可选的目标字段断言，不要求填满全部字段或同名勾选组。
+业务动作由 AI 决定，`interaction_mode` 不控制 SDK 权限；普通点击与 Enter 可直接提交，
+原生提交方法和事件保持网页语义，`submit` 仅为带可选断言的点击别名。
+没有提交窗口、单次提交上限或业务动作分类拒绝。页面原生校验、可选字段、多步骤和
+跨站跳转由网页执行；AI 通过 `wait_for` 按文字、精确 URL 或可见 ref 等待目标状态，
+不依赖全局 `networkidle`。等待超时不冻结动作，也不自动重放此前操作。
+Worker 核对最终精确证据及产物身份；AI 按原目标解释业务结果，不能仅凭 HTTP 成功结项。
+已知确认文本可选，不要求预测其他表单的文案。模型超时、输出耗尽和执行期限到达时
+先捕获最终页面，再用剩余决策预算进行一次只开放 finish 的模型核验，共用最终门禁；
+总时限内预留最多一段程序时长，短任务最多预留一半，收尾不重放业务动作。
+核验不可用、预算耗尽或结果未知时保留观察与部分完成。模型默认单次 180 秒、
+输出 16384，总执行 720 秒，
+仍受父任务截止时间和交付预留约束。父 Task 模型超时或输出耗尽时复用已验证产物的
+部分完成兜底，纠正条件与交付门禁仍生效。
+归档用户原话独立于父任务整理的目标传入每个执行及恢复核验轮，不写入 Worker 契约。
+原生 dialog 以类型、文字、默认输入和唯一 ID 交给模型显式处理，触发动作保持 pending
+直到处理结束；新页面采用相同协议。动作台账按序号合并确认更新，type 返回真实光标与
+选区编辑后的状态。父任务完成门禁读取统一操作状态并兼容已有模式缓存；
+所有模式均要求显式 completed、goal_verified=true 且结果确定。
 `TaskRuntime` 持有单调截止时间，Controller 按父任务剩余时间减交付预留执行。
 容量不足时由 Runtime 在同一次委派中
 最多等待 45 秒，并受父截止时间约束，不额外调用模型。Worker 租约绑定 Mimi 实例和

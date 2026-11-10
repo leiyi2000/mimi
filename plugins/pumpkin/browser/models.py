@@ -6,6 +6,7 @@ from typing import Any
 
 
 PROGRAM_HISTORY_MAX_BYTES = 24 * 1024
+BROWSER_OPERATION_FINGERPRINT = "goal-only"
 
 
 class BrowserTaskStatus(StrEnum):
@@ -25,6 +26,7 @@ class BrowserExpectedOutput(StrEnum):
 class BrowserInteractionMode(StrEnum):
     READ_ONLY = "read_only"
     PUBLIC_INTERACTION = "public_interaction"
+    PUBLIC_SUBMISSION = "public_submission"
 
     @property
     def operation_fingerprint(self) -> str:
@@ -176,7 +178,9 @@ class BrowserExecutionState:
     def record(self, result: dict[str, Any]) -> None:
         self.last_program = result
         self.sdk_call_count += result.get("sdk_call_count", 0)
-        self.actions.extend(result.get("action_ledger") or [])
+        actions = {item["action_sequence"]: item for item in self.actions}
+        actions.update({item["action_sequence"]: item for item in result.get("action_ledger") or []})
+        self.actions = [actions[key] for key in sorted(actions)]
         self.last_confirmed_action_seq = result.get("last_confirmed_action_seq", 0)
         self.outcome_unknown |= bool(result.get("outcome_unknown") or result.get("status") == "outcome_unknown")
         if result.get("final_observation") is None:
@@ -204,7 +208,8 @@ class BrowserExecutionState:
                 "tool": "browser_snapshot", "observation_id": current.get("observation_id"),
                 "page_version": current.get("resource_version"),
                 "observed_after_action_seq": current.get("observed_after_action_seq"),
-                "text": str(current.get("visible_text", ""))[:2_000], "stale": False,
+                "text": str(current.get("visible_text", ""))[:2_000],
+                "dialog": current.get("dialog"), "stale": bool(current.get("dialog")),
             } if current else {},
             "actions": self.actions,
             "outcome_unknown": self.outcome_unknown,

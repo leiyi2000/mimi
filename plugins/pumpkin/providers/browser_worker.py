@@ -122,9 +122,12 @@ class BrowserWorkerClient:
 
     async def capture(
         self, run: BrowserWorkerRun, *, mode: str, full_page: bool = False,
+        submission_evidence: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         return await self._request(
-            WorkerOperation.CAPTURE, self._run_payload(run, mode=mode, full_page=full_page),
+            WorkerOperation.CAPTURE, self._run_payload(
+                run, mode=mode, full_page=full_page, submission_evidence=list(submission_evidence),
+            ),
         )
 
     async def get_run(self, run: BrowserWorkerRun) -> dict[str, Any]:

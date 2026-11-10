@@ -594,6 +594,7 @@ class SessionAgentLoop:
         completion_visible = self._completion_tools(loadout)
         non_retryable_errors: dict[str, int] = {}
         verified_artifacts: dict[str, ArtifactRef] = {}
+        early_fallback: ToolCall | None = None
         tool_budget = (
             _TurnToolBudget(self.profile.tool_budget)
             if self.profile.tool_budget is not None
@@ -677,6 +678,13 @@ class SessionAgentLoop:
                     turn_id=turn_id,
                     step_id=step_id,
                 )
+                if (
+                    exc.code == "MODEL_TIMEOUT" and verified_artifacts
+                    and self.profile.completion_fallback is not None
+                ):
+                    early_fallback = self.profile.completion_fallback(item, tuple(verified_artifacts.values()))
+                    if early_fallback is not None and early_fallback.name in completion_visible:
+                        break
                 await agent.session.append(
                     AgentEventType.TURN_FAILED,
                     {
@@ -720,6 +728,10 @@ class SessionAgentLoop:
                     turn_id=turn_id,
                     step_id=step_id,
                 )
+                if verified_artifacts and self.profile.completion_fallback is not None:
+                    early_fallback = self.profile.completion_fallback(item, tuple(verified_artifacts.values()))
+                    if early_fallback is not None and early_fallback.name in completion_visible:
+                        break
                 await agent.session.append(
                     AgentEventType.TURN_FAILED,
                     {
@@ -900,7 +912,7 @@ class SessionAgentLoop:
                     turn_id=turn_id,
                 )
                 return
-        fallback = (
+        fallback = early_fallback or (
             self.profile.completion_fallback(
                 item,
                 tuple(verified_artifacts.values()),
@@ -925,7 +937,7 @@ class SessionAgentLoop:
                 {
                     "content": (
                         "Runtime 正在提交已验证产物的部分完成结果，"
-                        "避免产物因步骤预算耗尽而丢失。"
+                        "保留模型时限或步骤预算耗尽前的有效产物。"
                     )
                 },
                 turn_id=turn_id,

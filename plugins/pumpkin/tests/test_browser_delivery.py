@@ -20,12 +20,10 @@ from runtime.browser_agent import (
     BrowserRunResult,
     BrowserTaskStatus,
 )
-from providers.public_url import PublicUrlGuard
 from test_browser_agent import (
     FakeProvider,
     FakeWorker,
     plan,
-    public_resolver,
     response,
 )
 from test_task_corrections import _context, _create_running_task, _runtime
@@ -269,7 +267,6 @@ async def test_browser_task_cancel_and_shutdown_wait_for_release(tmp_path, shutd
     worker = SlowWorker()
     runtime.browser_plugin.runner = BrowserAgentRunner(
         provider=WaitingProvider([]), worker=worker,
-        url_guard=PublicUrlGuard(public_resolver),
     )
     arguments = {"goal": "Inspect https://example.com and summarize the page."}
     execution = asyncio.create_task(runtime.browser_plugin.delegate(

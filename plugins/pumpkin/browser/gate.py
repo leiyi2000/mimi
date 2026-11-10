@@ -2,23 +2,22 @@ import base64
 import hashlib
 from typing import Any
 
-from providers.public_url import PublicUrlError, PublicUrlGuard
+from .navigation import BrowserUrl, BrowserUrlError
 from .models import (
     BrowserArtifact, BrowserArtifactMode, BrowserExecutionState, BrowserExpectedOutput,
-    BrowserInteractionMode, BrowserRequiredCapability, BrowserRunResult,
+    BrowserRequiredCapability, BrowserRunResult,
     BrowserTaskContract, BrowserTaskStatus,
 )
 from .session import BrowserWorkerSession
+from .state_checks import BrowserStateChecks
 from .tools import MAX_MEDIA_BYTES, STATE_CHECK_FIELDS
 
 
 class BrowserResultGate:
-    def __init__(self, url_guard: PublicUrlGuard) -> None:
-        self.url_guard = url_guard
-
     async def finish(
         self, session: BrowserWorkerSession, state: BrowserExecutionState,
         contract: BrowserTaskContract, arguments: dict[str, Any],
+        *, capture: dict[str, Any] | None = None,
     ) -> BrowserRunResult:
         state.finish_error = {}
         try:
@@ -33,14 +32,15 @@ class BrowserResultGate:
         if status is not BrowserTaskStatus.COMPLETED:
             return self.result(state, status, summary, error_code="BROWSER_GOAL_NOT_COMPLETED")
         assert session.run
-        capture = await session.worker.capture(
-            session.run, mode=contract.artifact_mode.value,
-            full_page=BrowserRequiredCapability.FULL_PAGE_SCREENSHOT in contract.required_capabilities,
-        )
+        evidence = self._strings(arguments.get("evidence"), 10, 500)
+        if capture is None:
+            capture = await session.worker.capture(
+                session.run, mode=contract.artifact_mode.value,
+                full_page=BrowserRequiredCapability.FULL_PAGE_SCREENSHOT in contract.required_capabilities,
+            )
         state.observe(capture.get("final_observation"))
         snapshot = state.current_observation
         state.outcome_unknown |= bool(capture.get("outcome_unknown"))
-        evidence = self._strings(arguments.get("evidence"), 10, 500)
         facts = self._strings(arguments.get("facts"), 20, 1_000)
         links = self._strings(arguments.get("links"), 50, 2_000)
         observed = self._observed_text(snapshot)
@@ -49,7 +49,8 @@ class BrowserResultGate:
         if state.outcome_unknown:
             error = "BROWSER_OUTCOME_UNKNOWN"
         elif (
-            not capture.get("finalization_id") or snapshot.get("truncated")
+            not capture.get("finalization_id") or snapshot.get("truncated") or snapshot.get("dialog")
+            or any(item.get("status") == "pending" for item in state.actions)
             or snapshot["observed_after_action_seq"] < max(last_action, capture.get("last_confirmed_action_seq", 0))
         ):
             error = "BROWSER_COMPLETION_UNVERIFIED"
@@ -78,7 +79,7 @@ class BrowserResultGate:
             if checks is None:
                 returned = state.last_program.get("return_value")
                 checks = returned.get("state_checks") if isinstance(returned, dict) else None
-            error = self._state_error(snapshot, contract, checks)
+            error = BrowserStateChecks.error(snapshot, checks)
             if error == "BROWSER_STATE_CHECK_INVALID":
                 state.finish_error = {
                     "code": error, "field": "state_checks",
@@ -90,11 +91,11 @@ class BrowserResultGate:
         if not error:
             for link in links:
                 try:
-                    await self.url_guard.validate(link)
+                    BrowserUrl.validate(link)
                     if link not in observed:
                         error = "BROWSER_LINKS_UNVERIFIED"
                         break
-                except PublicUrlError:
+                except BrowserUrlError:
                     error = "BROWSER_LINKS_UNVERIFIED"
                     break
         artifacts = ()
@@ -135,68 +136,6 @@ class BrowserResultGate:
                     return False
                 checks.append({**item, "kind": kind})
         return checks
-
-    @staticmethod
-    def _state_error(
-        snapshot: dict[str, Any], contract: BrowserTaskContract, checks: Any,
-    ) -> str | None:
-        elements = {item["ref"]: item for item in snapshot["elements"]}
-        verified: dict[str, str] = {}
-        if checks is not None:
-            if not isinstance(checks, list) or not 1 <= len(checks) <= 512:
-                return "BROWSER_STATE_CHECK_INVALID"
-            for check in checks:
-                if not isinstance(check, dict) or set(check) != {"ref", "kind", "expected"}:
-                    return "BROWSER_STATE_CHECK_INVALID"
-                ref, kind, expected = check["ref"], check["kind"], check["expected"]
-                if (
-                    not isinstance(ref, str) or ref not in elements or not isinstance(kind, str)
-                    or kind not in {"value", "checked", "selected"}
-                ):
-                    return "BROWSER_STATE_CHECK_INVALID"
-                if (
-                    kind == "checked" and type(expected) is not bool
-                    or kind == "value" and not isinstance(expected, str)
-                    or kind == "selected" and (
-                        not isinstance(expected, list) or any(not isinstance(item, str) for item in expected)
-                    )
-                    or ref in verified
-                ):
-                    return "BROWSER_STATE_CHECK_INVALID"
-                actual = elements[ref].get(kind)
-                if kind == "selected":
-                    actual = list(actual or ())
-                if actual != expected:
-                    return "BROWSER_FINAL_STATE_MISMATCH"
-                verified[ref] = kind
-        if contract.interaction_mode is not BrowserInteractionMode.PUBLIC_INTERACTION:
-            return None
-        groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
-        for element in elements.values():
-            role = element.get("role")
-            if element.get("disabled") or element.get("readonly"):
-                continue
-            if role in {"radio", "checkbox"}:
-                key = (
-                    element.get("frame_id"), element.get("form_ref"),
-                    role, element.get("form_name") or element["ref"],
-                )
-                groups.setdefault(key, []).append(element)
-            elif role in {"textbox", "spinbutton", "combobox", "listbox"} and element.get("visible"):
-                kind = "selected" if role in {"combobox", "listbox"} else "value"
-                if (
-                    verified.get(element["ref"]) != kind or not element.get(kind)
-                    or element.get("valid") is False
-                ):
-                    return "BROWSER_FORM_STATE_UNVERIFIED"
-        for group in groups.values():
-            if (
-                not any(item.get("checked") for item in group)
-                or group[0]["role"] == "radio" and sum(bool(item.get("checked")) for item in group) != 1
-                or any(verified.get(item["ref"]) != "checked" or item.get("valid") is False for item in group)
-            ):
-                return "BROWSER_FORM_STATE_UNVERIFIED"
-        return None
 
     @staticmethod
     def _observed_text(snapshot: dict[str, Any]) -> str:

@@ -1,9 +1,7 @@
 import os
-import socket
 
 import pytest
 
-from browser.egress import PublicEgressProxy, PublicProxyError
 from browser.engine import PlaywrightRun
 from browser.protocol import PROTOCOL_VERSION, WorkerErrorCode
 from browser.sdk_protocol import SDK_VERSION, SdkError, SdkMethod
@@ -32,10 +30,9 @@ async def live_engine(tmp_path):
     from playwright.async_api import async_playwright
     driver = await async_playwright().start()
     browser = await driver.chromium.launch(headless=True)
-    engine = PlaywrightRun(temp_dir=tmp_path, interaction_allowed=True, action_timeout_ms=500)
+    engine = PlaywrightRun(temp_dir=tmp_path, action_timeout_ms=500)
     engine.browser = browser
     engine.context = await browser.new_context()
-    await engine.context.route("**/*", engine._route_request)
     engine.page = await engine.context.new_page()
     engine.page.set_default_timeout(500)
     await engine.page.set_content(PAGE)
@@ -139,7 +136,7 @@ async def test_shadow_dom_and_main_document_replacement(live_engine):
         await engine.refs.project(ref["ref"])
 
 
-async def test_batch_preflight_prevents_partial_write_and_submission(live_engine):
+async def test_batch_preflight_checks_refs_but_business_actions_are_unrestricted(live_engine):
     engine = live_engine
     ref = (await find(engine, role="textbox", name="Name", exact=True))[0]["ref"]
     with pytest.raises(SdkError) as raised:
@@ -149,12 +146,9 @@ async def test_batch_preflight_prevents_partial_write_and_submission(live_engine
     assert raised.value.fault.field == "items[1].ref"
     assert (await engine.refs.project(ref))["value"] == ""
     for query in [{"role": "button", "name": "Submit"}, {"name": "Password"}]:
-        forbidden = (await find(engine, **query))[0]["ref"]
-        with pytest.raises(SdkError):
-            await engine.sdk_call(SdkMethod.CLICK, {"ref": forbidden}, 3)
-    with pytest.raises(SdkError):
-        await engine.sdk_call(SdkMethod.PRESS, {"ref": ref, "key": "Enter"}, 4)
-    assert not engine.ledger
+        target = (await find(engine, **query))[0]["ref"]
+        assert (await engine.sdk_call(SdkMethod.CLICK, {"ref": target}, 3))["status"] == "succeeded"
+    assert (await engine.sdk_call(SdkMethod.PRESS, {"ref": ref, "key": "Enter"}, 4))["status"] == "succeeded"
 
 
 async def test_unknown_outcome_freezes_mutations_but_allows_observation(live_engine, monkeypatch):
@@ -175,18 +169,25 @@ async def test_unknown_outcome_freezes_mutations_but_allows_observation(live_eng
     assert len(engine.ledger) == 1
 
 
-async def test_https_post_is_blocked_and_finalization_covers_actions(live_engine):
+async def test_https_post_runs_and_finalization_covers_actions(live_engine):
     engine = live_engine
+    requests = []
+
+    async def fixture_route(route):
+        requests.append(route.request.method)
+        await route.fulfill(status=200, headers={"Access-Control-Allow-Origin": "*"}, body="saved")
+
+    await engine.page.route("https://example.com/write", fixture_route)
     await engine.page.evaluate("""() => fetch('https://example.com/write',
         {method:'POST', body:'fixture'}).catch(() => null)""")
-    assert engine.blocked_requests == 1
+    assert "POST" in requests and engine.blocked_requests == 0
     capture = await engine.capture("screenshot")
-    assert capture["final_observation"]["blocked_requests"] == 1
+    assert capture["final_observation"]["blocked_requests"] == 0
     assert capture["observation_id"] == capture["final_observation"]["observation_id"]
     assert capture["observed_after_action_seq"] >= capture["last_confirmed_action_seq"]
 
 
-async def test_navigation_succeeds_with_blocked_background_post(live_engine, monkeypatch):
+async def test_navigation_succeeds_with_background_post(live_engine):
     engine = live_engine
     url = "https://example.com/fixture"
     page = PAGE + """<script>
@@ -196,24 +197,33 @@ async def test_navigation_succeeds_with_blocked_background_post(live_engine, mon
     async def fixture_route(route):
         await route.fulfill(status=200, content_type="text/html", body=page)
 
-    async def public_host(*_args):
-        return None
+    requests = []
 
-    monkeypatch.setattr(PublicEgressProxy, "resolve_host", public_host)
-    engine.allowed_origins = frozenset({engine.origin(url)})
+    async def telemetry(route):
+        requests.append(route.request.method)
+        await route.fulfill(status=200, body="ok")
+
+    await engine.page.route("https://example.com/telemetry", telemetry)
     await engine.page.route(url, fixture_route)
     receipt = await engine.sdk_call(SdkMethod.NAVIGATE, {"url": url}, 1)
     assert receipt["status"] == "succeeded"
     assert engine.page.url == url
-    assert engine.blocked_requests == 1
+    assert requests == ["POST"] and engine.blocked_requests == 0
     assert not engine.outcome_unknown
     snapshot = await engine.snapshot()
-    assert snapshot.blocked_requests == 1
+    assert snapshot.blocked_requests == 0
     assert snapshot.title == "Fixture"
 
 
-async def test_fill_confirms_value_despite_blocked_background_post(live_engine):
+async def test_fill_triggers_remote_validation_and_confirms_value(live_engine):
     engine = live_engine
+    requests = []
+
+    async def telemetry(route):
+        requests.append(route.request.method)
+        await route.fulfill(status=200, headers={"Access-Control-Allow-Origin": "*"}, body="ok")
+
+    await engine.page.route("https://example.com/telemetry", telemetry)
     await engine.page.locator("#name").evaluate("""node => {
         node.addEventListener('input', () => fetch('https://example.com/telemetry',
             {method:'POST', body:'fixture'}).catch(() => null));
@@ -222,34 +232,24 @@ async def test_fill_confirms_value_despite_blocked_background_post(live_engine):
     receipt = await engine.sdk_call(SdkMethod.FILL, {"ref": field["ref"], "value": "Alice"}, 2)
     assert receipt["status"] == "succeeded"
     assert receipt["confirmed_state"] == {"value": "Alice"}
-    assert engine.blocked_requests == 1
+    assert "POST" in requests and engine.blocked_requests == 0
     assert not engine.outcome_unknown
     capture = await engine.capture("none")
-    assert capture["final_observation"]["blocked_requests"] == 1
+    assert capture["final_observation"]["blocked_requests"] == 0
     assert capture["observed_after_action_seq"] == receipt["action_sequence"]
 
 
-async def test_proxy_accepts_only_public_dns(monkeypatch):
-    monkeypatch.setattr(socket, "getaddrinfo", lambda *_args, **_kwargs: [
-        (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 443)),
-    ])
-    assert (await PublicEgressProxy.resolve_host("example.com", 443)).address == "93.184.216.34"
-
-
-@pytest.mark.parametrize("addresses", [
-    ("127.0.0.1",), ("169.254.169.254",), ("10.0.0.1",), ("93.184.216.34", "192.168.1.1"),
+@pytest.mark.parametrize("url", [
+    "http://127.0.0.1:8000", "http://169.254.169.254", "http://10.0.0.1",
+    "https://other.example/path",
 ])
-async def test_proxy_rejects_private_and_mixed_dns(monkeypatch, addresses):
-    monkeypatch.setattr(socket, "getaddrinfo", lambda *_args, **_kwargs: [
-        (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (address, 443)) for address in addresses
-    ])
-    with pytest.raises(PublicProxyError):
-        await PublicEgressProxy.resolve_host("example.com", 443)
+async def test_navigation_does_not_apply_host_permission_rules(tmp_path, url):
+    await PlaywrightRun(temp_dir=tmp_path).validate_url(url)
 
 
 async def test_sdk_sequence_and_capability_are_bound_to_execution(tmp_path):
     worker = BrowserWorker(token="fixture", sdk_socket_dir=tmp_path)
-    engine = PlaywrightRun(temp_dir=tmp_path, interaction_allowed=True)
+    engine = PlaywrightRun(temp_dir=tmp_path)
     run = BrowserRun("run", "capability", engine, tmp_path, "instance", "owner")
     worker._run = run
     execution = ProgramExecution("digest", "sdk-ticket")

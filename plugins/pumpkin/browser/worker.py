@@ -21,6 +21,7 @@ from typing import Any
 from .code_runner import RunnerClient
 from .code_validator import BrowserCodeValidator
 from .engine import PlaywrightRun
+from .models import BrowserInteractionMode
 from .protocol import (
     MAX_FRAME_BYTES, PROTOCOL_VERSION, WorkerErrorCode, WorkerFault,
     WorkerOperation, response_error, response_ok,
@@ -162,6 +163,7 @@ class BrowserWorker:
                 self._invalid("cannot finalize an active or closing run")
             return await run.engine.capture(
                 str(payload.get("mode", "none")), payload.get("full_page", False),
+                payload.get("submission_evidence", ()),
             )
         self._invalid("unsupported operation")
 
@@ -197,7 +199,7 @@ class BrowserWorker:
             self._invalid("contract is required")
         start_url = contract.get("start_url")
         mode = contract.get("interaction_mode")
-        if not isinstance(start_url, str) or mode not in {"read_only", "public_interaction"}:
+        if not isinstance(start_url, str) or mode not in {item.value for item in BrowserInteractionMode}:
             self._invalid("contract URL or interaction mode is invalid")
         async with self._lease_lock:
             if self._run is not None:
@@ -214,8 +216,6 @@ class BrowserWorker:
                 temp_dir=temp_dir,
                 navigation_timeout_ms=int(self.navigation_timeout_seconds * 1000),
                 action_timeout_ms=int(self.action_timeout_seconds * 1000),
-                allowed_origins=frozenset({PlaywrightRun.origin(start_url)}),
-                interaction_allowed=mode == "public_interaction",
             )
             try:
                 await engine.validate_url(start_url)
@@ -332,6 +332,7 @@ class BrowserWorker:
         program: str, timeout: float,
     ) -> dict[str, Any]:
         ledger_start = len(run.engine.ledger)
+        pending_sequences = {item.action_sequence for item in run.engine.ledger if item.status == "pending"}
         result: dict[str, Any]
         try:
             reply = await RunnerClient.request(self.runner_socket, {
@@ -355,7 +356,10 @@ class BrowserWorker:
         finally:
             execution.revoked = True
         async with execution.lock:
-            receipts = run.engine.ledger[ledger_start:]
+            receipts = [
+                item for index, item in enumerate(run.engine.ledger)
+                if index >= ledger_start or item.action_sequence in pending_sequences
+            ]
             if any(item.effect == "unknown" for item in receipts):
                 run.engine.outcome_unknown = True
             if result["status"] == ProgramStatus.OUTCOME_UNKNOWN.value and receipts:

@@ -99,6 +99,35 @@ class SafeBrowserSdk:
     def click(self, ref: str) -> Any:
         return self._call(SdkMethod.CLICK, ref=ref)
 
+    def handle_dialog(self, dialog_id: str, accept: bool, prompt_text: str | None = None) -> Any:
+        return self._call(
+            SdkMethod.HANDLE_DIALOG, dialog_id=dialog_id, accept=accept,
+            **({"prompt_text": prompt_text} if prompt_text is not None else {}),
+        )
+
+    def submit(
+        self, ref: str, state_checks: list[dict[str, Any]] | None = None,
+        success_text: str | None = None, within: str | None = None,
+    ) -> Any:
+        return self._call(
+            SdkMethod.SUBMIT, ref=ref,
+            **({"state_checks": state_checks} if state_checks is not None else {}),
+            **({"success_text": success_text} if success_text is not None else {}),
+            **({"within": within} if within is not None else {}),
+        )
+
+    def wait_for(
+        self, *, text: str | None = None, url: str | None = None,
+        ref: str | None = None, timeout_ms: int | None = None,
+    ) -> PageSnapshot:
+        value = self._call(SdkMethod.WAIT_FOR, **{
+            key: item for key, item in (
+                ("text", text), ("url", url), ("ref", ref), ("timeout_ms", timeout_ms),
+            ) if item is not None
+        })
+        value["elements"] = tuple(Element.from_payload(item) for item in value["elements"])
+        value["unsupported_frames"] = tuple(value.get("unsupported_frames") or ())
+        return PageSnapshot(**value)
     def fill(self, ref: str, value: str) -> Any:
         return self._call(SdkMethod.FILL, ref=ref, value=value)
 

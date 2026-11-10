@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import pytest
 
 from tortoise import Tortoise
 
@@ -28,6 +29,7 @@ from core.session import SessionProjection
 from core.tools import Tool, ToolRegistry
 from core.turns import TurnToolLoadout
 from runtime.outbox import OutboxSender
+from providers.model import ModelProviderError
 
 
 class EmptySkills:
@@ -1309,7 +1311,8 @@ async def test_task_finalization_exposes_only_completion_tools(store):
     assert events[-1].event_type is AgentEventType.TURN_COMPLETED
 
 
-async def test_task_runtime_fallback_preserves_verified_artifact(store):
+@pytest.mark.parametrize("model_failure", [None, "MODEL_TIMEOUT", "MODEL_MAX_TOKENS"])
+async def test_task_runtime_fallback_preserves_verified_artifact(store, model_failure):
     artifact = ArtifactRef(
         artifact_id="artifact:verified",
         kind="html",
@@ -1332,6 +1335,8 @@ async def test_task_runtime_fallback_preserves_verified_artifact(store):
                 tool_calls = (ToolCall("render", "render", {}),)
             else:
                 assert names == {"finish"}
+                if model_failure == "MODEL_TIMEOUT":
+                    raise ModelProviderError("model request timed out", code=model_failure, retryable=False)
                 tool_calls = (
                     ToolCall(f"hidden-render:{self.calls}", "render", {}),
                 )
@@ -1344,6 +1349,7 @@ async def test_task_runtime_fallback_preserves_verified_artifact(store):
                 request_id=f"request:{self.calls}",
                 provider="fake",
                 model="fake",
+                finish_reason="max_tokens" if model_failure == "MODEL_MAX_TOKENS" and self.calls > 1 else None,
             )
 
     def finish(context, arguments):

@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir playwright==1.56.0 \
     && mkdir -p /run/pumpkin-browser /run/pumpkin-browser-sdk /tmp/browser-home \
     && chown -R worker:worker /run/pumpkin-browser /run/pumpkin-browser-sdk /tmp/browser-home
 
-COPY __init__.py protocol.py sdk_protocol.py code_validator.py code_runner.py references.py egress.py engine.py worker.py /app/browser/
+COPY __init__.py protocol.py sdk_protocol.py models.py navigation.py state_checks.py code_validator.py code_runner.py references.py dialogs.py engine.py worker.py /app/browser/
 WORKDIR /app
 USER worker
 ENTRYPOINT ["python", "-m", "browser.worker"]

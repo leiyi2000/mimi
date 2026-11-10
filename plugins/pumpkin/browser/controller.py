@@ -7,12 +7,12 @@ from dataclasses import MISSING, fields, replace
 from core.agent_loop import AgentLoop, AgentLoopProfile, AgentLoopRequest, AgentLoopStep
 from core.config import (
     BrowserConfig, DEFAULT_BROWSER_MAX_STEPS, DEFAULT_BROWSER_TIMEOUT_SECONDS,
-    DEFAULT_TASK_TIMEOUT_SECONDS,
+    DEFAULT_BROWSER_MODEL_TIMEOUT_SECONDS,
 )
 from core.domain import AgentProfile, AgentRole, ModelMessage, ToolCall
 from providers.browser_worker import BrowserWorkerClient, BrowserWorkerError
 from providers.model import ModelProvider, ModelProviderError
-from providers.public_url import PublicUrlError, PublicUrlGuard
+from .navigation import BrowserUrl, BrowserUrlError
 
 from .code_validator import BrowserCodeValidator
 from .gate import BrowserResultGate
@@ -25,7 +25,7 @@ from .sdk_protocol import MAX_PROGRAMS, SDK_VERSION, Element, SdkError
 from .session import BrowserWorkerSession
 from .tools import (
     BROWSER_SYSTEM_PROMPT, COMPILER_SYSTEM_PROMPT, EXECUTE_TOOL, FINISH_TOOL,
-    OBSERVATION_CHANNELS, PLAN_TOOL, REJECT_TOOL,
+    PLAN_TOOL, REJECT_TOOL,
 )
 
 
@@ -35,19 +35,18 @@ _LOGGER = logging.getLogger(__name__)
 class BrowserAgentRunner:
     def __init__(
         self, *, provider: ModelProvider, worker: BrowserWorkerClient,
-        url_guard: PublicUrlGuard | None = None,
         max_steps: int = DEFAULT_BROWSER_MAX_STEPS, max_programs: int = MAX_PROGRAMS,
         timeout_seconds: float = DEFAULT_BROWSER_TIMEOUT_SECONDS,
-        model_timeout_seconds: float = DEFAULT_TASK_TIMEOUT_SECONDS,
+        model_timeout_seconds: float = DEFAULT_BROWSER_MODEL_TIMEOUT_SECONDS,
         policy: BrowserConfig | None = None, trace: Callable[[str], None] | None = None,
     ) -> None:
-        self.worker, self.url_guard = worker, url_guard or PublicUrlGuard()
+        self.worker = worker
         self.max_steps, self.max_programs, self.timeout_seconds = max_steps, max_programs, timeout_seconds
         self.policy, self.trace = policy or BrowserConfig(), trace
         if model_timeout_seconds <= 0:
             raise ValueError("browser model timeout must be positive")
         self.model_timeout_seconds = model_timeout_seconds
-        self.result_gate = BrowserResultGate(self.url_guard)
+        self.result_gate = BrowserResultGate()
         self.agent_loop = AgentLoop(
             AgentLoopProfile(
                 profile=AgentProfile.BROWSER, tool_role=AgentRole.BROWSER,
@@ -103,15 +102,30 @@ class BrowserAgentRunner:
                 state, "父任务没有留下足够的浏览器执行时间。", "BROWSER_PARENT_DEADLINE", retryable=True,
             )
         session = BrowserWorkerSession(self.worker, self.policy, self.max_programs, self.trace, contract)
+        deadline = asyncio.get_running_loop().time() + timeout
+        execution_deadline = deadline - min(self.policy.program_timeout_seconds, timeout / 2)
         try:
-            async with asyncio.timeout(timeout):
-                return await self._drive(
+            async with asyncio.timeout_at(execution_deadline):
+                result = await self._drive(
                     state, session, goal, original_requests, task_owner,
-                    asyncio.get_running_loop().time() + timeout,
+                    execution_deadline,
                 )
+            if result.error_code in {"MODEL_MAX_TOKENS", "BROWSER_BUDGET_EXHAUSTED", "BROWSER_TIMEOUT"}:
+                recovered = await self._finalize(session, state, result.error_code, deadline)
+                if recovered is not None:
+                    return recovered
+                return replace(result, execution_report=state.report())
+            return result
         except TimeoutError:
+            recovered = await self._finalize(session, state, "BROWSER_TIMEOUT", deadline)
+            if recovered is not None:
+                return recovered
             return self.result_gate.failure(state, "浏览器任务达到总时限，执行已停止。", "BROWSER_TIMEOUT")
         except (BrowserAgentError, BrowserWorkerError, ModelProviderError) as exc:
+            if exc.code in {"MODEL_TIMEOUT", "MODEL_MAX_TOKENS"} and session.contract and session.run:
+                recovered = await self._finalize(session, state, exc.code, deadline)
+                if recovered is not None:
+                    return recovered
             return self.result_gate.failure(
                 state, "浏览器执行失败，已停止后续操作。", exc.code,
                 retryable=exc.retryable and state.program_count == 0,
@@ -138,7 +152,7 @@ class BrowserAgentRunner:
             state.decision_count = index
             now = asyncio.get_running_loop().time()
             remaining = max(0, deadline - now)
-            execution_seconds = max(0, remaining - self.policy.program_timeout_seconds)
+            execution_seconds = max(0, remaining - min(self.policy.cleanup_timeout_seconds, remaining / 2))
             execution_allowed = (
                 index < self.max_steps and state.program_count < self.max_programs
                 and not state.outcome_unknown and state.finish_attempts == 0
@@ -159,6 +173,7 @@ class BrowserAgentRunner:
                 ModelMessage("system", BROWSER_SYSTEM_PROMPT),
                 ModelMessage("user", json.dumps({
                     "contract": session.contract.payload(),
+                    "original_user_requests": session.contract.original_requests,
                     "initial_observation": self._model_observation(state.current_observation),
                     "last_program": {key: value for key, value in state.last_program.items()
                                      if key != "final_observation"},
@@ -228,7 +243,7 @@ class BrowserAgentRunner:
                     return self.result_gate.failure(state, "浏览器程序连续校验失败。", "BROWSER_PROGRAM_INVALID")
                 return None
             state.decision_errors = 0
-            execution_seconds = deadline - asyncio.get_running_loop().time() - self.policy.program_timeout_seconds
+            execution_seconds = deadline - asyncio.get_running_loop().time()
             if execution_seconds <= 0:
                 return self.result_gate.failure(state, "浏览器执行时间不足。", "BROWSER_TIMEOUT")
             result = await session.execute(state, program, timeout_seconds=execution_seconds)
@@ -243,6 +258,68 @@ class BrowserAgentRunner:
                 state, "浏览器决策预算已用尽。", "BROWSER_BUDGET_EXHAUSTED",
             ), max_steps=self.max_steps, run_id=state.run_id,
         )
+
+    async def _finalize(
+        self, session: BrowserWorkerSession, state: BrowserExecutionState,
+        reason_code: str, deadline: float,
+    ) -> BrowserRunResult | None:
+        if session.contract is None or session.run is None:
+            return None
+        deadline = min(deadline, asyncio.get_running_loop().time() + self.policy.program_timeout_seconds)
+        try:
+            async with asyncio.timeout_at(deadline):
+                session.check()
+                capture = await session.worker.capture(
+                    session.run, mode=session.contract.artifact_mode.value,
+                    full_page=BrowserRequiredCapability.FULL_PAGE_SCREENSHOT in session.contract.required_capabilities,
+                )
+                state.observe(capture.get("final_observation"))
+                state.outcome_unknown |= bool(capture.get("outcome_unknown"))
+                if (
+                    state.outcome_unknown or state.current_observation.get("dialog")
+                    or state.decision_count >= self.max_steps
+                    or any(item.get("status") == "pending" for item in state.actions)
+                ):
+                    return None
+                state.decision_count += 1
+                request = AgentLoopRequest((
+                    ModelMessage("system", BROWSER_SYSTEM_PROMPT),
+                    ModelMessage("user", json.dumps({
+                        "contract": session.contract.payload(),
+                        "original_user_requests": session.contract.original_requests,
+                        "initial_observation": self._model_observation(state.current_observation),
+                        "action_ledger": state.actions,
+                        "last_program": {key: value for key, value in state.last_program.items()
+                                         if key != "final_observation"},
+                        "program_history": state.program_history,
+                        "program_history_omitted": state.program_history_omitted,
+                        "outcome_unknown": state.outcome_unknown,
+                        "finish_error": state.finish_error,
+                        "remaining_programs": 0, "remaining_decisions": 1,
+                        "finalization": {
+                            "reason_code": reason_code,
+                            "instruction": (
+                                "Only verify the original goal against this captured final page and action ledger. "
+                                "No further page actions are available. Report remaining gaps explicitly."
+                            ),
+                        },
+                    }, ensure_ascii=False, separators=(",", ":"))),
+                ), (FINISH_TOOL,), deadline=min(
+                    deadline, asyncio.get_running_loop().time() + self.model_timeout_seconds,
+                ))
+                async for iteration in self.agent_loop.steps(max_steps=1, run_id=state.run_id):
+                    step = await iteration.respond(request)
+                    if step.tool_call_error or step.response.finish_reason in {"length", "max_tokens"}:
+                        return None
+                    call = step.response.message.tool_calls[0]
+                    if call.name != FINISH_TOOL.name:
+                        return None
+                    return await self.result_gate.finish(
+                        session, state, session.contract, call.arguments, capture=capture,
+                    )
+        except (TimeoutError, BrowserWorkerError, BrowserAgentError, ModelProviderError) as exc:
+            _LOGGER.warning("Browser final verification failed: %s", getattr(exc, "code", "BROWSER_TIMEOUT"))
+            return None
 
     @staticmethod
     def _model_observation(snapshot: dict) -> dict:
@@ -275,8 +352,8 @@ class BrowserAgentRunner:
     ) -> None:
         assert session.contract
         try:
-            await self.url_guard.validate(session.contract.start_url)
-        except PublicUrlError as exc:
+            BrowserUrl.validate(session.contract.start_url)
+        except BrowserUrlError as exc:
             raise BrowserAgentError(exc.code, "浏览器起始地址不可访问。") from exc
         state.task_contract = session.contract.payload()
         run = await session.acquire(deadline, task_owner)
@@ -308,9 +385,7 @@ class BrowserAgentRunner:
             return self._contract(
                 goal, values["start_url"], BrowserExpectedOutput(values["expected_output"]),
                 BrowserInteractionMode(values["interaction_mode"]), BrowserArtifactMode(values["artifact_mode"]),
-                original_requests, tuple(values["required_capabilities"]),
-                tuple(BrowserEvidenceRequirement.from_payload(item, OBSERVATION_CHANNELS)
-                      for item in values.get("required_evidence", [])),
+                original_requests, tuple(values["required_capabilities"]), (),
             )
         except (KeyError, TypeError, ValueError, BrowserAgentError) as exc:
             return self.result_gate.failure(
@@ -324,10 +399,9 @@ class BrowserAgentRunner:
         original_requests: tuple[str, ...], required_capabilities: tuple[BrowserRequiredCapability | str, ...],
         required_evidence: tuple[BrowserEvidenceRequirement, ...],
     ) -> BrowserTaskContract:
-        if not 1 <= len(goal.strip()) <= 1_000 or start_url not in "\n".join((goal, *original_requests)):
-            raise BrowserAgentError("BROWSER_CONTRACT_INVALID", "浏览器起始地址必须来自原始目标。")
-        if interaction_mode is BrowserInteractionMode.PUBLIC_INTERACTION and not original_requests:
-            raise BrowserAgentError("BROWSER_INTERACTION_NOT_ALLOWED", "缺少用户交互授权。")
+        if not 1 <= len(goal.strip()) <= 1_000:
+            raise BrowserAgentError("BROWSER_CONTRACT_INVALID", "浏览器目标长度无效。")
+        BrowserUrl.validate(start_url)
         if (
             expected_output is BrowserExpectedOutput.SCREENSHOT and artifact_mode is not BrowserArtifactMode.SCREENSHOT
             or expected_output is BrowserExpectedOutput.PDF and artifact_mode is not BrowserArtifactMode.PDF

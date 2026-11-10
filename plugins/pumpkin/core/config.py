@@ -25,9 +25,11 @@ DEFAULT_TASK_WEB_SEARCH_LIMIT = 8
 DEFAULT_TASK_WEB_FETCH_LIMIT = 16
 DEFAULT_TASK_WEB_DOWNLOAD_LIMIT = 8
 DEFAULT_TASK_BROWSER_DELEGATE_LIMIT = 4
-DEFAULT_BROWSER_TIMEOUT_SECONDS = 300
-DEFAULT_BROWSER_MAX_STEPS = 6
-DEFAULT_BROWSER_MAX_PROGRAMS = 3
+DEFAULT_BROWSER_TIMEOUT_SECONDS = 720
+DEFAULT_BROWSER_MODEL_TIMEOUT_SECONDS = 180.0
+DEFAULT_BROWSER_MAX_TOKENS = 16384
+DEFAULT_BROWSER_MAX_STEPS = 12
+DEFAULT_BROWSER_MAX_PROGRAMS = 8
 DEFAULT_BROWSER_PARENT_RESERVE_SECONDS = 60
 DEFAULT_CHAT_MAX_TOKENS = 4096
 DEFAULT_TASK_MAX_TOKENS = 8192
@@ -249,7 +251,7 @@ class BrowserConfig:
             self.cleanup_timeout_seconds,
         ) <= 0:
             raise ValueError("browser timeout_seconds must be positive")
-        if self.max_steps <= 0 or not 1 <= self.max_programs <= 3:
+        if self.max_steps <= 0 or not 1 <= self.max_programs <= 8:
             raise ValueError("browser limits must be positive")
         if not 0 < self.program_timeout_seconds <= 30 or not 1 <= self.program_max_chars <= 32_768:
             raise ValueError("browser program limits exceed worker bounds")
@@ -518,7 +520,7 @@ class PumpkinConfig:
                 request_timeout_seconds=float(
                     os.getenv(
                         "PUMPKIN_BROWSER_MODEL_TIMEOUT_SECONDS",
-                        str(DEFAULT_TASK_TIMEOUT_SECONDS),
+                        str(DEFAULT_BROWSER_MODEL_TIMEOUT_SECONDS),
                     )
                 ),
                 max_retries=int(
@@ -536,7 +538,7 @@ class PumpkinConfig:
                 ),
                 max_tokens=_positive_int(
                     "PUMPKIN_BROWSER_MAX_TOKENS",
-                    DEFAULT_TASK_MAX_TOKENS,
+                    DEFAULT_BROWSER_MAX_TOKENS,
                 ),
             ),
             task=TaskConfig(
